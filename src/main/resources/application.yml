@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: java-mr-rag
+
+server:
+  port: 8080
+
+app:
+  gitlab:
+    url: ${GITLAB_URL:https://gitlab.com}
+    token: ${GITLAB_TOKEN:}
+  workspace:
+    dir: ${WORKSPACE_DIR:/tmp/mr-rag-workspace}
+  enrichment:
+    # How many lines around a change to include as context
+    surroundingLines: 3
+    # Max enrichment snippets per change group
+    maxSnippetsPerGroup: 10
+    # Max lines per snippet
+    maxSnippetLines: 30
+logging:
+  level:
+    com.example: DEBUG
