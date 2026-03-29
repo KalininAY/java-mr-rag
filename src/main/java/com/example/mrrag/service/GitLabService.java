@@ -16,27 +16,34 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 /**
  * GitLab integration: fetches MR metadata / diffs and checks out source code.
  *
- * <h2>Isolation strategy</h2>
- * Each call to {@link #checkoutBranch} creates a <em>fresh, uniquely-named
- * directory</em> under the configured workspace so that concurrent requests
- * for different MRs (or even the same MR with different branches) never
- * interfere with each other:
+ * <h2>Checkout directory layout</h2>
  * <pre>
- *   &lt;workspace&gt;/&lt;projectName&gt;-mr&lt;mrId&gt;-&lt;sanitisedBranch&gt;-&lt;epochMs&gt;
+ *   &lt;workspace&gt;/
+ *     &lt;projectName&gt;-mr&lt;mrIid&gt;/
+ *       from-&lt;sanitisedBranch&gt;-&lt;yyyy-MM-dd_HH-mm-ss-SSS&gt;/   ← source branch
+ *       to-&lt;sanitisedBranch&gt;-&lt;yyyy-MM-dd_HH-mm-ss-SSS&gt;/     ← target branch
  * </pre>
- * The caller is responsible for deleting the directory after use by calling
- * {@link #cleanup(Path)}.
+ * Each request gets fresh timestamped leaf directories so concurrent requests
+ * never interfere. The MR-level parent dir is created lazily and left on disk
+ * (harmless empty dir after cleanup).
+ *
+ * <p>Call {@link #cleanup(Path)} with the <em>leaf</em> path returned by
+ * {@link #checkoutBranch} when the directory is no longer needed.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class GitLabService {
+
+    private static final DateTimeFormatter TS_FMT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss-SSS");
 
     private final GitLabApi gitLabApi;
     private final Path workspacePath;
@@ -49,37 +56,39 @@ public class GitLabService {
         return gitLabApi.getMergeRequestApi().getMergeRequest(projectId, mrIid);
     }
 
-    /** Fetches the raw diff lines for an MR (all files). */
+    /** Fetches the raw diff entries for an MR (all files). */
     public List<Diff> getMrDiffs(long projectId, long mrIid) throws GitLabApiException {
         return gitLabApi.getMergeRequestApi().getMergeRequestDiffs(projectId, (int) mrIid);
     }
 
     /**
-     * Clones the repository at the given branch into a unique temporary directory
-     * and returns its path.  The directory name is:
+     * Clones {@code branch} into a unique leaf directory and returns its path.
+     *
+     * <p>Directory structure:
      * <pre>
-     *   &lt;projectName&gt;-mr&lt;mrIid&gt;-&lt;sanitisedBranch&gt;-&lt;epochMillis&gt;
+     *   &lt;workspace&gt;/&lt;projectName&gt;-mr&lt;mrIid&gt;/&lt;role&gt;-&lt;branch&gt;-&lt;timestamp&gt;
      * </pre>
-     * Call {@link #cleanup(Path)} when the directory is no longer needed.
      *
      * @param projectId GitLab numeric project id
-     * @param mrIid     MR internal id (used only for the directory name)
-     * @param branch    branch to clone
-     * @return path to the freshly-cloned working tree
+     * @param mrIid     MR internal id
+     * @param branch    branch name to clone
+     * @param role      human-readable role label, e.g. {@code "from"} or {@code "to"}
+     * @return path to the freshly-cloned working tree (leaf dir)
      */
-    public Path checkoutBranch(long projectId, long mrIid, String branch)
+    public Path checkoutBranch(long projectId, long mrIid, String branch, String role)
             throws GitLabApiException, GitAPIException, IOException {
 
-        var project = gitLabApi.getProjectApi().getProject(projectId);
-        String repoUrl  = project.getHttpUrlToRepo();
-        String projName = sanitise(project.getName());
-        String dirName  = projName + "-mr" + mrIid + "-" + sanitise(branch)
-                          + "-" + Instant.now().toEpochMilli();
+        var project    = gitLabApi.getProjectApi().getProject(projectId);
+        String repoUrl = project.getHttpUrlToRepo();
 
-        Path repoDir = workspacePath.resolve(dirName);
+        String mrDir   = sanitise(project.getName()) + "-mr" + mrIid;
+        String leafDir = role + "-" + sanitise(branch)
+                         + "-" + LocalDateTime.now().format(TS_FMT);
+
+        Path repoDir = workspacePath.resolve(mrDir).resolve(leafDir);
         Files.createDirectories(repoDir);
 
-        log.info("Cloning {} branch '{}' into {}", repoUrl, branch, repoDir);
+        log.info("Cloning {} branch '{}' [{}] into {}", repoUrl, branch, role, repoDir);
         var credentials = new UsernamePasswordCredentialsProvider("oauth2", gitlabToken);
         Git.cloneRepository()
                 .setURI(repoUrl)
@@ -94,16 +103,16 @@ public class GitLabService {
     }
 
     /**
-     * Deletes a checkout directory created by {@link #checkoutBranch}.
-     * Safe to call even if the path no longer exists.
+     * Deletes a checkout leaf directory. Safe to call with {@code null} or a
+     * non-existent path.
      */
     public void cleanup(Path repoDir) {
         if (repoDir == null || !Files.exists(repoDir)) return;
         try {
             FileUtils.deleteDirectory(repoDir.toFile());
-            log.info("Cleaned up checkout directory: {}", repoDir);
+            log.info("Cleaned up: {}", repoDir);
         } catch (IOException e) {
-            log.warn("Failed to delete checkout directory {}: {}", repoDir, e.getMessage());
+            log.warn("Failed to delete {}: {}", repoDir, e.getMessage());
         }
     }
 
@@ -114,7 +123,7 @@ public class GitLabService {
 
     // -----------------------------------------------------------------------
 
-    /** Replaces any character that is not a letter, digit, dot or hyphen with '_'. */
+    /** Replaces characters unsafe for directory names with '_'. */
     private String sanitise(String s) {
         return s == null ? "unknown" : s.replaceAll("[^A-Za-z0-9.\\-]", "_");
     }
