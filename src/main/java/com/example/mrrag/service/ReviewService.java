@@ -18,10 +18,11 @@ import java.util.List;
  * 1. Fetch MR from GitLab
  * 2. Clone / fetch source and target branches
  * 3. Build JavaParser indexes for both
- * 4. Parse diff
- * 5. Group changes
- * 6. Enrich groups
- * 7. Return ReviewContext
+ * 4. Parse git diff
+ * 5. Filter MOVED symbols (SemanticDiffFilter) — removes pure relocations
+ * 6. Group remaining changes by AST code block
+ * 7. Enrich groups
+ * 8. Return ReviewContext
  */
 @Slf4j
 @Service
@@ -31,6 +32,7 @@ public class ReviewService {
     private final GitLabService gitLabService;
     private final JavaIndexService javaIndexService;
     private final DiffParser diffParser;
+    private final SemanticDiffFilter semanticDiffFilter;
     private final ChangeGrouper changeGrouper;
     private final ContextEnricher contextEnricher;
 
@@ -43,7 +45,7 @@ public class ReviewService {
         // 1. Fetch MR metadata
         MergeRequest mr = gitLabService.getMergeRequest(request.projectId(), request.mrIid());
 
-        // 2. Clone / checkout source branch
+        // 2. Checkout source branch
         log.info("Checking out source branch: {}", request.sourceBranch());
         Path sourceRepoDir = gitLabService.checkoutBranch(request.projectId(), request.sourceBranch());
 
@@ -51,8 +53,7 @@ public class ReviewService {
         javaIndexService.invalidate(sourceRepoDir);
         JavaIndexService.ProjectIndex sourceIndex = javaIndexService.buildIndex(sourceRepoDir);
 
-        // 4. Clone / checkout target branch into a separate dir
-        //    We use a second path by appending -target suffix to avoid collision
+        // 4. Checkout target branch
         log.info("Checking out target branch: {}", request.targetBranch());
         Path targetRepoDir = gitLabService.checkoutBranch(request.projectId(), request.targetBranch());
 
@@ -60,20 +61,25 @@ public class ReviewService {
         javaIndexService.invalidate(targetRepoDir);
         JavaIndexService.ProjectIndex targetIndex = javaIndexService.buildIndex(targetRepoDir);
 
-        // 6. Fetch and parse diffs
+        // 6. Fetch and parse git diff
         log.info("Fetching MR diffs...");
         List<Diff> rawDiffs = gitLabService.getMrDiffs(request.projectId(), request.mrIid());
-        List<ChangedLine> changedLines = diffParser.parse(rawDiffs);
-        log.info("Parsed {} changed lines from {} file diffs", changedLines.size(), rawDiffs.size());
+        List<ChangedLine> rawLines = diffParser.parse(rawDiffs);
+        log.info("Parsed {} changed lines from {} file diffs", rawLines.size(), rawDiffs.size());
 
-        // 7. Group changes
-        List<ChangeGroup> groups = changeGrouper.group(changedLines);
+        // 7. Filter out purely MOVED symbols (git shows them as delete+add, but nothing changed)
+        List<ChangedLine> changedLines = semanticDiffFilter.filter(rawLines, sourceIndex, targetIndex);
+        log.info("After semantic filter: {} changed lines ({} removed as MOVED)",
+                changedLines.size(), rawLines.size() - changedLines.size());
+
+        // 8. Group by AST code block + cross-file AST merge
+        List<ChangeGroup> groups = changeGrouper.group(changedLines, sourceIndex);
         log.info("Grouped into {} change groups", groups.size());
 
-        // 8. Enrich
+        // 9. Enrich
         contextEnricher.enrich(groups, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir);
 
-        // 9. Compute stats
+        // 10. Stats
         int totalSnippets = groups.stream().mapToInt(g -> g.enrichments().size()).sum();
         int totalSnippetLines = groups.stream()
                 .flatMap(g -> g.enrichments().stream())
@@ -97,7 +103,7 @@ public class ReviewService {
     }
 
     /**
-     * Auto-detect branches from GitLab and build context.
+     * Auto-detect branches from GitLab MR metadata.
      */
     public ReviewContext buildReviewContext(long projectId, long mrIid)
             throws GitLabApiException, GitAPIException, IOException {
