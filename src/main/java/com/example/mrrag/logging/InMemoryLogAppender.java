@@ -1,25 +1,34 @@
 package com.example.mrrag.logging;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.AppenderBase;
-import org.springframework.stereotype.Component;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * Logback appender that stores log events in memory with monotonically
- * increasing IDs. Spring picks it up as a bean; logback.xml wires it in.
- *
- * <p>Capacity is capped at {@value #MAX_ENTRIES} entries — oldest are dropped
- * when the cap is reached.
+ * Logback appender wired via {@code logback-spring.xml}.
+ * <p>
+ * The single instance created by Logback is retrieved at runtime through
+ * {@link #getInstance()} via {@link LoggerContext} — no Spring {@code @Component},
+ * no duplicate instances.
+ * <p>
+ * The buffer is <b>active only while at least one consumer is registered</b>.
+ * Consumers call {@link #registerConsumer()} on page-open and
+ * {@link #unregisterConsumer()} on page-close (via {@code /logs/unregister}).
+ * When the consumer count drops to zero the buffer is cleared and further
+ * appending is skipped until a new consumer arrives.
  */
-@Component
 public class InMemoryLogAppender extends AppenderBase<ILoggingEvent> {
 
     public static final int MAX_ENTRIES = 10_000;
@@ -28,13 +37,66 @@ public class InMemoryLogAppender extends AppenderBase<ILoggingEvent> {
             .ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
             .withZone(ZoneId.systemDefault());
 
-    private final AtomicLong counter = new AtomicLong(0);
+    private final AtomicLong    counter   = new AtomicLong(0);
+    private final AtomicInteger consumers = new AtomicInteger(0);
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-    /** Entries sorted by id ascending. */
-    private final List<LogEntry> entries = new ArrayList<>(MAX_ENTRIES);
+    private final List<LogEntry> entries  = new ArrayList<>(1024);
+
+    // -----------------------------------------------------------------------
+    // Static accessor — returns the ONE instance owned by Logback
+    // -----------------------------------------------------------------------
+
+    public static InMemoryLogAppender getInstance() {
+        LoggerContext ctx = (LoggerContext) LoggerFactory.getILoggerFactory();
+        Logger root = ctx.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+        @SuppressWarnings("unchecked")
+        InMemoryLogAppender appender =
+                (InMemoryLogAppender) root.getAppender("MEMORY");
+        if (appender == null) {
+            throw new IllegalStateException(
+                    "InMemoryLogAppender 'MEMORY' not found in Logback root logger. "
+                  + "Check logback-spring.xml.");
+        }
+        return appender;
+    }
+
+    // -----------------------------------------------------------------------
+    // Consumer lifecycle
+    // -----------------------------------------------------------------------
+
+    /** Called when a browser page opens the log viewer. */
+    public long registerConsumer() {
+        consumers.incrementAndGet();
+        // Return current max id so the client only sees future events
+        return counter.get();
+    }
+
+    /** Called when the browser page is closed or the user clicks Stop. */
+    public void unregisterConsumer() {
+        if (consumers.decrementAndGet() <= 0) {
+            consumers.set(0);
+            clearBuffer();
+        }
+    }
+
+    private void clearBuffer() {
+        lock.writeLock().lock();
+        try {
+            entries.clear();
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Logback append
+    // -----------------------------------------------------------------------
 
     @Override
     protected void append(ILoggingEvent event) {
+        // Skip buffering when nobody is watching
+        if (consumers.get() <= 0) return;
+
         long id = counter.incrementAndGet();
         String ts = TS_FMT.format(Instant.ofEpochMilli(event.getTimeStamp()));
         LogEntry entry = new LogEntry(
@@ -46,31 +108,22 @@ public class InMemoryLogAppender extends AppenderBase<ILoggingEvent> {
         );
         lock.writeLock().lock();
         try {
-            if (entries.size() >= MAX_ENTRIES) {
-                entries.remove(0);
-            }
+            if (entries.size() >= MAX_ENTRIES) entries.remove(0);
             entries.add(entry);
         } finally {
             lock.writeLock().unlock();
         }
     }
 
-    /**
-     * Returns the current maximum log entry id (0 if no entries yet).
-     * The client stores this on page load and uses it as the {@code after}
-     * parameter for subsequent polls.
-     */
-    public long currentMaxId() {
-        return counter.get();
-    }
+    // -----------------------------------------------------------------------
+    // Query API
+    // -----------------------------------------------------------------------
 
-    /**
-     * Returns all entries with {@code id > afterId}, up to {@code limit}.
-     */
+    /** Returns entries with {@code id > afterId}, up to {@code limit}. */
     public List<LogEntry> entriesAfter(long afterId, int limit) {
+        if (consumers.get() <= 0) return Collections.emptyList();
         lock.readLock().lock();
         try {
-            // Binary-search start index
             int lo = 0, hi = entries.size();
             while (lo < hi) {
                 int mid = (lo + hi) >>> 1;
@@ -84,5 +137,6 @@ public class InMemoryLogAppender extends AppenderBase<ILoggingEvent> {
         }
     }
 
-    public record LogEntry(long id, String timestamp, String level, String logger, String message) {}
+    public record LogEntry(long id, String timestamp, String level,
+                           String logger, String message) {}
 }
