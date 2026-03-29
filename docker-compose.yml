@@ -1,0 +1,15 @@
+version: '3.9'
+services:
+  java-mr-rag:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      GITLAB_URL: ${GITLAB_URL}
+      GITLAB_TOKEN: ${GITLAB_TOKEN}
+      WORKSPACE_DIR: /workspace
+    volumes:
+      - mr-rag-workspace:/workspace
+
+volumes:
+  mr-rag-workspace:
