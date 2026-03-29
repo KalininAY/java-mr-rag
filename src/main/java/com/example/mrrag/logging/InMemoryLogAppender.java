@@ -18,20 +18,21 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Logback appender wired via {@code logback-spring.xml}.
- * <p>
- * The single instance created by Logback is retrieved at runtime through
- * {@link #getInstance()} via {@link LoggerContext} — no Spring {@code @Component},
- * no duplicate instances.
- * <p>
- * The buffer is <b>active only while at least one consumer is registered</b>.
- * Consumers call {@link #registerConsumer()} on page-open and
- * {@link #unregisterConsumer()} on page-close (via {@code /logs/unregister}).
- * When the consumer count drops to zero the buffer is cleared and further
- * appending is skipped until a new consumer arrives.
+ *
+ * <h2>Buffer strategy</h2>
+ * Entries older than {@value #MAX_AGE_MS} ms are evicted on every
+ * {@link #append} call. With a client poll interval of 1 s this means
+ * the buffer holds at most ~5 s worth of log lines — enough to survive a
+ * brief network hiccup, but never accumulates unboundedly.
+ *
+ * <h2>Lifecycle</h2>
+ * Buffering is active only while {@code consumers > 0}.
+ * Managed via {@link #registerConsumer()} / {@link #unregisterConsumer()}.
  */
 public class InMemoryLogAppender extends AppenderBase<ILoggingEvent> {
 
-    public static final int MAX_ENTRIES = 10_000;
+    /** How long to keep entries in the buffer (milliseconds). */
+    public static final long MAX_AGE_MS = 5_000;
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter
             .ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
@@ -40,10 +41,11 @@ public class InMemoryLogAppender extends AppenderBase<ILoggingEvent> {
     private final AtomicLong    counter   = new AtomicLong(0);
     private final AtomicInteger consumers = new AtomicInteger(0);
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-    private final List<LogEntry> entries  = new ArrayList<>(1024);
+    /** Entries sorted by id (and time) ascending. */
+    private final List<LogEntry> entries  = new ArrayList<>();
 
     // -----------------------------------------------------------------------
-    // Static accessor — returns the ONE instance owned by Logback
+    // Static accessor — the ONE instance owned by Logback
     // -----------------------------------------------------------------------
 
     public static InMemoryLogAppender getInstance() {
@@ -64,27 +66,18 @@ public class InMemoryLogAppender extends AppenderBase<ILoggingEvent> {
     // Consumer lifecycle
     // -----------------------------------------------------------------------
 
-    /** Called when a browser page opens the log viewer. */
+    /** Called when a browser opens the log viewer. Returns current max id as baseline. */
     public long registerConsumer() {
         consumers.incrementAndGet();
-        // Return current max id so the client only sees future events
         return counter.get();
     }
 
-    /** Called when the browser page is closed or the user clicks Stop. */
+    /** Called on Stop / page unload. Clears buffer when no consumers remain. */
     public void unregisterConsumer() {
         if (consumers.decrementAndGet() <= 0) {
             consumers.set(0);
-            clearBuffer();
-        }
-    }
-
-    private void clearBuffer() {
-        lock.writeLock().lock();
-        try {
-            entries.clear();
-        } finally {
-            lock.writeLock().unlock();
+            lock.writeLock().lock();
+            try { entries.clear(); } finally { lock.writeLock().unlock(); }
         }
     }
 
@@ -94,22 +87,26 @@ public class InMemoryLogAppender extends AppenderBase<ILoggingEvent> {
 
     @Override
     protected void append(ILoggingEvent event) {
-        // Skip buffering when nobody is watching
         if (consumers.get() <= 0) return;
 
-        long id = counter.incrementAndGet();
+        long now  = System.currentTimeMillis();
+        long id   = counter.incrementAndGet();
         String ts = TS_FMT.format(Instant.ofEpochMilli(event.getTimeStamp()));
         LogEntry entry = new LogEntry(
-                id,
-                ts,
+                id, now, ts,
                 event.getLevel().toString(),
                 event.getLoggerName(),
                 event.getFormattedMessage()
         );
+
         lock.writeLock().lock();
         try {
-            if (entries.size() >= MAX_ENTRIES) entries.remove(0);
             entries.add(entry);
+            // Evict entries older than MAX_AGE_MS from the head
+            long cutoff = now - MAX_AGE_MS;
+            int  drop   = 0;
+            while (drop < entries.size() && entries.get(drop).epochMs() < cutoff) drop++;
+            if (drop > 0) entries.subList(0, drop).clear();
         } finally {
             lock.writeLock().unlock();
         }
@@ -119,8 +116,8 @@ public class InMemoryLogAppender extends AppenderBase<ILoggingEvent> {
     // Query API
     // -----------------------------------------------------------------------
 
-    /** Returns entries with {@code id > afterId}, up to {@code limit}. */
-    public List<LogEntry> entriesAfter(long afterId, int limit) {
+    /** Returns all entries with {@code id > afterId}. */
+    public List<LogEntry> entriesAfter(long afterId) {
         if (consumers.get() <= 0) return Collections.emptyList();
         lock.readLock().lock();
         try {
@@ -130,13 +127,19 @@ public class InMemoryLogAppender extends AppenderBase<ILoggingEvent> {
                 if (entries.get(mid).id() <= afterId) lo = mid + 1;
                 else hi = mid;
             }
-            int end = Math.min(lo + limit, entries.size());
-            return new ArrayList<>(entries.subList(lo, end));
+            return new ArrayList<>(entries.subList(lo, entries.size()));
         } finally {
             lock.readLock().unlock();
         }
     }
 
-    public record LogEntry(long id, String timestamp, String level,
-                           String logger, String message) {}
+    /** Internal record — {@code epochMs} is used for eviction and not sent to clients. */
+    public record LogEntry(
+            long   id,
+            long   epochMs,
+            String timestamp,
+            String level,
+            String logger,
+            String message
+    ) {}
 }

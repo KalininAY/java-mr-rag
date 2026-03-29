@@ -13,19 +13,13 @@ import java.util.List;
  * <pre>
  *   GET  /logs              — HTML page
  *   POST /logs/register     — register consumer, returns current max id
- *   POST /logs/unregister   — unregister consumer (called on Stop / page unload)
+ *   POST /logs/unregister   — unregister consumer
  *   GET  /logs/since?after= — new entries since id
  * </pre>
- *
- * The appender instance is fetched via {@link InMemoryLogAppender#getInstance()}
- * (LoggerContext lookup) so there is exactly one instance shared between
- * Logback and this controller.
  */
 @Controller
 @RequestMapping("/logs")
 public class LogController {
-
-    private static final int DEFAULT_LIMIT = 500;
 
     private InMemoryLogAppender appender() {
         return InMemoryLogAppender.getInstance();
@@ -48,7 +42,7 @@ public class LogController {
                     #ctrl button { margin-right: 6px; padding: 3px 10px;
                                    background: #2a2a2a; color: #ccc;
                                    border: 1px solid #555; cursor: pointer; }
-                    #ctrl button:hover { background: #3a3a3a; }
+                    #ctrl button:hover  { background: #3a3a3a; }
                     #ctrl button.danger { border-color: #a33; color: #f88; }
                     #status { font-size: 0.8rem; color: #888; }
                     #log  { white-space: pre-wrap; word-break: break-all;
@@ -74,16 +68,14 @@ public class LogController {
                     let active  = true;
                     let timer   = null;
 
-                    // Register consumer on the server; receive baseline id
                     fetch('/logs/register', { method: 'POST' })
                       .then(r => r.text())
                       .then(id => { afterId = parseInt(id, 10); scheduleNext(); });
 
-                    // Unregister when tab is closed or navigated away
                     window.addEventListener('beforeunload', unregister);
 
                     function scheduleNext() {
-                      if (active) timer = setTimeout(poll, 1500);
+                      if (active) timer = setTimeout(poll, 1000);
                     }
 
                     function poll() {
@@ -126,7 +118,6 @@ public class LogController {
                     }
 
                     function unregister() {
-                      // sendBeacon is fire-and-forget, works during page unload
                       navigator.sendBeacon('/logs/unregister');
                     }
 
@@ -139,27 +130,23 @@ public class LogController {
                 """;
     }
 
-    /** Register a new consumer; returns the current max id as plain text. */
     @PostMapping(value = "/register", produces = MediaType.TEXT_PLAIN_VALUE)
     @ResponseBody
     public String register() {
         return String.valueOf(appender().registerConsumer());
     }
 
-    /** Unregister a consumer (called on Stop or page unload). */
     @PostMapping("/unregister")
     @ResponseBody
     public void unregister() {
         appender().unregisterConsumer();
     }
 
-    /** Returns new log entries after the given id. */
     @GetMapping(value = "/since", produces = MediaType.APPLICATION_JSON_VALUE)
     @ResponseBody
     public List<InMemoryLogAppender.LogEntry> since(
-            @RequestParam(defaultValue = "0")  long after,
-            @RequestParam(defaultValue = "" + DEFAULT_LIMIT) int limit
+            @RequestParam(defaultValue = "0") long after
     ) {
-        return appender().entriesAfter(after, limit);
+        return appender().entriesAfter(after);
     }
 }
