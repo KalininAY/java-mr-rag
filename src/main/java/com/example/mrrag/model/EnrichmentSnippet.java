@@ -15,11 +15,19 @@ public record EnrichmentSnippet(
         String explanation
 ) {
     public enum SnippetType {
+        /** Signature lines of a called/changed method */
         METHOD_SIGNATURE,
+        /** Full (or truncated) body of a method */
         METHOD_BODY,
+        /** List of sites that call a changed method */
         METHOD_CALLERS,
+        /** Declaration of a field + its write sites */
         FIELD_USAGES,
+        /** All usages of a local variable */
         VARIABLE_USAGES,
-        DECLARATION
+        /** Declaration of a field/variable */
+        DECLARATION,
+        /** Callee parameter names when arguments were changed */
+        ARGUMENT_CONTEXT
     }
 }
