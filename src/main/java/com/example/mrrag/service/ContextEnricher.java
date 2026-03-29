@@ -12,21 +12,26 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.function.ToIntFunction;
 
 /**
  * Enriches ChangeGroups with contextual snippets from the indexed codebase.
  *
- * <p>Enrichment strategies:
+ * <p>Enrichment strategies (in priority order):
  * <ol>
- *   <li><b>Changed method declaration</b> – find all callers (cross-file)</li>
- *   <li><b>Deleted declaration</b> – find all usages of the removed symbol</li>
- *   <li><b>Added method call</b> – add callee signature + body</li>
- *   <li><b>Changed call arguments</b> – show callee signature with param names</li>
- *   <li><b>Changed/added field access</b> – show field declaration + all write sites</li>
- *   <li><b>Changed variable</b> – show all usages of the variable in the same method scope</li>
- *   <li><b>Containing method body</b> – baseline context for the changed area</li>
+ *   <li><b>METHOD_DECLARATION</b>  – any method <em>used</em> in changed lines gets its
+ *       declaration lines (signature + parameter list + javadoc if present)</li>
+ *   <li><b>FIELD_DECLARATION</b>   – any field accessed in changed lines gets its
+ *       declaration line</li>
+ *   <li><b>VARIABLE_DECLARATION</b>– any local variable used in changed lines gets its
+ *       declaration line</li>
+ *   <li><b>METHOD_CALLERS</b>      – if a method <em>declaration</em> was changed, list all
+ *       callers</li>
+ *   <li><b>FIELD_USAGES</b>        – if a field declaration was deleted, list all accesses</li>
+ *   <li><b>VARIABLE_USAGES</b>     – if a variable declaration was deleted/changed, list all
+ *       usages</li>
+ *   <li><b>ARGUMENT_CONTEXT</b>    – if call arguments changed, show param names + types</li>
+ *   <li><b>METHOD_BODY</b>         – baseline: body of the method containing the change</li>
  * </ol>
  */
 @Slf4j
@@ -36,21 +41,11 @@ public class ContextEnricher {
 
     private final JavaIndexService indexService;
 
-    @Value("${app.enrichment.maxSnippetsPerGroup:10}")
+    @Value("${app.enrichment.maxSnippetsPerGroup:12}")
     private int maxSnippetsPerGroup;
 
     @Value("${app.enrichment.maxSnippetLines:30}")
     private int maxSnippetLines;
-
-    private static final Pattern METHOD_CALL_PATTERN =
-            Pattern.compile("([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(");
-    private static final Pattern FIELD_ACCESS_PATTERN =
-            Pattern.compile("(?:this\\.)?([a-zA-Z_][a-zA-Z0-9_]*)\\s*[=;,)]");
-    private static final Pattern DECLARATION_PATTERN =
-            Pattern.compile("(?:private|public|protected|static|final|\\s)\\s+" +
-                    "([a-zA-Z_][a-zA-Z0-9_.<>]*)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*[=;({]");
-    private static final Pattern VAR_DECL_PATTERN =
-            Pattern.compile("(?:var|final\\s+\\w+|\\w+)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*=");
 
     // -----------------------------------------------------------------------
     // Public API
@@ -76,28 +71,29 @@ public class ContextEnricher {
             Path sourceRepoDir,
             Path targetRepoDir
     ) {
-        List<EnrichmentSnippet> snippets = group.enrichments(); // mutable list from ChangeGroup
+        List<EnrichmentSnippet> snippets = group.enrichments();
 
         List<ChangedLine> added   = filterByType(group, ChangedLine.LineType.ADD);
         List<ChangedLine> deleted = filterByType(group, ChangedLine.LineType.DELETE);
+        List<ChangedLine> all     = group.changedLines();
 
-        // 1. Changed method declaration -> callers
-        strategyChangedMethodDeclaration(group, added, deleted, sourceIndex, sourceRepoDir, snippets);
+        // 1. Declarations for every method call in changed lines
+        strategyMethodDeclarations(all, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir, snippets);
 
-        // 2. Deleted declaration -> usages
-        strategyDeletedDeclaration(deleted, targetIndex, targetRepoDir, snippets);
+        // 2. Declarations for every field access in changed lines
+        strategyFieldDeclarations(all, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir, snippets);
 
-        // 3. Added method calls -> callee signature + body
-        strategyAddedMethodCalls(added, sourceIndex, sourceRepoDir, snippets);
+        // 3. Declarations for every local variable used in changed lines
+        strategyVariableDeclarations(all, sourceIndex, targetIndex, snippets);
 
-        // 4. Changed call arguments -> callee parameter names
-        strategyChangedArguments(added, deleted, sourceIndex, sourceRepoDir, snippets);
+        // 4. If a method declaration changed -> list all callers
+        strategyChangedMethodDeclaration(group, added, sourceIndex, sourceRepoDir, snippets);
 
-        // 5. Field accesses in changed lines -> declaration + write sites
-        strategyFieldAccesses(added, deleted, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir, snippets);
+        // 5. Deleted field/variable declaration -> usages
+        strategyDeletedDeclaration(deleted, targetIndex, snippets);
 
-        // 6. Local variable changes -> usages in method
-        strategyVariableUsages(added, deleted, sourceIndex, targetIndex, snippets);
+        // 6. Changed call arguments -> param names + types
+        strategyChangedArguments(added, deleted, sourceIndex, snippets);
 
         // 7. Containing method body (baseline context)
         strategyContainingMethod(group, sourceIndex, sourceRepoDir, snippets);
@@ -106,11 +102,154 @@ public class ContextEnricher {
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 1: changed method declaration
+    // Strategy 1: METHOD_DECLARATION for every called method in changed lines
+    // -----------------------------------------------------------------------
+
+    /**
+     * For every resolved call site on a changed line, emit a METHOD_DECLARATION snippet
+     * pointing at the callee's declaration (file + line range of signature).
+     */
+    private void strategyMethodDeclarations(
+            List<ChangedLine> all,
+            JavaIndexService.ProjectIndex sourceIndex,
+            JavaIndexService.ProjectIndex targetIndex,
+            Path sourceRepoDir, Path targetRepoDir,
+            List<EnrichmentSnippet> snippets
+    ) {
+        Set<String> seen = new HashSet<>();
+        Set<Integer> changedLines = changedLineNumbers(all);
+
+        // Walk call sites in source index; emit declaration when call is on a changed line
+        sourceIndex.callSites.forEach((calleeKey, sites) -> {
+            if (full(snippets)) return;
+            boolean onChangedLine = sites.stream()
+                    .anyMatch(cs -> changedLines.contains(cs.line()));
+            if (!onChangedLine) return;
+            if (seen.contains(calleeKey)) return;
+            seen.add(calleeKey);
+
+            // Find the method declaration in source or target index
+            JavaIndexService.MethodInfo decl =
+                    sourceIndex.methods.getOrDefault(calleeKey,
+                            targetIndex.methods.get(calleeKey));
+            if (decl == null) return;
+
+            Path repoDir = sourceIndex.methods.containsKey(calleeKey) ? sourceRepoDir : targetRepoDir;
+            addMethodDeclarationSnippet(decl, repoDir, snippets);
+        });
+    }
+
+    private void addMethodDeclarationSnippet(
+            JavaIndexService.MethodInfo m, Path repoDir,
+            List<EnrichmentSnippet> snippets
+    ) {
+        if (full(snippets)) return;
+        // Include up to 5 lines starting from startLine to capture annotations + signature
+        int end = Math.min(m.startLine() + 4, m.endLine());
+        List<String> lines = readLines(repoDir, m.filePath(), m.startLine(), end);
+        if (lines.isEmpty()) return;
+        snippets.add(new EnrichmentSnippet(
+                EnrichmentSnippet.SnippetType.METHOD_DECLARATION,
+                m.filePath(), m.startLine(), end, m.name(),
+                lines,
+                "Declaration of method '" + m.name() + "' used in changed lines"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Strategy 2: FIELD_DECLARATION for every field accessed in changed lines
+    // -----------------------------------------------------------------------
+
+    private void strategyFieldDeclarations(
+            List<ChangedLine> all,
+            JavaIndexService.ProjectIndex sourceIndex,
+            JavaIndexService.ProjectIndex targetIndex,
+            Path sourceRepoDir, Path targetRepoDir,
+            List<EnrichmentSnippet> snippets
+    ) {
+        Set<String> seen = new HashSet<>();
+        Set<Integer> changedLines = changedLineNumbers(all);
+
+        // fieldAccesses: resolvedKey -> list of access sites
+        sourceIndex.fieldAccesses.forEach((fieldKey, accesses) -> {
+            if (full(snippets)) return;
+            boolean onChangedLine = accesses.stream()
+                    .anyMatch(fa -> changedLines.contains(fa.line()));
+            if (!onChangedLine) return;
+            if (seen.contains(fieldKey)) return;
+            seen.add(fieldKey);
+
+            JavaIndexService.FieldInfo decl =
+                    sourceIndex.fields.getOrDefault(fieldKey, targetIndex.fields.get(fieldKey));
+            if (decl == null) return;
+
+            Path repoDir = sourceIndex.fields.containsKey(fieldKey) ? sourceRepoDir : targetRepoDir;
+            addFieldDeclarationSnippet(decl, repoDir, snippets);
+        });
+    }
+
+    private void addFieldDeclarationSnippet(
+            JavaIndexService.FieldInfo f, Path repoDir,
+            List<EnrichmentSnippet> snippets
+    ) {
+        if (full(snippets)) return;
+        List<String> lines = readLines(repoDir, f.filePath(), f.declarationLine(), f.declarationLine());
+        if (lines.isEmpty()) return;
+        snippets.add(new EnrichmentSnippet(
+                EnrichmentSnippet.SnippetType.FIELD_DECLARATION,
+                f.filePath(), f.declarationLine(), f.declarationLine(), f.name(),
+                lines,
+                "Declaration of field '" + f.name() + "' (type: " + f.type() + ") used in changed lines"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Strategy 3: VARIABLE_DECLARATION for every local var used in changed lines
+    // -----------------------------------------------------------------------
+
+    private void strategyVariableDeclarations(
+            List<ChangedLine> all,
+            JavaIndexService.ProjectIndex sourceIndex,
+            JavaIndexService.ProjectIndex targetIndex,
+            List<EnrichmentSnippet> snippets
+    ) {
+        Set<Integer> changedLines = changedLineNumbers(all);
+        Set<String> seen = new HashSet<>();
+
+        // nameUsagesBySimpleName: for each name used on a changed line,
+        // check if there is a VariableInfo declaration in the same file
+        sourceIndex.nameUsagesBySimpleName.forEach((name, usages) -> {
+            if (full(snippets)) return;
+            boolean onChangedLine = usages.stream().anyMatch(u -> changedLines.contains(u.line()));
+            if (!onChangedLine) return;
+            if (seen.contains(name)) return;
+
+            // Find variable declaration in source or target
+            List<JavaIndexService.VariableInfo> vars = new ArrayList<>();
+            sourceIndex.variables.forEach((k, v) -> { if (k.endsWith("#" + name)) vars.addAll(v); });
+            if (vars.isEmpty()) {
+                targetIndex.variables.forEach((k, v) -> { if (k.endsWith("#" + name)) vars.addAll(v); });
+            }
+            if (vars.isEmpty()) return;
+            seen.add(name);
+
+            JavaIndexService.VariableInfo vi = vars.get(0);
+            snippets.add(new EnrichmentSnippet(
+                    EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION,
+                    vi.filePath(), vi.declarationLine(), vi.declarationLine(), vi.name(),
+                    List.of(vi.filePath() + ":" + vi.declarationLine() +
+                            "  (type: " + vi.type() + ")"),
+                    "Declaration of local variable '" + vi.name() + "' used in changed lines"
+            ));
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Strategy 4: METHOD_CALLERS when method declaration was changed
     // -----------------------------------------------------------------------
 
     private void strategyChangedMethodDeclaration(
-            ChangeGroup group, List<ChangedLine> added, List<ChangedLine> deleted,
+            ChangeGroup group, List<ChangedLine> added,
             JavaIndexService.ProjectIndex sourceIndex, Path sourceRepoDir,
             List<EnrichmentSnippet> snippets
     ) {
@@ -123,255 +262,120 @@ public class ContextEnricher {
 
         for (JavaIndexService.MethodInfo method : changedMethods) {
             if (full(snippets)) break;
-            List<JavaIndexService.CallSite> callers = indexService.findCallSites(sourceIndex, method.qualifiedKey());
-            if (!callers.isEmpty()) {
-                snippets.add(new EnrichmentSnippet(
-                        EnrichmentSnippet.SnippetType.METHOD_CALLERS,
-                        method.filePath(), method.startLine(), method.endLine(), method.name(),
-                        callers.stream().limit(10)
-                                .map(cs -> cs.filePath() + ":" + cs.line() + "  " + cs.methodName() +
-                                        "(" + String.join(", ", cs.argumentTexts()) + ")")
-                                .toList(),
-                        "All callers of changed method " + method.signature()
-                ));
-            }
-            addMethodBodySnippet(method, sourceRepoDir, EnrichmentSnippet.SnippetType.METHOD_BODY, snippets);
+            List<JavaIndexService.CallSite> callers =
+                    indexService.findCallSites(sourceIndex, method.qualifiedKey());
+            if (callers.isEmpty()) continue;
+            snippets.add(new EnrichmentSnippet(
+                    EnrichmentSnippet.SnippetType.METHOD_CALLERS,
+                    method.filePath(), method.startLine(), method.endLine(), method.name(),
+                    callers.stream().limit(10)
+                            .map(cs -> cs.filePath() + ":" + cs.line() +
+                                    "  " + cs.methodName() +
+                                    "(" + String.join(", ", cs.argumentTexts()) + ")")
+                            .toList(),
+                    "All callers of changed method '" + method.signature() + "'"
+            ));
+            addMethodBodySnippet(method, sourceRepoDir, snippets);
         }
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 2: deleted declaration -> usages
+    // Strategy 5: FIELD_USAGES / VARIABLE_USAGES for deleted declarations
     // -----------------------------------------------------------------------
 
     private void strategyDeletedDeclaration(
             List<ChangedLine> deleted,
-            JavaIndexService.ProjectIndex targetIndex, Path targetRepoDir,
+            JavaIndexService.ProjectIndex targetIndex,
             List<EnrichmentSnippet> snippets
     ) {
+        // Use AST index: check if any field or variable in target was declared
+        // on lines that are being deleted
         for (ChangedLine line : deleted) {
             if (full(snippets)) break;
-            Matcher m = DECLARATION_PATTERN.matcher(line.content().trim());
-            if (!m.find()) continue;
-            String name = m.group(2);
+            int oldLine = line.oldLineNumber();
+            if (oldLine <= 0) continue;
+            String file = line.filePath();
 
-            // Check field usages
-            List<JavaIndexService.FieldAccess> accesses =
-                    indexService.findFieldAccessesByName(targetIndex, name);
-            if (!accesses.isEmpty()) {
-                snippets.add(new EnrichmentSnippet(
-                        EnrichmentSnippet.SnippetType.FIELD_USAGES,
-                        line.filePath(), line.oldLineNumber(), line.oldLineNumber(), name,
-                        accesses.stream().limit(10)
-                                .map(a -> a.filePath() + ":" + a.line()).toList(),
-                        "Field '" + name + "' usages in target branch (it was deleted)"
-                ));
-                continue;
-            }
+            // Check deleted field declarations
+            targetIndex.fieldsByName.values().stream()
+                    .flatMap(Collection::stream)
+                    .filter(f -> f.filePath().equals(file) && f.declarationLine() == oldLine)
+                    .findFirst()
+                    .ifPresent(f -> {
+                        List<JavaIndexService.FieldAccess> accesses =
+                                indexService.findFieldAccessesByName(targetIndex, f.name());
+                        if (!accesses.isEmpty()) {
+                            snippets.add(new EnrichmentSnippet(
+                                    EnrichmentSnippet.SnippetType.FIELD_USAGES,
+                                    f.filePath(), f.declarationLine(), f.declarationLine(), f.name(),
+                                    accesses.stream().limit(10)
+                                            .map(a -> a.filePath() + ":" + a.line()).toList(),
+                                    "Field '" + f.name() + "' is deleted but still accessed in target"
+                            ));
+                        }
+                    });
 
-            // Check name usages
-            List<JavaIndexService.NameUsage> usages =
-                    indexService.findUsagesByName(targetIndex, name);
-            if (!usages.isEmpty()) {
-                snippets.add(new EnrichmentSnippet(
-                        EnrichmentSnippet.SnippetType.VARIABLE_USAGES,
-                        line.filePath(), line.oldLineNumber(), line.oldLineNumber(), name,
-                        usages.stream().limit(10)
-                                .map(u -> u.filePath() + ":" + u.line()).toList(),
-                        "Symbol '" + name + "' usages in target branch (it was deleted)"
-                ));
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Strategy 3: added method calls -> callee signature
-    // -----------------------------------------------------------------------
-
-    private void strategyAddedMethodCalls(
-            List<ChangedLine> added,
-            JavaIndexService.ProjectIndex sourceIndex, Path sourceRepoDir,
-            List<EnrichmentSnippet> snippets
-    ) {
-        Set<String> seen = new HashSet<>();
-        for (ChangedLine line : added) {
-            if (full(snippets)) break;
-            Matcher m = METHOD_CALL_PATTERN.matcher(line.content());
-            while (m.find()) {
-                String name = m.group(1);
-                if (seen.contains(name) || isKeyword(name)) continue;
-                seen.add(name);
-                sourceIndex.methods.values().stream()
-                        .filter(mi -> mi.name().equals(name))
+            // Check deleted variable declarations
+            targetIndex.variables.forEach((key, vars) -> {
+                vars.stream()
+                        .filter(v -> v.filePath().equals(file) && v.declarationLine() == oldLine)
                         .findFirst()
-                        .ifPresent(mi -> addMethodSignatureSnippet(mi, sourceRepoDir, snippets));
-            }
+                        .ifPresent(v -> {
+                            List<JavaIndexService.NameUsage> usages =
+                                    indexService.findUsagesByName(targetIndex, v.name());
+                            if (usages.size() > 1) {
+                                snippets.add(new EnrichmentSnippet(
+                                        EnrichmentSnippet.SnippetType.VARIABLE_USAGES,
+                                        v.filePath(), v.declarationLine(), v.declarationLine(), v.name(),
+                                        usages.stream().limit(10)
+                                                .map(u -> u.filePath() + ":" + u.line()).toList(),
+                                        "Variable '" + v.name() + "' is deleted but still used in target"
+                                ));
+                            }
+                        });
+            });
         }
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 4: changed call arguments -> show callee parameter names
+    // Strategy 6: ARGUMENT_CONTEXT when call arguments changed
     // -----------------------------------------------------------------------
 
-    /**
-     * Detects when the same method call appears in both added and deleted lines
-     * but with different arguments. Adds callee signature with parameter names so
-     * LLM can evaluate whether the new args match the expected types.
-     */
     private void strategyChangedArguments(
             List<ChangedLine> added, List<ChangedLine> deleted,
-            JavaIndexService.ProjectIndex sourceIndex, Path sourceRepoDir,
-            List<EnrichmentSnippet> snippets
-    ) {
-        Set<String> addedCalls  = extractMethodCallNames(added);
-        Set<String> deletedCalls = extractMethodCallNames(deleted);
-        // Intersection = same method called but line changed => args may differ
-        Set<String> changedCalls = new HashSet<>(addedCalls);
-        changedCalls.retainAll(deletedCalls);
-
-        for (String name : changedCalls) {
-            if (full(snippets)) break;
-            sourceIndex.methods.values().stream()
-                    .filter(mi -> mi.name().equals(name))
-                    .findFirst()
-                    .ifPresent(mi -> {
-                        List<String> sigLines = new ArrayList<>();
-                        sigLines.add(mi.signature() + "  // parameters:");
-                        mi.parameters().forEach(p -> sigLines.add("    " + p));
-                        snippets.add(new EnrichmentSnippet(
-                                EnrichmentSnippet.SnippetType.METHOD_SIGNATURE,
-                                mi.filePath(), mi.startLine(), mi.startLine(), mi.name(),
-                                sigLines,
-                                "Arguments changed for call to '" + mi.name() +
-                                        "' – verify new args match param types"
-                        ));
-                    });
-        }
-    }
-
-    private Set<String> extractMethodCallNames(List<ChangedLine> lines) {
-        Set<String> names = new HashSet<>();
-        for (ChangedLine l : lines) {
-            Matcher m = METHOD_CALL_PATTERN.matcher(l.content());
-            while (m.find()) {
-                String name = m.group(1);
-                if (!isKeyword(name)) names.add(name);
-            }
-        }
-        return names;
-    }
-
-    // -----------------------------------------------------------------------
-    // Strategy 5: field accesses in changed lines
-    // -----------------------------------------------------------------------
-
-    /**
-     * For fields referenced in changed lines: show field declaration and all write sites.
-     * Helps LLM understand nullability, mutability, and threading concerns.
-     */
-    private void strategyFieldAccesses(
-            List<ChangedLine> added, List<ChangedLine> deleted,
             JavaIndexService.ProjectIndex sourceIndex,
-            JavaIndexService.ProjectIndex targetIndex,
-            Path sourceRepoDir, Path targetRepoDir,
             List<EnrichmentSnippet> snippets
     ) {
-        Set<String> fieldNames = new HashSet<>();
-        for (ChangedLine line : added) extractFieldNames(line.content(), fieldNames);
-        for (ChangedLine line : deleted) extractFieldNames(line.content(), fieldNames);
+        // Find call sites present in both added and deleted (same method name, different args)
+        Set<Integer> addedLines  = lineNumberSet(added);
+        Set<Integer> deletedLines = lineNumberSet(deleted);
 
-        for (String fieldName : fieldNames) {
-            if (full(snippets)) break;
+        Set<String> shownKeys = new HashSet<>();
+        sourceIndex.callSites.forEach((calleeKey, sites) -> {
+            if (full(snippets)) return;
+            boolean inAdded   = sites.stream().anyMatch(cs -> addedLines.contains(cs.line()));
+            boolean inDeleted = sites.stream().anyMatch(cs -> deletedLines.contains(cs.line()));
+            if (!inAdded || !inDeleted) return;
+            if (shownKeys.contains(calleeKey)) return;
+            shownKeys.add(calleeKey);
 
-            // Declaration in source
-            List<JavaIndexService.FieldInfo> infos =
-                    indexService.findFieldsByName(sourceIndex, fieldName);
-            if (infos.isEmpty()) infos = indexService.findFieldsByName(targetIndex, fieldName);
-            if (infos.isEmpty()) continue;
+            JavaIndexService.MethodInfo decl = sourceIndex.methods.get(calleeKey);
+            if (decl == null) return;
 
-            JavaIndexService.FieldInfo fi = infos.get(0);
-            List<String> declLines = readFileLines(
-                    fi.filePath().startsWith("src") ? sourceRepoDir : sourceRepoDir,
-                    fi.filePath(), fi.declarationLine(), fi.declarationLine());
-
-            // Write sites (FieldAccess)
-            List<JavaIndexService.FieldAccess> accesses =
-                    indexService.findFieldAccessesByName(sourceIndex, fieldName);
-            List<String> content = new ArrayList<>(declLines);
-            if (!accesses.isEmpty()) {
-                content.add("// usages:");
-                accesses.stream().limit(8)
-                        .forEach(a -> content.add("    " + a.filePath() + ":" + a.line()));
-            }
-
+            List<String> content = new ArrayList<>();
+            content.add(decl.signature() + "  // parameters:");
+            decl.parameters().forEach(p -> content.add("    " + p));
             snippets.add(new EnrichmentSnippet(
-                    EnrichmentSnippet.SnippetType.FIELD_USAGES,
-                    fi.filePath(), fi.declarationLine(), fi.declarationLine(), fieldName,
+                    EnrichmentSnippet.SnippetType.ARGUMENT_CONTEXT,
+                    decl.filePath(), decl.startLine(), decl.startLine(), decl.name(),
                     content,
-                    "Field '" + fieldName + "' declaration (type: " + fi.type() + ") and usages"
+                    "Arguments changed for '" + decl.name() + "' – verify new args match param types"
             ));
-        }
-    }
-
-    private void extractFieldNames(String content, Set<String> result) {
-        Matcher m = FIELD_ACCESS_PATTERN.matcher(content);
-        while (m.find()) {
-            String name = m.group(1);
-            if (!isKeyword(name) && name.length() > 1) result.add(name);
-        }
+        });
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 6: local variable changes -> usages in enclosing method
-    // -----------------------------------------------------------------------
-
-    /**
-     * When a variable declaration or assignment is changed, show all other
-     * places it is used within the same file, so LLM can assess downstream impact.
-     */
-    private void strategyVariableUsages(
-            List<ChangedLine> added, List<ChangedLine> deleted,
-            JavaIndexService.ProjectIndex sourceIndex,
-            JavaIndexService.ProjectIndex targetIndex,
-            List<EnrichmentSnippet> snippets
-    ) {
-        Set<String> varNames = new HashSet<>();
-        for (ChangedLine line : added) extractVarNames(line.content(), varNames);
-        for (ChangedLine line : deleted) extractVarNames(line.content(), varNames);
-
-        for (String varName : varNames) {
-            if (full(snippets)) break;
-            // Find usages by simple name in source
-            List<JavaIndexService.NameUsage> usages =
-                    indexService.findUsagesByName(sourceIndex, varName);
-            if (usages.size() <= 1) {
-                // Also try target
-                usages = indexService.findUsagesByName(targetIndex, varName);
-            }
-            if (usages.size() <= 1) continue; // nothing interesting if only used once
-
-            List<String> lines = usages.stream().limit(10)
-                    .map(u -> u.filePath() + ":" + u.line()).toList();
-            snippets.add(new EnrichmentSnippet(
-                    EnrichmentSnippet.SnippetType.VARIABLE_USAGES,
-                    usages.get(0).filePath(),
-                    usages.stream().mapToInt(JavaIndexService.NameUsage::line).min().orElse(0),
-                    usages.stream().mapToInt(JavaIndexService.NameUsage::line).max().orElse(0),
-                    varName, lines,
-                    "All usages of changed variable '" + varName + "'"
-            ));
-        }
-    }
-
-    private void extractVarNames(String content, Set<String> result) {
-        Matcher m = VAR_DECL_PATTERN.matcher(content.trim());
-        if (m.find()) {
-            String name = m.group(1);
-            if (!isKeyword(name)) result.add(name);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Strategy 7: containing method body (baseline context)
+    // Strategy 7: METHOD_BODY – containing method as baseline context
     // -----------------------------------------------------------------------
 
     private void strategyContainingMethod(
@@ -385,43 +389,33 @@ public class ContextEnricher {
                 .filter(n -> n > 0).min().orElse(0);
         if (firstLine == 0) return;
         indexService.findContainingMethod(sourceIndex, group.primaryFile(), firstLine)
-                .ifPresent(m -> addMethodBodySnippet(m, sourceRepoDir,
-                        EnrichmentSnippet.SnippetType.METHOD_BODY, snippets));
+                .ifPresent(m -> addMethodBodySnippet(m, sourceRepoDir, snippets));
     }
 
     // -----------------------------------------------------------------------
     // Snippet builders
     // -----------------------------------------------------------------------
 
-    private void addMethodSignatureSnippet(
-            JavaIndexService.MethodInfo method, Path repoDir,
+    private void addMethodBodySnippet(
+            JavaIndexService.MethodInfo m, Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
-        List<String> lines = readFileLines(repoDir, method.filePath(),
-                method.startLine(), Math.min(method.startLine() + 3, method.endLine()));
-        if (lines.isEmpty()) return;
-        snippets.add(new EnrichmentSnippet(
-                EnrichmentSnippet.SnippetType.METHOD_SIGNATURE,
-                method.filePath(), method.startLine(), method.startLine(), method.name(),
-                lines, "Signature of " + method.signature()
-        ));
-    }
-
-    private void addMethodBodySnippet(
-            JavaIndexService.MethodInfo method, Path repoDir,
-            EnrichmentSnippet.SnippetType type, List<EnrichmentSnippet> snippets
-    ) {
         if (full(snippets)) return;
-        int end = Math.min(method.endLine(), method.startLine() + maxSnippetLines - 1);
-        List<String> lines = readFileLines(repoDir, method.filePath(), method.startLine(), end);
+        int end = Math.min(m.endLine(), m.startLine() + maxSnippetLines - 1);
+        List<String> lines = readLines(repoDir, m.filePath(), m.startLine(), end);
         if (lines.isEmpty()) return;
         snippets.add(new EnrichmentSnippet(
-                type, method.filePath(), method.startLine(), end, method.name(),
-                lines, "Body of method " + method.signature()
+                EnrichmentSnippet.SnippetType.METHOD_BODY,
+                m.filePath(), m.startLine(), end, m.name(),
+                lines, "Body of method '" + m.signature() + "'"
         ));
     }
 
-    private List<String> readFileLines(Path repoDir, String relPath, int from, int to) {
+    // -----------------------------------------------------------------------
+    // File reading
+    // -----------------------------------------------------------------------
+
+    private List<String> readLines(Path repoDir, String relPath, int from, int to) {
         Path file = repoDir.resolve(relPath);
         if (!Files.exists(file)) return List.of();
         try {
@@ -446,11 +440,30 @@ public class ContextEnricher {
         return g.changedLines().stream().filter(l -> l.type() == type).toList();
     }
 
-    private int minLine(List<ChangedLine> lines, java.util.function.ToIntFunction<ChangedLine> fn) {
+    private Set<Integer> changedLineNumbers(List<ChangedLine> lines) {
+        Set<Integer> set = new HashSet<>();
+        for (ChangedLine l : lines) {
+            if (l.type() == ChangedLine.LineType.CONTEXT) continue;
+            if (l.lineNumber()    > 0) set.add(l.lineNumber());
+            if (l.oldLineNumber() > 0) set.add(l.oldLineNumber());
+        }
+        return set;
+    }
+
+    private Set<Integer> lineNumberSet(List<ChangedLine> lines) {
+        Set<Integer> set = new HashSet<>();
+        for (ChangedLine l : lines) {
+            if (l.lineNumber()    > 0) set.add(l.lineNumber());
+            if (l.oldLineNumber() > 0) set.add(l.oldLineNumber());
+        }
+        return set;
+    }
+
+    private int minLine(List<ChangedLine> lines, ToIntFunction<ChangedLine> fn) {
         return lines.stream().mapToInt(fn).filter(n -> n > 0).min().orElse(0);
     }
 
-    private int maxLine(List<ChangedLine> lines, java.util.function.ToIntFunction<ChangedLine> fn) {
+    private int maxLine(List<ChangedLine> lines, ToIntFunction<ChangedLine> fn) {
         return lines.stream().mapToInt(fn).filter(n -> n > 0).max().orElse(0);
     }
 
@@ -461,12 +474,4 @@ public class ContextEnricher {
     private void trim(List<EnrichmentSnippet> snippets) {
         while (snippets.size() > maxSnippetsPerGroup) snippets.remove(snippets.size() - 1);
     }
-
-    private static final Set<String> JAVA_KEYWORDS = Set.of(
-            "if", "for", "while", "switch", "catch", "return", "throw", "new",
-            "assert", "synchronized", "instanceof", "super", "this", "null",
-            "true", "false", "var"
-    );
-
-    private boolean isKeyword(String name) { return JAVA_KEYWORDS.contains(name); }
 }

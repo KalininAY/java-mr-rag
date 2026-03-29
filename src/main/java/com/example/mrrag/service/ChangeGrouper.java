@@ -8,8 +8,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Groups changed lines into cohesive ChangeGroups.
@@ -18,10 +16,17 @@ import java.util.regex.Pattern;
  * <ol>
  *   <li><b>Proximity grouping</b> – within each file, hunks closer than
  *       {@code PROXIMITY_THRESHOLD} lines are merged.</li>
- *   <li><b>Semantic grouping</b> – groups from different files are merged when
- *       they share a symbol name (method call, field, variable) that appears in
- *       both. This catches the classic pattern: method added in ClassA, called
- *       in ClassB – even though the changes are "far apart" in the diff.</li>
+ *   <li><b>AST-based semantic grouping</b> – after the index is built,
+ *       groups from different files are merged when they are linked by
+ *       actual symbol references in the AST:
+ *       <ul>
+ *         <li>Group A declares a method M → Group B calls M ({@code callSites} index)</li>
+ *         <li>Group A declares a field F  → Group B accesses F ({@code fieldAccesses} index)</li>
+ *         <li>Group A adds/removes a method call → Group A's callee is declared in Group B</li>
+ *       </ul>
+ *       This is <em>not</em> textual keyword matching – it uses the resolved qualified
+ *       keys from JavaParser SymbolSolver.
+ *   </li>
  * </ol>
  */
 @Slf4j
@@ -31,10 +36,6 @@ public class ChangeGrouper {
 
     private static final int PROXIMITY_THRESHOLD = 20;
 
-    // Matches identifiers followed by '(' (method calls) or used as plain names
-    private static final Pattern SYMBOL_PATTERN =
-            Pattern.compile("\\b([a-zA-Z_][a-zA-Z0-9_]{2,})\\b");
-
     private final AtomicInteger groupCounter = new AtomicInteger(0);
 
     // -----------------------------------------------------------------------
@@ -42,27 +43,30 @@ public class ChangeGrouper {
     // -----------------------------------------------------------------------
 
     /**
-     * Group changed lines into ChangeGroups, including cross-file semantic links.
-     *
-     * @param lines all changed lines (ADD, DELETE, CONTEXT) from the full MR diff
-     * @return list of ChangeGroups with no enrichments yet
+     * Phase-1 only grouping (without index). Used when index is not yet available.
      */
     public List<ChangeGroup> group(List<ChangedLine> lines) {
-        if (lines.isEmpty()) return List.of();
+        return semanticMerge(proximityGroup(lines), null);
+    }
 
-        // Phase 1: proximity grouping per file
-        List<ChangeGroup> proximityGroups = proximityGroup(lines);
-        log.debug("Phase 1 (proximity): {} groups", proximityGroups.size());
-
-        // Phase 2: merge groups that share symbols across files
-        List<ChangeGroup> merged = semanticMerge(proximityGroups);
-        log.debug("Phase 2 (semantic merge): {} groups", merged.size());
-
-        return merged;
+    /**
+     * Full grouping: proximity + AST-based cross-file merge.
+     *
+     * @param lines        all changed lines from the diff
+     * @param sourceIndex  resolved AST index of the source branch
+     * @return grouped ChangeGroups
+     */
+    public List<ChangeGroup> group(List<ChangedLine> lines,
+                                   JavaIndexService.ProjectIndex sourceIndex) {
+        List<ChangeGroup> phase1 = proximityGroup(lines);
+        log.debug("Phase 1 (proximity): {} groups", phase1.size());
+        List<ChangeGroup> phase2 = semanticMerge(phase1, sourceIndex);
+        log.debug("Phase 2 (AST semantic merge): {} groups", phase2.size());
+        return phase2;
     }
 
     // -----------------------------------------------------------------------
-    // Phase 1: proximity grouping (within a single file)
+    // Phase 1: proximity grouping within each file
     // -----------------------------------------------------------------------
 
     private List<ChangeGroup> proximityGroup(List<ChangedLine> lines) {
@@ -93,7 +97,6 @@ public class ChangeGrouper {
     private List<List<ChangedLine>> splitIntoHunks(List<ChangedLine> lines) {
         List<ChangedLine> current = new ArrayList<>();
         List<List<ChangedLine>> result = new ArrayList<>();
-
         for (ChangedLine line : lines) {
             if (line.type() != ChangedLine.LineType.CONTEXT) {
                 current.add(line);
@@ -147,44 +150,48 @@ public class ChangeGrouper {
     }
 
     // -----------------------------------------------------------------------
-    // Phase 2: semantic merge across files
+    // Phase 2: AST-based cross-file semantic merge
     // -----------------------------------------------------------------------
 
     /**
-     * Build a symbol fingerprint for each group (set of identifiers in ADD/DELETE lines),
-     * then use Union-Find to cluster groups that share at least one non-trivial symbol.
+     * Build a set of <em>resolved qualified keys</em> for each group:
+     * <ul>
+     *   <li>Keys of methods <b>declared</b> in the group's changed lines</li>
+     *   <li>Keys of methods <b>called</b> from the group's changed lines
+     *       (looked up via {@code callSites} index – only resolved ones)</li>
+     *   <li>Keys of fields <b>declared</b> in changed lines</li>
+     *   <li>Keys of fields <b>accessed</b> from changed lines</li>
+     * </ul>
+     * Two groups that share at least one key are merged via Union-Find.
      */
-    private List<ChangeGroup> semanticMerge(List<ChangeGroup> groups) {
+    private List<ChangeGroup> semanticMerge(List<ChangeGroup> groups,
+                                             JavaIndexService.ProjectIndex index) {
         if (groups.size() <= 1) return groups;
 
         int n = groups.size();
-        // Build symbol sets per group
-        List<Set<String>> symbolSets = new ArrayList<>();
+        List<Set<String>> keys = new ArrayList<>();
         for (ChangeGroup g : groups) {
-            symbolSets.add(extractSymbols(g));
+            keys.add(buildAstKeys(g, index));
         }
 
-        // Union-Find
         int[] parent = new int[n];
         for (int i = 0; i < n; i++) parent[i] = i;
 
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
-                // Only merge cross-file groups (same-file proximity already handled)
+                // Only merge cross-file groups
                 if (groups.get(i).primaryFile().equals(groups.get(j).primaryFile())) continue;
-                if (sharesSymbol(symbolSets.get(i), symbolSets.get(j))) {
+                if (!Collections.disjoint(keys.get(i), keys.get(j))) {
                     union(parent, i, j);
                 }
             }
         }
 
-        // Collect groups by root
         Map<Integer, List<ChangeGroup>> clusters = new LinkedHashMap<>();
         for (int i = 0; i < n; i++) {
             clusters.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(groups.get(i));
         }
 
-        // Merge clusters into single ChangeGroups
         List<ChangeGroup> result = new ArrayList<>();
         for (List<ChangeGroup> cluster : clusters.values()) {
             if (cluster.size() == 1) {
@@ -196,32 +203,67 @@ public class ChangeGrouper {
         return result;
     }
 
-    /** Extract meaningful symbols (length >= 3, non-keyword) from ADD/DELETE lines. */
-    private Set<String> extractSymbols(ChangeGroup group) {
-        Set<String> symbols = new HashSet<>();
-        for (ChangedLine line : group.changedLines()) {
-            if (line.type() == ChangedLine.LineType.CONTEXT) continue;
-            Matcher m = SYMBOL_PATTERN.matcher(line.content());
-            while (m.find()) {
-                String sym = m.group(1);
-                if (!STOP_WORDS.contains(sym)) {
-                    symbols.add(sym);
-                }
-            }
-        }
-        return symbols;
-    }
+    /**
+     * Collect resolved AST keys that represent symbols declared or used
+     * in the ADD/DELETE lines of a group.
+     *
+     * Without an index we fall back to an empty set (no cross-file merging).
+     */
+    private Set<String> buildAstKeys(ChangeGroup group, JavaIndexService.ProjectIndex index) {
+        Set<String> result = new HashSet<>();
+        if (index == null) return result;
 
-    private boolean sharesSymbol(Set<String> a, Set<String> b) {
-        for (String s : a) {
-            if (b.contains(s)) return true;
+        String file = group.primaryFile();
+        Set<Integer> changedLineNumbers = new HashSet<>();
+        for (ChangedLine l : group.changedLines()) {
+            if (l.type() == ChangedLine.LineType.CONTEXT) continue;
+            if (l.lineNumber() > 0)    changedLineNumbers.add(l.lineNumber());
+            if (l.oldLineNumber() > 0) changedLineNumbers.add(l.oldLineNumber());
         }
-        return false;
+        if (changedLineNumbers.isEmpty()) return result;
+
+        int minLine = changedLineNumbers.stream().mapToInt(Integer::intValue).min().orElse(0);
+        int maxLine = changedLineNumbers.stream().mapToInt(Integer::intValue).max().orElse(0);
+
+        // --- Methods declared in changed lines ---
+        index.methodsByFile.getOrDefault(file, List.of()).stream()
+                .filter(m -> m.startLine() >= minLine && m.startLine() <= maxLine)
+                .map(JavaIndexService.MethodInfo::qualifiedKey)
+                .forEach(result::add);
+
+        // --- Methods called from changed lines (resolved call sites) ---
+        // For each call site in this file that falls on a changed line,
+        // add the resolved callee key so the group containing the declaration is linked.
+        index.callSites.values().stream()
+                .flatMap(Collection::stream)
+                .filter(cs -> cs.filePath().equals(file)
+                        && cs.resolvedKey() != null
+                        && changedLineNumbers.contains(cs.line()))
+                .map(JavaIndexService.CallSite::resolvedKey)
+                .forEach(result::add);
+
+        // --- Fields declared in changed lines ---
+        index.fieldsByName.values().stream()
+                .flatMap(Collection::stream)
+                .filter(f -> f.filePath().equals(file)
+                        && changedLineNumbers.contains(f.declarationLine()))
+                .map(JavaIndexService.FieldInfo::resolvedKey)
+                .forEach(result::add);
+
+        // --- Fields accessed from changed lines ---
+        index.fieldAccesses.values().stream()
+                .flatMap(Collection::stream)
+                .filter(fa -> fa.filePath().equals(file)
+                        && fa.resolvedKey() != null
+                        && changedLineNumbers.contains(fa.line()))
+                .map(JavaIndexService.FieldAccess::resolvedKey)
+                .forEach(result::add);
+
+        return result;
     }
 
     private ChangeGroup mergeCluster(List<ChangeGroup> cluster) {
         String id = "G" + groupCounter.incrementAndGet();
-        // Primary file = file with most changed lines
         String primary = cluster.stream()
                 .max(Comparator.comparingLong(g ->
                         g.changedLines().stream()
@@ -231,21 +273,18 @@ public class ChangeGrouper {
                 .orElse(cluster.get(0).primaryFile());
         List<ChangedLine> allLines = new ArrayList<>();
         for (ChangeGroup g : cluster) allLines.addAll(g.changedLines());
-        log.debug("Semantic merge: {} groups -> {} (files: {})",
+        log.debug("AST semantic merge: {} groups -> {} (files: {})",
                 cluster.size(), id,
                 cluster.stream().map(ChangeGroup::primaryFile).toList());
         return new ChangeGroup(id, primary, allLines, new ArrayList<>());
     }
 
     // -----------------------------------------------------------------------
-    // Union-Find helpers
+    // Union-Find
     // -----------------------------------------------------------------------
 
     private int find(int[] parent, int i) {
-        while (parent[i] != i) {
-            parent[i] = parent[parent[i]];
-            i = parent[i];
-        }
+        while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; }
         return i;
     }
 
@@ -277,19 +316,4 @@ public class ChangeGrouper {
         }
         return 0;
     }
-
-    // -----------------------------------------------------------------------
-    // Stop words – common Java tokens that are not meaningful symbols
-    // -----------------------------------------------------------------------
-
-    private static final Set<String> STOP_WORDS = Set.of(
-            "public", "private", "protected", "static", "final", "abstract",
-            "void", "int", "long", "double", "float", "boolean", "byte", "short", "char",
-            "class", "interface", "enum", "record", "extends", "implements", "throws",
-            "return", "new", "this", "super", "null", "true", "false",
-            "if", "else", "for", "while", "do", "switch", "case", "break", "continue",
-            "try", "catch", "finally", "throw", "import", "package",
-            "String", "Object", "List", "Map", "Set", "Optional", "var",
-            "Override", "SuppressWarnings", "Deprecated"
-    );
 }
