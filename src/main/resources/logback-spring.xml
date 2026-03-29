@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+  <!-- Console appender (default Spring Boot pattern) -->
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %5p ${PID:- } --- [%15.15t] %-40.40logger{39} : %m%n</pattern>
+    </encoder>
+  </appender>
+
+  <!--
+    InMemoryLogAppender is instantiated by Spring as a bean, but Logback
+    needs a separate instance for its own appender chain. We use the
+    Spring Boot delegating trick: declare a ref appender that forwards to
+    the Spring bean via a custom appender class.
+
+    Simpler approach: just instantiate it directly here. Spring will also
+    create its own @Component instance, but the one below is what actually
+    receives log events. We expose it via a static accessor.
+  -->
+  <appender name="MEMORY" class="com.example.mrrag.logging.InMemoryLogAppender">
+    <!-- no configuration needed -->
+  </appender>
+
+  <root level="DEBUG">
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="MEMORY"/>
+  </root>
+
+  <!-- Reduce noise from verbose libraries -->
+  <logger name="org.eclipse.jgit"        level="WARN"/>
+  <logger name="org.springframework"     level="INFO"/>
+  <logger name="com.github.javaparser"   level="WARN"/>
+  <logger name="org.gitlab4j"            level="INFO"/>
+
+</configuration>
