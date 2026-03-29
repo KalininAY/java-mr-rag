@@ -20,7 +20,9 @@ import java.util.function.ToIntFunction;
  * <p>Enrichment strategies (in priority order):
  * <ol>
  *   <li><b>METHOD_DECLARATION</b>  – any method <em>used</em> in changed lines gets its
- *       declaration lines (signature + parameter list + javadoc if present)</li>
+ *       declaration lines: from {@code startLine} up to and including the line
+ *       containing the opening brace {@code {}, so the full signature is always
+ *       captured regardless of annotation count or multi-line parameter lists.</li>
  *   <li><b>FIELD_DECLARATION</b>   – any field accessed in changed lines gets its
  *       declaration line</li>
  *   <li><b>VARIABLE_DECLARATION</b>– any local variable used in changed lines gets its
@@ -105,10 +107,6 @@ public class ContextEnricher {
     // Strategy 1: METHOD_DECLARATION for every called method in changed lines
     // -----------------------------------------------------------------------
 
-    /**
-     * For every resolved call site on a changed line, emit a METHOD_DECLARATION snippet
-     * pointing at the callee's declaration (file + line range of signature).
-     */
     private void strategyMethodDeclarations(
             List<ChangedLine> all,
             JavaIndexService.ProjectIndex sourceIndex,
@@ -119,19 +117,15 @@ public class ContextEnricher {
         Set<String> seen = new HashSet<>();
         Set<Integer> changedLines = changedLineNumbers(all);
 
-        // Walk call sites in source index; emit declaration when call is on a changed line
         sourceIndex.callSites.forEach((calleeKey, sites) -> {
             if (full(snippets)) return;
-            boolean onChangedLine = sites.stream()
-                    .anyMatch(cs -> changedLines.contains(cs.line()));
+            boolean onChangedLine = sites.stream().anyMatch(cs -> changedLines.contains(cs.line()));
             if (!onChangedLine) return;
             if (seen.contains(calleeKey)) return;
             seen.add(calleeKey);
 
-            // Find the method declaration in source or target index
             JavaIndexService.MethodInfo decl =
-                    sourceIndex.methods.getOrDefault(calleeKey,
-                            targetIndex.methods.get(calleeKey));
+                    sourceIndex.methods.getOrDefault(calleeKey, targetIndex.methods.get(calleeKey));
             if (decl == null) return;
 
             Path repoDir = sourceIndex.methods.containsKey(calleeKey) ? sourceRepoDir : targetRepoDir;
@@ -139,19 +133,44 @@ public class ContextEnricher {
         });
     }
 
+    /**
+     * Reads the method declaration from {@code startLine} up to and including
+     * the line that contains the opening brace {@code {}.
+     * This correctly handles any number of annotations and multi-line parameter lists
+     * without relying on a fixed line count.
+     */
     private void addMethodDeclarationSnippet(
             JavaIndexService.MethodInfo m, Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
         if (full(snippets)) return;
-        // Include up to 5 lines starting from startLine to capture annotations + signature
-        int end = Math.min(m.startLine() + 4, m.endLine());
-        List<String> lines = readLines(repoDir, m.filePath(), m.startLine(), end);
-        if (lines.isEmpty()) return;
+        Path file = repoDir.resolve(m.filePath());
+        if (!Files.exists(file)) return;
+
+        List<String> allLines;
+        try {
+            allLines = Files.readAllLines(file);
+        } catch (IOException e) {
+            log.warn("Cannot read {}: {}", file, e.getMessage());
+            return;
+        }
+
+        // Collect lines from startLine until we hit the opening brace of the method body.
+        // startLine is 1-based; method body starts at the line containing '{'.
+        List<String> declLines = new ArrayList<>();
+        int signatureEnd = m.startLine(); // will be updated
+        for (int i = m.startLine() - 1; i < Math.min(allLines.size(), m.endLine()); i++) {
+            String line = allLines.get(i);
+            declLines.add(line.length() > 200 ? line.substring(0, 200) + "..." : line);
+            signatureEnd = i + 1; // 1-based
+            if (line.contains("{")) break;
+        }
+
+        if (declLines.isEmpty()) return;
         snippets.add(new EnrichmentSnippet(
                 EnrichmentSnippet.SnippetType.METHOD_DECLARATION,
-                m.filePath(), m.startLine(), end, m.name(),
-                lines,
+                m.filePath(), m.startLine(), signatureEnd, m.name(),
+                declLines,
                 "Declaration of method '" + m.name() + "' used in changed lines"
         ));
     }
@@ -170,11 +189,9 @@ public class ContextEnricher {
         Set<String> seen = new HashSet<>();
         Set<Integer> changedLines = changedLineNumbers(all);
 
-        // fieldAccesses: resolvedKey -> list of access sites
         sourceIndex.fieldAccesses.forEach((fieldKey, accesses) -> {
             if (full(snippets)) return;
-            boolean onChangedLine = accesses.stream()
-                    .anyMatch(fa -> changedLines.contains(fa.line()));
+            boolean onChangedLine = accesses.stream().anyMatch(fa -> changedLines.contains(fa.line()));
             if (!onChangedLine) return;
             if (seen.contains(fieldKey)) return;
             seen.add(fieldKey);
@@ -216,15 +233,12 @@ public class ContextEnricher {
         Set<Integer> changedLines = changedLineNumbers(all);
         Set<String> seen = new HashSet<>();
 
-        // nameUsagesBySimpleName: for each name used on a changed line,
-        // check if there is a VariableInfo declaration in the same file
         sourceIndex.nameUsagesBySimpleName.forEach((name, usages) -> {
             if (full(snippets)) return;
             boolean onChangedLine = usages.stream().anyMatch(u -> changedLines.contains(u.line()));
             if (!onChangedLine) return;
             if (seen.contains(name)) return;
 
-            // Find variable declaration in source or target
             List<JavaIndexService.VariableInfo> vars = new ArrayList<>();
             sourceIndex.variables.forEach((k, v) -> { if (k.endsWith("#" + name)) vars.addAll(v); });
             if (vars.isEmpty()) {
@@ -237,8 +251,7 @@ public class ContextEnricher {
             snippets.add(new EnrichmentSnippet(
                     EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION,
                     vi.filePath(), vi.declarationLine(), vi.declarationLine(), vi.name(),
-                    List.of(vi.filePath() + ":" + vi.declarationLine() +
-                            "  (type: " + vi.type() + ")"),
+                    List.of(vi.filePath() + ":" + vi.declarationLine() + "  (type: " + vi.type() + ")"),
                     "Declaration of local variable '" + vi.name() + "' used in changed lines"
             ));
         });
@@ -288,15 +301,12 @@ public class ContextEnricher {
             JavaIndexService.ProjectIndex targetIndex,
             List<EnrichmentSnippet> snippets
     ) {
-        // Use AST index: check if any field or variable in target was declared
-        // on lines that are being deleted
         for (ChangedLine line : deleted) {
             if (full(snippets)) break;
             int oldLine = line.oldLineNumber();
             if (oldLine <= 0) continue;
             String file = line.filePath();
 
-            // Check deleted field declarations
             targetIndex.fieldsByName.values().stream()
                     .flatMap(Collection::stream)
                     .filter(f -> f.filePath().equals(file) && f.declarationLine() == oldLine)
@@ -315,25 +325,24 @@ public class ContextEnricher {
                         }
                     });
 
-            // Check deleted variable declarations
-            targetIndex.variables.forEach((key, vars) -> {
-                vars.stream()
-                        .filter(v -> v.filePath().equals(file) && v.declarationLine() == oldLine)
-                        .findFirst()
-                        .ifPresent(v -> {
-                            List<JavaIndexService.NameUsage> usages =
-                                    indexService.findUsagesByName(targetIndex, v.name());
-                            if (usages.size() > 1) {
-                                snippets.add(new EnrichmentSnippet(
-                                        EnrichmentSnippet.SnippetType.VARIABLE_USAGES,
-                                        v.filePath(), v.declarationLine(), v.declarationLine(), v.name(),
-                                        usages.stream().limit(10)
-                                                .map(u -> u.filePath() + ":" + u.line()).toList(),
-                                        "Variable '" + v.name() + "' is deleted but still used in target"
-                                ));
-                            }
-                        });
-            });
+            targetIndex.variables.forEach((key, vars) ->
+                    vars.stream()
+                            .filter(v -> v.filePath().equals(file) && v.declarationLine() == oldLine)
+                            .findFirst()
+                            .ifPresent(v -> {
+                                List<JavaIndexService.NameUsage> usages =
+                                        indexService.findUsagesByName(targetIndex, v.name());
+                                if (usages.size() > 1) {
+                                    snippets.add(new EnrichmentSnippet(
+                                            EnrichmentSnippet.SnippetType.VARIABLE_USAGES,
+                                            v.filePath(), v.declarationLine(), v.declarationLine(), v.name(),
+                                            usages.stream().limit(10)
+                                                    .map(u -> u.filePath() + ":" + u.line()).toList(),
+                                            "Variable '" + v.name() + "' is deleted but still used in target"
+                                    ));
+                                }
+                            })
+            );
         }
     }
 
@@ -346,8 +355,7 @@ public class ContextEnricher {
             JavaIndexService.ProjectIndex sourceIndex,
             List<EnrichmentSnippet> snippets
     ) {
-        // Find call sites present in both added and deleted (same method name, different args)
-        Set<Integer> addedLines  = lineNumberSet(added);
+        Set<Integer> addedLines   = lineNumberSet(added);
         Set<Integer> deletedLines = lineNumberSet(deleted);
 
         Set<String> shownKeys = new HashSet<>();
