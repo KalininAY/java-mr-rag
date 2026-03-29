@@ -14,18 +14,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>Two-phase grouping:
  * <ol>
- *   <li><b>Proximity grouping</b> – within each file, hunks closer than
- *       {@code PROXIMITY_THRESHOLD} lines are merged.</li>
- *   <li><b>AST-based semantic grouping</b> – after the index is built,
- *       groups from different files are merged when they are linked by
- *       actual symbol references in the AST:
+ *   <li><b>Code-block grouping (intra-file)</b> – within each file, changed lines that
+ *       fall inside the same method or lambda body are grouped together. Changed lines
+ *       outside any method body (field declarations, class-level annotations, etc.) each
+ *       form their own single-line group. This uses the AST index rather than arbitrary
+ *       line-distance heuristics.</li>
+ *   <li><b>Cross-file AST merge</b> – groups from different files are merged when they
+ *       are linked by actual resolved symbol references:
  *       <ul>
- *         <li>Group A declares a method M → Group B calls M ({@code callSites} index)</li>
- *         <li>Group A declares a field F  → Group B accesses F ({@code fieldAccesses} index)</li>
- *         <li>Group A adds/removes a method call → Group A's callee is declared in Group B</li>
+ *         <li>Group A declares method M → Group B calls M</li>
+ *         <li>Group A declares field F  → Group B accesses F</li>
  *       </ul>
- *       This is <em>not</em> textual keyword matching – it uses the resolved qualified
- *       keys from JavaParser SymbolSolver.
+ *       Uses resolved qualified keys from JavaParser SymbolSolver via Union-Find.
  *   </li>
  * </ol>
  */
@@ -34,8 +34,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 @RequiredArgsConstructor
 public class ChangeGrouper {
 
-    private static final int PROXIMITY_THRESHOLD = 20;
-
     private final AtomicInteger groupCounter = new AtomicInteger(0);
 
     // -----------------------------------------------------------------------
@@ -43,147 +41,125 @@ public class ChangeGrouper {
     // -----------------------------------------------------------------------
 
     /**
-     * Phase-1 only grouping (without index). Used when index is not yet available.
+     * Grouping without an AST index (fallback: each file's changes = one group).
      */
     public List<ChangeGroup> group(List<ChangedLine> lines) {
-        return semanticMerge(proximityGroup(lines), null);
+        return group(lines, null);
     }
 
     /**
-     * Full grouping: proximity + AST-based cross-file merge.
+     * Full grouping: code-block (intra-file) + cross-file AST merge.
      *
-     * @param lines        all changed lines from the diff
-     * @param sourceIndex  resolved AST index of the source branch
-     * @return grouped ChangeGroups
+     * @param lines       all changed lines from the diff
+     * @param index       resolved AST index of the source branch (may be null)
+     * @return cohesive ChangeGroups
      */
     public List<ChangeGroup> group(List<ChangedLine> lines,
-                                   JavaIndexService.ProjectIndex sourceIndex) {
-        List<ChangeGroup> phase1 = proximityGroup(lines);
-        log.debug("Phase 1 (proximity): {} groups", phase1.size());
-        List<ChangeGroup> phase2 = semanticMerge(phase1, sourceIndex);
-        log.debug("Phase 2 (AST semantic merge): {} groups", phase2.size());
+                                   JavaIndexService.ProjectIndex index) {
+        List<ChangeGroup> phase1 = codeBlockGroup(lines, index);
+        log.debug("Phase 1 (code-block): {} groups", phase1.size());
+        List<ChangeGroup> phase2 = semanticMerge(phase1, index);
+        log.debug("Phase 2 (cross-file AST): {} groups", phase2.size());
         return phase2;
     }
 
     // -----------------------------------------------------------------------
-    // Phase 1: proximity grouping within each file
+    // Phase 1: code-block grouping within each file
     // -----------------------------------------------------------------------
 
-    private List<ChangeGroup> proximityGroup(List<ChangedLine> lines) {
+    private List<ChangeGroup> codeBlockGroup(List<ChangedLine> lines,
+                                              JavaIndexService.ProjectIndex index) {
+        // Partition by file first
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
-        for (ChangedLine line : lines) {
-            byFile.computeIfAbsent(line.filePath(), k -> new ArrayList<>()).add(line);
+        for (ChangedLine l : lines) {
+            byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
         }
+
         List<ChangeGroup> result = new ArrayList<>();
         for (var entry : byFile.entrySet()) {
-            result.addAll(groupFileLines(entry.getKey(), entry.getValue()));
+            result.addAll(groupByCodeBlock(entry.getKey(), entry.getValue(), index));
         }
         return result;
     }
 
-    private List<ChangeGroup> groupFileLines(String file, List<ChangedLine> lines) {
-        List<List<ChangedLine>> hunks = splitIntoHunks(lines);
-        List<List<ChangedLine>> merged = mergeNearbyHunks(hunks);
-        List<ChangeGroup> groups = new ArrayList<>();
-        for (List<ChangedLine> hunk : merged) {
-            if (hunk.stream().anyMatch(l -> l.type() != ChangedLine.LineType.CONTEXT)) {
-                String id = "G" + groupCounter.incrementAndGet();
-                groups.add(new ChangeGroup(id, file, hunk, new ArrayList<>()));
+    /**
+     * For a single file: map each changed line to the enclosing method/lambda body
+     * (identified by its start line in the AST index), then group by that key.
+     * Lines that fall outside any method body get their own individual group.
+     */
+    private List<ChangeGroup> groupByCodeBlock(String file,
+                                                List<ChangedLine> lines,
+                                                JavaIndexService.ProjectIndex index) {
+        // bucket key: Integer (method startLine) for in-method lines,
+        //             negative unique sentinel for out-of-method lines
+        Map<Integer, List<ChangedLine>> buckets = new LinkedHashMap<>();
+        int outOfMethodCounter = -1;
+
+        for (ChangedLine line : lines) {
+            int lineNo = effectiveLine(line);
+            Integer bucketKey;
+
+            if (index != null && lineNo > 0) {
+                Optional<JavaIndexService.MethodInfo> container =
+                        indexService(index, file, lineNo);
+                bucketKey = container.map(JavaIndexService.MethodInfo::startLine)
+                        .orElse(outOfMethodCounter--);
+            } else {
+                // No index available: each changed line is its own group
+                bucketKey = outOfMethodCounter--;
             }
+
+            buckets.computeIfAbsent(bucketKey, k -> new ArrayList<>()).add(line);
+        }
+
+        List<ChangeGroup> groups = new ArrayList<>();
+        for (List<ChangedLine> bucket : buckets.values()) {
+            // Skip buckets that contain only CONTEXT lines (shouldn't happen but guard)
+            if (bucket.stream().allMatch(l -> l.type() == ChangedLine.LineType.CONTEXT)) continue;
+            String id = "G" + groupCounter.incrementAndGet();
+            groups.add(new ChangeGroup(id, file, bucket, new ArrayList<>()));
         }
         return groups;
     }
 
-    private List<List<ChangedLine>> splitIntoHunks(List<ChangedLine> lines) {
-        List<ChangedLine> current = new ArrayList<>();
-        List<List<ChangedLine>> result = new ArrayList<>();
-        for (ChangedLine line : lines) {
-            if (line.type() != ChangedLine.LineType.CONTEXT) {
-                current.add(line);
-            } else if (!current.isEmpty()) {
-                current.add(line);
-            }
-        }
-        if (!current.isEmpty()) {
-            result.addAll(splitAtContextGaps(current));
-        }
-        return result;
-    }
-
-    private List<List<ChangedLine>> splitAtContextGaps(List<ChangedLine> hunk) {
-        List<List<ChangedLine>> result = new ArrayList<>();
-        List<ChangedLine> current = new ArrayList<>();
-        int contextRun = 0;
-        for (ChangedLine line : hunk) {
-            if (line.type() == ChangedLine.LineType.CONTEXT) {
-                contextRun++;
-                if (contextRun > PROXIMITY_THRESHOLD && !current.isEmpty()) {
-                    result.add(current);
-                    current = new ArrayList<>();
-                    contextRun = 0;
-                    continue;
-                }
-            } else {
-                contextRun = 0;
-            }
-            current.add(line);
-        }
-        if (!current.isEmpty()) result.add(current);
-        return result;
-    }
-
-    private List<List<ChangedLine>> mergeNearbyHunks(List<List<ChangedLine>> hunks) {
-        if (hunks.size() <= 1) return hunks;
-        List<List<ChangedLine>> merged = new ArrayList<>();
-        List<ChangedLine> current = new ArrayList<>(hunks.get(0));
-        for (int i = 1; i < hunks.size(); i++) {
-            List<ChangedLine> next = hunks.get(i);
-            if (lineGap(current, next) <= PROXIMITY_THRESHOLD) {
-                current.addAll(next);
-            } else {
-                merged.add(current);
-                current = new ArrayList<>(next);
-            }
-        }
-        merged.add(current);
-        return merged;
-    }
-
-    // -----------------------------------------------------------------------
-    // Phase 2: AST-based cross-file semantic merge
-    // -----------------------------------------------------------------------
-
     /**
-     * Build a set of <em>resolved qualified keys</em> for each group:
-     * <ul>
-     *   <li>Keys of methods <b>declared</b> in the group's changed lines</li>
-     *   <li>Keys of methods <b>called</b> from the group's changed lines
-     *       (looked up via {@code callSites} index – only resolved ones)</li>
-     *   <li>Keys of fields <b>declared</b> in changed lines</li>
-     *   <li>Keys of fields <b>accessed</b> from changed lines</li>
-     * </ul>
-     * Two groups that share at least one key are merged via Union-Find.
+     * Finds the innermost method/lambda in the index that contains {@code lineNo}.
+     * Checks both ADD-side ({@code lineNumber}) and DELETE-side ({@code oldLineNumber})
+     * line numbers so that deleted lines are also correctly bucketed.
      */
+    private Optional<JavaIndexService.MethodInfo> indexService(
+            JavaIndexService.ProjectIndex index, String file, int lineNo) {
+        List<JavaIndexService.MethodInfo> methods =
+                index.methodsByFile.getOrDefault(file, List.of());
+        // Pick the innermost (smallest span) method that contains the line
+        return methods.stream()
+                .filter(m -> m.startLine() <= lineNo && m.endLine() >= lineNo)
+                .min(Comparator.comparingInt(m -> m.endLine() - m.startLine()));
+    }
+
+    private int effectiveLine(ChangedLine l) {
+        return l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber();
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 2: cross-file AST merge via Union-Find
+    // -----------------------------------------------------------------------
+
     private List<ChangeGroup> semanticMerge(List<ChangeGroup> groups,
                                              JavaIndexService.ProjectIndex index) {
-        if (groups.size() <= 1) return groups;
+        if (groups.size() <= 1 || index == null) return groups;
 
         int n = groups.size();
         List<Set<String>> keys = new ArrayList<>();
-        for (ChangeGroup g : groups) {
-            keys.add(buildAstKeys(g, index));
-        }
+        for (ChangeGroup g : groups) keys.add(buildAstKeys(g, index));
 
         int[] parent = new int[n];
         for (int i = 0; i < n; i++) parent[i] = i;
 
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
-                // Only merge cross-file groups
                 if (groups.get(i).primaryFile().equals(groups.get(j).primaryFile())) continue;
-                if (!Collections.disjoint(keys.get(i), keys.get(j))) {
-                    union(parent, i, j);
-                }
+                if (!Collections.disjoint(keys.get(i), keys.get(j))) union(parent, i, j);
             }
         }
 
@@ -197,65 +173,56 @@ public class ChangeGrouper {
             if (cluster.size() == 1) {
                 result.add(cluster.get(0));
             } else {
+                log.debug("Cross-file merge: {} groups -> one (files: {})",
+                        cluster.size(), cluster.stream().map(ChangeGroup::primaryFile).toList());
                 result.add(mergeCluster(cluster));
             }
         }
         return result;
     }
 
-    /**
-     * Collect resolved AST keys that represent symbols declared or used
-     * in the ADD/DELETE lines of a group.
-     *
-     * Without an index we fall back to an empty set (no cross-file merging).
-     */
     private Set<String> buildAstKeys(ChangeGroup group, JavaIndexService.ProjectIndex index) {
         Set<String> result = new HashSet<>();
         if (index == null) return result;
 
         String file = group.primaryFile();
-        Set<Integer> changedLineNumbers = new HashSet<>();
+        Set<Integer> changedLines = new HashSet<>();
         for (ChangedLine l : group.changedLines()) {
             if (l.type() == ChangedLine.LineType.CONTEXT) continue;
-            if (l.lineNumber() > 0)    changedLineNumbers.add(l.lineNumber());
-            if (l.oldLineNumber() > 0) changedLineNumbers.add(l.oldLineNumber());
+            if (l.lineNumber()    > 0) changedLines.add(l.lineNumber());
+            if (l.oldLineNumber() > 0) changedLines.add(l.oldLineNumber());
         }
-        if (changedLineNumbers.isEmpty()) return result;
+        if (changedLines.isEmpty()) return result;
 
-        int minLine = changedLineNumbers.stream().mapToInt(Integer::intValue).min().orElse(0);
-        int maxLine = changedLineNumbers.stream().mapToInt(Integer::intValue).max().orElse(0);
-
-        // --- Methods declared in changed lines ---
+        // Methods declared in changed lines
         index.methodsByFile.getOrDefault(file, List.of()).stream()
-                .filter(m -> m.startLine() >= minLine && m.startLine() <= maxLine)
+                .filter(m -> changedLines.contains(m.startLine()))
                 .map(JavaIndexService.MethodInfo::qualifiedKey)
                 .forEach(result::add);
 
-        // --- Methods called from changed lines (resolved call sites) ---
-        // For each call site in this file that falls on a changed line,
-        // add the resolved callee key so the group containing the declaration is linked.
+        // Methods called from changed lines (resolved)
         index.callSites.values().stream()
                 .flatMap(Collection::stream)
                 .filter(cs -> cs.filePath().equals(file)
                         && cs.resolvedKey() != null
-                        && changedLineNumbers.contains(cs.line()))
+                        && changedLines.contains(cs.line()))
                 .map(JavaIndexService.CallSite::resolvedKey)
                 .forEach(result::add);
 
-        // --- Fields declared in changed lines ---
+        // Fields declared in changed lines
         index.fieldsByName.values().stream()
                 .flatMap(Collection::stream)
                 .filter(f -> f.filePath().equals(file)
-                        && changedLineNumbers.contains(f.declarationLine()))
+                        && changedLines.contains(f.declarationLine()))
                 .map(JavaIndexService.FieldInfo::resolvedKey)
                 .forEach(result::add);
 
-        // --- Fields accessed from changed lines ---
+        // Fields accessed from changed lines
         index.fieldAccesses.values().stream()
                 .flatMap(Collection::stream)
                 .filter(fa -> fa.filePath().equals(file)
                         && fa.resolvedKey() != null
-                        && changedLineNumbers.contains(fa.line()))
+                        && changedLines.contains(fa.line()))
                 .map(JavaIndexService.FieldAccess::resolvedKey)
                 .forEach(result::add);
 
@@ -265,17 +232,12 @@ public class ChangeGrouper {
     private ChangeGroup mergeCluster(List<ChangeGroup> cluster) {
         String id = "G" + groupCounter.incrementAndGet();
         String primary = cluster.stream()
-                .max(Comparator.comparingLong(g ->
-                        g.changedLines().stream()
-                                .filter(l -> l.type() != ChangedLine.LineType.CONTEXT)
-                                .count()))
+                .max(Comparator.comparingLong(g -> g.changedLines().stream()
+                        .filter(l -> l.type() != ChangedLine.LineType.CONTEXT).count()))
                 .map(ChangeGroup::primaryFile)
                 .orElse(cluster.get(0).primaryFile());
         List<ChangedLine> allLines = new ArrayList<>();
         for (ChangeGroup g : cluster) allLines.addAll(g.changedLines());
-        log.debug("AST semantic merge: {} groups -> {} (files: {})",
-                cluster.size(), id,
-                cluster.stream().map(ChangeGroup::primaryFile).toList());
         return new ChangeGroup(id, primary, allLines, new ArrayList<>());
     }
 
@@ -290,30 +252,5 @@ public class ChangeGrouper {
 
     private void union(int[] parent, int a, int b) {
         parent[find(parent, a)] = find(parent, b);
-    }
-
-    // -----------------------------------------------------------------------
-    // Line number helpers
-    // -----------------------------------------------------------------------
-
-    private int lineGap(List<ChangedLine> a, List<ChangedLine> b) {
-        return Math.abs(firstEffectiveLine(b) - lastEffectiveLine(a));
-    }
-
-    private int lastEffectiveLine(List<ChangedLine> hunk) {
-        for (int i = hunk.size() - 1; i >= 0; i--) {
-            ChangedLine l = hunk.get(i);
-            if (l.lineNumber() > 0) return l.lineNumber();
-            if (l.oldLineNumber() > 0) return l.oldLineNumber();
-        }
-        return 0;
-    }
-
-    private int firstEffectiveLine(List<ChangedLine> hunk) {
-        for (ChangedLine l : hunk) {
-            if (l.lineNumber() > 0) return l.lineNumber();
-            if (l.oldLineNumber() > 0) return l.oldLineNumber();
-        }
-        return 0;
     }
 }
