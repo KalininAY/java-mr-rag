@@ -8,3 +8,6 @@ build/
 out/
 target/
 .DS_Store
+
+# Local environment variables — never commit real credentials
+.env
