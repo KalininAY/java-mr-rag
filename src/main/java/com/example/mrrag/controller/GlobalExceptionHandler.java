@@ -6,17 +6,28 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    /**
+     * 404 for unknown static resources (e.g. browser/proxy probing
+     * /ui/VAADIN/push, /favicon.ico, etc.).
+     * Logged at DEBUG to avoid noise in production logs.
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ProblemDetail handleNoResource(NoResourceFoundException ex) {
+        log.debug("Resource not found: {}", ex.getMessage());
+        return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
+    }
+
     @ExceptionHandler(GitLabApiException.class)
     public ProblemDetail handleGitLab(GitLabApiException ex) {
         log.error("GitLab API error", ex);
-        ProblemDetail pd = ProblemDetail.forStatusAndDetail(
+        return ProblemDetail.forStatusAndDetail(
                 HttpStatus.BAD_GATEWAY, "GitLab API error: " + ex.getMessage());
-        return pd;
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
