@@ -41,3 +41,30 @@ dependencies {
 tasks.named('test') {
     useJUnitPlatform()
 }
+
+// ---------------------------------------------------------------------------
+// Load .env into bootRun environment
+// ---------------------------------------------------------------------------
+def envFile = rootProject.file('.env')
+if (envFile.exists()) {
+    def envVars = [:]
+    envFile.eachLine { line ->
+        line = line.trim()
+        // skip blank lines and comments
+        if (!line || line.startsWith('#')) return
+        def idx = line.indexOf('=')
+        if (idx > 0) {
+            def key   = line.substring(0, idx).trim()
+            def value = line.substring(idx + 1).trim()
+            // strip surrounding quotes if present
+            if ((value.startsWith('"') && value.endsWith('"')) ||
+                (value.startsWith("'") && value.endsWith("'"))) {
+                value = value.substring(1, value.length() - 1)
+            }
+            envVars[key] = value
+        }
+    }
+    tasks.named('bootRun') {
+        environment envVars
+    }
+}
