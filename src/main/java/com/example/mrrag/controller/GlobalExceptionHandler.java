@@ -13,13 +13,11 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 public class GlobalExceptionHandler {
 
     /**
-     * 404 for unknown static resources (e.g. browser/proxy probing
-     * /ui/VAADIN/push, /favicon.ico, etc.).
-     * Logged at DEBUG to avoid noise in production logs.
+     * 404 for unknown static resources (browser plugins, VAADIN probes, etc.).
+     * No logging — these are noise from the environment, not application errors.
      */
     @ExceptionHandler(NoResourceFoundException.class)
     public ProblemDetail handleNoResource(NoResourceFoundException ex) {
-        log.debug("Resource not found: {}", ex.getMessage());
         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
     }
 
