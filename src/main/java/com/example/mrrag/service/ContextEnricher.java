@@ -28,7 +28,11 @@ import java.util.*;
  *       {@code filePath / startLine / endLine}.</li>
  * </ol>
  *
- * <p>No tokenisation, no keyword blacklists, no name-matching heuristics.
+ * <p>File paths from GitLab diffs may include a module prefix
+ * (e.g. {@code gl-hooks/src/main/java/...}) while the graph stores paths
+ * relative to the cloned repo root (e.g. {@code src/main/java/...}).
+ * All lookups go through {@link AstGraphService#normalizeFilePath} to
+ * strip such prefixes automatically.
  */
 @Slf4j
 @Service
@@ -36,7 +40,7 @@ import java.util.*;
 public class ContextEnricher {
 
     private final AstGraphService graphService;
-    private final JavaIndexService indexService; // kept for readLines / file helpers
+    private final JavaIndexService indexService;
 
     @Value("${app.enrichment.maxSnippetsPerGroup:12}")
     private int maxSnippetsPerGroup;
@@ -50,8 +54,8 @@ public class ContextEnricher {
 
     public List<ChangeGroup> enrich(
             List<ChangeGroup> groups,
-            JavaIndexService.ProjectIndex sourceIndex,   // kept for compat, not used for lookups
-            JavaIndexService.ProjectIndex targetIndex,   // kept for compat, not used for lookups
+            JavaIndexService.ProjectIndex sourceIndex,
+            JavaIndexService.ProjectIndex targetIndex,
             Path sourceRepoDir,
             Path targetRepoDir
     ) {
@@ -81,13 +85,8 @@ public class ContextEnricher {
         List<ChangedLine> deleted = filterByType(group, ChangedLine.LineType.DELETE);
         List<ChangedLine> all     = group.changedLines();
 
-        // 1. For every edge at a changed line: emit declaration of the target node
         strategyEdgesAtChangedLines(all, sourceGraph, sourceRepoDir, snippets);
-
-        // 2. Deleted lines: find what was declared there and list all usages in target
         strategyDeletedDeclarations(deleted, targetGraph, snippets);
-
-        // 3. Containing method body (baseline context)
         strategyContainingMethod(all, sourceGraph, sourceRepoDir, snippets);
 
         trim(snippets);
@@ -95,11 +94,6 @@ public class ContextEnricher {
 
     // -----------------------------------------------------------------------
     // Strategy 1: edges at changed lines → declarations
-    //
-    // For every non-CONTEXT changed line:
-    //   - find all outgoing edges from any node in that method/lambda
-    //     whose (filePath, line) matches the changed line
-    //   - group by edge kind → emit the appropriate snippet type
     // -----------------------------------------------------------------------
 
     private void strategyEdgesAtChangedLines(
@@ -114,19 +108,19 @@ public class ContextEnricher {
             if (cl.type() == ChangedLine.LineType.CONTEXT) continue;
             if (full(snippets)) break;
 
-            String file = cl.filePath();
+            // Normalize the diff path to the format used inside the graph
+            String file = graphService.normalizeFilePath(cl.filePath(), graph);
             int    line = cl.lineNumber() > 0 ? cl.lineNumber() : cl.oldLineNumber();
             if (line <= 0) continue;
 
-            // All graph nodes whose range covers this line (e.g. the enclosing method)
             List<AstGraphService.GraphNode> enclosing = graph.nodesAtLine(file, line);
 
             for (AstGraphService.GraphNode enc : enclosing) {
                 if (full(snippets)) break;
 
-                // All outgoing edges from this node that were recorded at exactly this line
                 for (AstGraphService.GraphEdge edge : graph.outgoing(enc.id())) {
                     if (full(snippets)) break;
+                    // Edge must originate from this file at this exact line
                     if (!file.equals(edge.filePath()) || edge.line() != line) continue;
 
                     String targetId = edge.toId();
@@ -134,7 +128,7 @@ public class ContextEnricher {
                     seenDecl.add(targetId);
 
                     AstGraphService.GraphNode target = graph.nodes.get(targetId);
-                    if (target == null) continue; // external / unresolved
+                    if (target == null) continue;
 
                     switch (edge.kind()) {
                         case INVOKES ->
@@ -143,7 +137,7 @@ public class ContextEnricher {
                                 emitFieldDeclaration(target, repoDir, snippets);
                         case READS_VAR, WRITES_VAR ->
                                 emitVariableDeclaration(target, repoDir, snippets);
-                        default -> { /* CONTAINS, OVERRIDES etc. — not enrichment material */ }
+                        default -> {}
                     }
                 }
             }
@@ -162,18 +156,17 @@ public class ContextEnricher {
         for (ChangedLine cl : deleted) {
             if (full(snippets)) break;
 
-            String file    = cl.filePath();
+            // Normalize to graph-relative path
+            String file    = graphService.normalizeFilePath(cl.filePath(), targetGraph);
             int    oldLine = cl.oldLineNumber();
             if (oldLine <= 0) continue;
 
-            // Nodes declared at this exact line in the target (pre-change) codebase
             List<AstGraphService.GraphNode> declared =
                     targetGraph.byLine.getOrDefault(file + "#" + oldLine, List.of());
 
             for (AstGraphService.GraphNode decl : declared) {
                 if (full(snippets)) break;
 
-                // Incoming edges in target → all places that reference this declaration
                 List<AstGraphService.GraphEdge> usageEdges = targetGraph.incoming(decl.id());
                 if (usageEdges.isEmpty()) continue;
 
@@ -215,17 +208,16 @@ public class ContextEnricher {
     ) {
         if (full(snippets)) return;
 
-        // Find the first non-CONTEXT changed line that has a line number
         ChangedLine first = all.stream()
                 .filter(l -> l.type() != ChangedLine.LineType.CONTEXT)
                 .filter(l -> (l.lineNumber() > 0 || l.oldLineNumber() > 0))
                 .findFirst().orElse(null);
         if (first == null) return;
 
-        String file = first.filePath();
+        // Normalize path for graph lookup
+        String file = graphService.normalizeFilePath(first.filePath(), graph);
         int    line = first.lineNumber() > 0 ? first.lineNumber() : first.oldLineNumber();
 
-        // Find enclosing METHOD node (smallest range that covers the line)
         graph.nodesAtLine(file, line).stream()
                 .filter(n -> n.kind() == AstGraphService.NodeKind.METHOD)
                 .min(Comparator.comparingInt(n -> n.endLine() - n.startLine()))
@@ -297,7 +289,6 @@ public class ContextEnricher {
     // File-reading helpers
     // -----------------------------------------------------------------------
 
-    /** Read lines from {@code from} to the first line that contains '{' (inclusive). */
     private List<String> readUntilOpenBrace(
             Path repoDir, String relPath, int from, int maxLine
     ) {

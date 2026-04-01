@@ -62,6 +62,15 @@ public class AstGraphService {
         public final Map<String, List<GraphNode>> byLine       = new LinkedHashMap<>();
         public final Map<String, List<GraphNode>> byFile       = new LinkedHashMap<>();
 
+        /**
+         * All file paths stored in the graph (relative to the project root that
+         * was passed to {@link AstGraphService#buildGraph}).
+         * Used by {@link AstGraphService#normalizeFilePath} for suffix matching.
+         */
+        public Set<String> allFilePaths() {
+            return byFile.keySet();
+        }
+
         void addNode(GraphNode n) {
             nodes.put(n.id(), n);
             bySimpleName.computeIfAbsent(n.simpleName(), k -> new ArrayList<>()).add(n);
@@ -113,6 +122,46 @@ public class AstGraphService {
     }
 
     // ------------------------------------------------------------------
+    // Path normalisation
+    // ------------------------------------------------------------------
+
+    /**
+     * Translates a path coming from a GitLab diff (e.g.
+     * {@code gl-hooks/src/main/java/com/example/Foo.java}) into the
+     * relative path stored inside the graph (e.g.
+     * {@code src/main/java/com/example/Foo.java}).
+     *
+     * <p>Strategy: walk through all file paths that the graph actually
+     * contains and return the first one that the incoming path ends with
+     * (or is equal to). This handles both mono-repo sub-module prefixes
+     * and cases where the paths are already identical.
+     *
+     * @param diffPath  path as reported by GitLab diff
+     * @param graph     the project graph to look up known paths in
+     * @return the matching graph-relative path, or {@code diffPath} unchanged
+     *         when no suffix match is found
+     */
+    public String normalizeFilePath(String diffPath, ProjectGraph graph) {
+        if (diffPath == null || diffPath.isBlank()) return diffPath;
+        // normalise separators
+        String normalised = diffPath.replace('\\', '/');
+        for (String known : graph.allFilePaths()) {
+            String knownNorm = known.replace('\\', '/');
+            if (normalised.equals(knownNorm)) return known;           // exact match
+            if (normalised.endsWith("/" + knownNorm)) return known;   // prefix stripped
+            if (knownNorm.endsWith("/" + normalised)) return known;   // inverse (unlikely)
+        }
+        // fallback: try stripping leading path segments one by one
+        String[] parts = normalised.split("/");
+        for (int i = 1; i < parts.length; i++) {
+            String candidate = String.join("/", Arrays.copyOfRange(parts, i, parts.length));
+            if (graph.byFile.containsKey(candidate)) return candidate;
+        }
+        log.debug("normalizeFilePath: no match in graph for '{}'", diffPath);
+        return diffPath;
+    }
+
+    // ------------------------------------------------------------------
     // Graph construction
     // ------------------------------------------------------------------
 
@@ -129,7 +178,6 @@ public class AstGraphService {
      * "type already defined" errors in JDT.
      */
     private List<String> collectSourceRoots(Path projectRoot) throws IOException {
-        // Prefer standard Maven/Gradle source roots if they exist
         List<Path> candidates = List.of(
                 projectRoot.resolve("src/main/java"),
                 projectRoot.resolve("src/test/java")
@@ -156,7 +204,6 @@ public class AstGraphService {
             return fallback;
         }
 
-        // Last resort: the project root itself
         return List.of(projectRoot.toString());
     }
 
@@ -171,23 +218,14 @@ public class AstGraphService {
             launcher.getEnvironment().setNoClasspath(true);
             launcher.getEnvironment().setCommentEnabled(false);
             launcher.getEnvironment().setAutoImports(false);
-            // Suppress duplicate-type errors: setIgnoreDuplicateDeclarations was added in
-            // Spoon 10.2 but may not fully suppress ModelBuildingException in all versions.
-            // We additionally catch ModelBuildingException below and fall back to a partial
-            // model so a single naming clash never kills the entire graph build.
             try {
                 launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
-            } catch (NoSuchMethodError ignored) {
-                // Older Spoon version — proceed without it
-            }
+            } catch (NoSuchMethodError ignored) {}
 
             CtModel model;
             try {
                 model = launcher.buildModel();
             } catch (ModelBuildingException mbe) {
-                // JDT reported duplicate type declarations (e.g. generated sources copied
-                // alongside originals). Log the problem and use whatever partial model
-                // Spoon managed to build rather than aborting the whole request.
                 log.warn("Spoon ModelBuildingException for {} — using partial model. Cause: {}",
                         projectRoot, mbe.getMessage());
                 model = launcher.getModel();
