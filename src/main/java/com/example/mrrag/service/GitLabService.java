@@ -107,7 +107,11 @@ public class GitLabService {
      * non-existent path.
      */
     public void cleanup(Path repoDir) {
-        if (repoDir == null || !Files.exists(repoDir)) return;
+        if (repoDir == null) return;
+        if (!Files.exists(repoDir)) {
+            log.debug("Cleanup skipped — already removed: {}", repoDir);
+            return;
+        }
         try {
             FileUtils.deleteDirectory(repoDir.toFile());
             log.info("Cleaned up: {}", repoDir);

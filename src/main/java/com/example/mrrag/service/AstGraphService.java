@@ -3,6 +3,7 @@ package com.example.mrrag.service;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import spoon.Launcher;
+import spoon.compiler.ModelBuildingException;
 import spoon.reflect.code.*;
 import spoon.reflect.declaration.*;
 import spoon.reflect.reference.*;
@@ -170,12 +171,32 @@ public class AstGraphService {
             launcher.getEnvironment().setNoClasspath(true);
             launcher.getEnvironment().setCommentEnabled(false);
             launcher.getEnvironment().setAutoImports(false);
-            // Ignore duplicate type errors (can happen with shared generated sources)
-            launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
-            // Do NOT call setComplianceLevel() — JDT inside Spoon 10 only supports up to 17
-            // and passes the level as "-<N>" which breaks for 21.
+            // Suppress duplicate-type errors: setIgnoreDuplicateDeclarations was added in
+            // Spoon 10.2 but may not fully suppress ModelBuildingException in all versions.
+            // We additionally catch ModelBuildingException below and fall back to a partial
+            // model so a single naming clash never kills the entire graph build.
+            try {
+                launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
+            } catch (NoSuchMethodError ignored) {
+                // Older Spoon version — proceed without it
+            }
 
-            var model = launcher.buildModel();
+            CtModel model;
+            try {
+                model = launcher.buildModel();
+            } catch (ModelBuildingException mbe) {
+                // JDT reported duplicate type declarations (e.g. generated sources copied
+                // alongside originals). Log the problem and use whatever partial model
+                // Spoon managed to build rather than aborting the whole request.
+                log.warn("Spoon ModelBuildingException for {} — using partial model. Cause: {}",
+                        projectRoot, mbe.getMessage());
+                model = launcher.getModel();
+                if (model == null) {
+                    log.error("Spoon returned null model for {}, returning empty graph", projectRoot);
+                    return new ProjectGraph();
+                }
+            }
+
             var graph = new ProjectGraph();
             String root = projectRoot.toString();
 
@@ -200,12 +221,11 @@ public class AstGraphService {
                 if (classId != null)
                     graph.addEdge(new GraphEdge(classId, id, EdgeKind.CONTAINS, file, ln[0]));
 
-                CtMethod<?> top = m.getTopDefinitions().stream().findFirst().orElse(null);
-                if (top != null && top != m) {
-                    String superId = typeMemberExecId(top);
-                    if (superId != null)
-                        graph.addEdge(new GraphEdge(id, superId, EdgeKind.OVERRIDES, file, ln[0]));
-                }
+                m.getTopDefinitions().stream().findFirst()
+                        .filter(top -> top != m)
+                        .map(this::typeMemberExecId)
+                        .ifPresent(superId ->
+                                graph.addEdge(new GraphEdge(id, superId, EdgeKind.OVERRIDES, file, ln[0])));
 
                 m.getAnnotations().forEach(ann ->
                         graph.addEdge(new GraphEdge(id,
