@@ -15,19 +15,16 @@ import java.util.regex.Pattern;
  *
  * <p>Two-phase grouping:
  * <ol>
- *   <li><b>Code-block grouping (intra-file)</b> – within each file, changed lines that
- *       fall inside the same method or lambda body are grouped together. Changed lines
- *       outside any method body (field declarations, class-level annotations, etc.) each
- *       form their own single-line group. This uses the AST index rather than arbitrary
- *       line-distance heuristics.</li>
+ *   <li><b>Code-block grouping (intra-file)</b> – changed lines inside the same method
+ *       or lambda body are grouped together; lines outside any method body each form
+ *       their own group.  Uses the AST index rather than arbitrary line-distance
+ *       heuristics.  Before grouping, purely structural lines (lone braces, commented-out
+ *       structural lines) are dropped, and mirror pairs
+ *       (DELETE x / ADD {@code // x}) are merged into a single group so that
+ *       "commenting-out" appears as one logical change.</li>
  *   <li><b>Cross-file AST merge</b> – groups from different files are merged when they
- *       are linked by actual resolved symbol references:
- *       <ul>
- *         <li>Group A declares method M → Group B calls M</li>
- *         <li>Group A declares field F  → Group B accesses F</li>
- *       </ul>
- *       Uses resolved qualified keys from JavaParser SymbolSolver via Union-Find.
- *   </li>
+ *       share resolved symbol references (method declared in A called in B, etc.)
+ *       via Union-Find on qualified keys.</li>
  * </ol>
  */
 @Slf4j
@@ -38,51 +35,45 @@ public class ChangeGrouper {
     private final AtomicInteger groupCounter = new AtomicInteger(0);
 
     /**
-     * Lines that carry no semantic meaning on their own and should not form
-     * independent groups or pollute context enrichment.
+     * Matches lines that are purely structural: optional leading comment prefix
+     * ({@code //}) followed only by braces/parens/brackets and/or the keywords
+     * {@code try catch finally else} (with optional surrounding braces/spaces).
      *
-     * <p>A line is structural if, after stripping leading whitespace and optional
-     * comment prefixes ({@code //}), it matches only braces/brackets, keywords like
-     * {@code try/catch/finally/else}, or is empty.
+     * <p>The pattern is applied after stripping the {@code //} prefix and all
+     * surrounding whitespace, so it handles cases like
+     * {@code "//        } finally {"} correctly.
      */
-    private static final Pattern STRUCTURAL_LINE = Pattern.compile(
-            "^(?://+\\s*)?[\\{\\}\\(\\)\\[\\]]*\\s*" +
-            "(?:try|catch|finally|else|\\}\\s*else|\\}\\s*catch|\\}\\s*finally)?" +
-            "[\\{\\}\\(\\)\\[\\]]*\\s*$"
+    // Matches the content AFTER comment-prefix and whitespace has been stripped
+    private static final Pattern STRUCTURAL_CONTENT = Pattern.compile(
+            "^[\\{\\}\\(\\)\\[\\]\\s]*"
+            + "(?:(?:try|catch(?:\\s*\\([^)]*\\))?|finally|else(?:\\s+if\\s*\\([^)]*\\))?)"
+            + "[\\{\\}\\(\\)\\[\\]\\s]*)?"
+            + "$"
     );
 
     // -----------------------------------------------------------------------
     // Public API
     // -----------------------------------------------------------------------
 
-    /**
-     * Grouping without an AST index (fallback: each file's changes = one group).
-     */
     public List<ChangeGroup> group(List<ChangedLine> lines) {
         return group(lines, null);
     }
 
-    /**
-     * Full grouping: code-block (intra-file) + cross-file AST merge.
-     *
-     * @param lines       all changed lines from the diff
-     * @param index       resolved AST index of the source branch (may be null)
-     * @return cohesive ChangeGroups
-     */
     public List<ChangeGroup> group(List<ChangedLine> lines,
                                    JavaIndexService.ProjectIndex index) {
-        // Remove pure structural changes before grouping so that a deleted `}` or
-        // `try {` does not become its own group and pollute cross-file AST merge.
+        // Step 1: drop structural-only lines (lone braces, try/finally, etc.)
         List<ChangedLine> meaningful = lines.stream()
                 .filter(l -> l.type() == ChangedLine.LineType.CONTEXT || !isStructural(l.text()))
                 .toList();
-
         int dropped = lines.size() - meaningful.size();
-        if (dropped > 0) {
-            log.debug("Structural-line filter: dropped {} lines (e.g. lone braces, try/finally)", dropped);
-        }
+        if (dropped > 0) log.debug("Structural-line filter: dropped {}", dropped);
 
-        List<ChangeGroup> phase1 = codeBlockGroup(meaningful, index);
+        // Step 2: merge mirror pairs (DELETE x  +  ADD "// x") before code-block grouping
+        List<ChangedLine> merged = mergeMirrorCommentPairs(meaningful);
+        int mirrorMerged = meaningful.size() - merged.size();
+        if (mirrorMerged > 0) log.debug("Mirror-comment merge: collapsed {} lines into pairs", mirrorMerged);
+
+        List<ChangeGroup> phase1 = codeBlockGroup(merged, index);
         log.debug("Phase 1 (code-block): {} groups", phase1.size());
         List<ChangeGroup> phase2 = semanticMerge(phase1, index);
         log.debug("Phase 2 (cross-file AST): {} groups", phase2.size());
@@ -94,17 +85,100 @@ public class ChangeGrouper {
     // -----------------------------------------------------------------------
 
     /**
-     * Returns {@code true} if the line text is purely structural (brace/bracket,
-     * {@code try}, {@code catch}, {@code finally}, {@code else}, or empty/commented-out
-     * equivalent) and carries no semantic information for the reviewer.
+     * Returns {@code true} if the line carries no semantic information and
+     * should be suppressed from grouping and enrichment.
+     *
+     * <p>Logic:
+     * <ol>
+     *   <li>Strip leading/trailing whitespace.</li>
+     *   <li>If the line starts with {@code //}, strip the comment prefix
+     *       (and any further whitespace) to get the "content".</li>
+     *   <li>Test the content against {@link #STRUCTURAL_CONTENT}.</li>
+     * </ol>
      */
     static boolean isStructural(String text) {
         if (text == null) return true;
         String stripped = text.strip();
         if (stripped.isEmpty()) return true;
-        // Commented-out lines that are themselves structural (e.g. `//        try {`)
-        String withoutComment = stripped.startsWith("//") ? stripped.substring(2).strip() : stripped;
-        return STRUCTURAL_LINE.matcher(withoutComment).matches();
+        String content = stripped.startsWith("//") ? stripped.substring(2).strip() : stripped;
+        return STRUCTURAL_CONTENT.matcher(content).matches();
+    }
+
+    // -----------------------------------------------------------------------
+    // Mirror-comment pair merging
+    //
+    // A "mirror pair" is: DELETE line with text T  +  ADD line with text "// T"
+    // (or vice-versa: ADD "// T" before DELETE T is also accepted).
+    // Such pairs result from the common "comment-out" refactoring and should
+    // appear as a single logical change rather than two independent groups.
+    //
+    // Algorithm: single-pass scan within each file.  On a DELETE, look ahead
+    // for an ADD whose uncommented text matches.  When found, emit a synthetic
+    // CONTEXT line for the DELETE and keep the ADD (so the pair ends up in the
+    // same bucket during code-block grouping).
+    // -----------------------------------------------------------------------
+
+    private List<ChangedLine> mergeMirrorCommentPairs(List<ChangedLine> lines) {
+        // Group by file to avoid cross-file false positives
+        Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
+        for (ChangedLine l : lines) byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
+
+        List<ChangedLine> result = new ArrayList<>();
+        for (List<ChangedLine> fileLines : byFile.values()) {
+            result.addAll(mergeMirrorInFile(fileLines));
+        }
+        return result;
+    }
+
+    private List<ChangedLine> mergeMirrorInFile(List<ChangedLine> lines) {
+        int n = lines.size();
+        boolean[] consumed = new boolean[n];
+        List<ChangedLine> out = new ArrayList<>();
+
+        for (int i = 0; i < n; i++) {
+            if (consumed[i]) continue;
+            ChangedLine del = lines.get(i);
+            if (del.type() != ChangedLine.LineType.DELETE) {
+                out.add(del);
+                continue;
+            }
+            // Look ahead up to 3 positions for a matching ADD
+            String delNorm = normaliseForMirror(del.text());
+            boolean paired = false;
+            for (int j = i + 1; j < Math.min(n, i + 4); j++) {
+                if (consumed[j]) continue;
+                ChangedLine add = lines.get(j);
+                if (add.type() != ChangedLine.LineType.ADD) continue;
+                String addNorm = normaliseForMirror(uncomment(add.text()));
+                if (delNorm.equals(addNorm) && !delNorm.isBlank()) {
+                    // Merge: keep ADD (it has the new content), drop DELETE
+                    consumed[j] = true;
+                    consumed[i] = true;
+                    // Emit DELETE first (as context so same bucket), then ADD
+                    out.add(del.asContext());
+                    out.add(add);
+                    paired = true;
+                    log.trace("Mirror pair merged: '{}'", delNorm);
+                    break;
+                }
+            }
+            if (!paired) out.add(del);
+        }
+        return out;
+    }
+
+    /** Strips the leading {@code //} comment marker and surrounding whitespace. */
+    private static String uncomment(String text) {
+        if (text == null) return "";
+        String s = text.strip();
+        if (s.startsWith("//")) return s.substring(2).strip();
+        return s;
+    }
+
+    /** Normalises a line for mirror-pair comparison: strip, remove comment prefix, lowercase. */
+    private static String normaliseForMirror(String text) {
+        if (text == null) return "";
+        return uncomment(text).toLowerCase(java.util.Locale.ROOT);
     }
 
     // -----------------------------------------------------------------------
@@ -113,11 +187,8 @@ public class ChangeGrouper {
 
     private List<ChangeGroup> codeBlockGroup(List<ChangedLine> lines,
                                               JavaIndexService.ProjectIndex index) {
-        // Partition by file first
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
-        for (ChangedLine l : lines) {
-            byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
-        }
+        for (ChangedLine l : lines) byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
 
         List<ChangeGroup> result = new ArrayList<>();
         for (var entry : byFile.entrySet()) {
@@ -126,16 +197,9 @@ public class ChangeGrouper {
         return result;
     }
 
-    /**
-     * For a single file: map each changed line to the enclosing method/lambda body
-     * (identified by its start line in the AST index), then group by that key.
-     * Lines that fall outside any method body get their own individual group.
-     */
     private List<ChangeGroup> groupByCodeBlock(String file,
                                                 List<ChangedLine> lines,
                                                 JavaIndexService.ProjectIndex index) {
-        // bucket key: Integer (method startLine) for in-method lines,
-        //             negative unique sentinel for out-of-method lines
         Map<Integer, List<ChangedLine>> buckets = new LinkedHashMap<>();
         int outOfMethodCounter = -1;
 
@@ -144,12 +208,10 @@ public class ChangeGrouper {
             Integer bucketKey;
 
             if (index != null && lineNo > 0) {
-                Optional<JavaIndexService.MethodInfo> container =
-                        indexService(index, file, lineNo);
+                Optional<JavaIndexService.MethodInfo> container = findContainer(index, file, lineNo);
                 bucketKey = container.map(JavaIndexService.MethodInfo::startLine)
                         .orElse(outOfMethodCounter--);
             } else {
-                // No index available: each changed line is its own group
                 bucketKey = outOfMethodCounter--;
             }
 
@@ -158,7 +220,6 @@ public class ChangeGrouper {
 
         List<ChangeGroup> groups = new ArrayList<>();
         for (List<ChangedLine> bucket : buckets.values()) {
-            // Skip buckets that contain only CONTEXT lines (shouldn't happen but guard)
             if (bucket.stream().allMatch(l -> l.type() == ChangedLine.LineType.CONTEXT)) continue;
             String id = "G" + groupCounter.incrementAndGet();
             groups.add(new ChangeGroup(id, file, bucket, new ArrayList<>()));
@@ -166,16 +227,10 @@ public class ChangeGrouper {
         return groups;
     }
 
-    /**
-     * Finds the innermost method/lambda in the index that contains {@code lineNo}.
-     * Checks both ADD-side ({@code lineNumber}) and DELETE-side ({@code oldLineNumber})
-     * line numbers so that deleted lines are also correctly bucketed.
-     */
-    private Optional<JavaIndexService.MethodInfo> indexService(
+    private Optional<JavaIndexService.MethodInfo> findContainer(
             JavaIndexService.ProjectIndex index, String file, int lineNo) {
         List<JavaIndexService.MethodInfo> methods =
                 index.methodsByFile.getOrDefault(file, List.of());
-        // Pick the innermost (smallest span) method that contains the line
         return methods.stream()
                 .filter(m -> m.startLine() <= lineNo && m.endLine() >= lineNo)
                 .min(Comparator.comparingInt(m -> m.endLine() - m.startLine()));
@@ -228,7 +283,6 @@ public class ChangeGrouper {
     private Set<String> buildAstKeys(ChangeGroup group, JavaIndexService.ProjectIndex index) {
         Set<String> result = new HashSet<>();
         if (index == null) return result;
-
         String file = group.primaryFile();
         Set<Integer> changedLines = new HashSet<>();
         for (ChangedLine l : group.changedLines()) {
@@ -238,37 +292,23 @@ public class ChangeGrouper {
         }
         if (changedLines.isEmpty()) return result;
 
-        // Methods declared in changed lines
         index.methodsByFile.getOrDefault(file, List.of()).stream()
                 .filter(m -> changedLines.contains(m.startLine()))
-                .map(JavaIndexService.MethodInfo::qualifiedKey)
-                .forEach(result::add);
+                .map(JavaIndexService.MethodInfo::qualifiedKey).forEach(result::add);
 
-        // Methods called from changed lines (resolved)
-        index.callSites.values().stream()
-                .flatMap(Collection::stream)
-                .filter(cs -> cs.filePath().equals(file)
-                        && cs.resolvedKey() != null
+        index.callSites.values().stream().flatMap(Collection::stream)
+                .filter(cs -> cs.filePath().equals(file) && cs.resolvedKey() != null
                         && changedLines.contains(cs.line()))
-                .map(JavaIndexService.CallSite::resolvedKey)
-                .forEach(result::add);
+                .map(JavaIndexService.CallSite::resolvedKey).forEach(result::add);
 
-        // Fields declared in changed lines
-        index.fieldsByName.values().stream()
-                .flatMap(Collection::stream)
-                .filter(f -> f.filePath().equals(file)
-                        && changedLines.contains(f.declarationLine()))
-                .map(JavaIndexService.FieldInfo::resolvedKey)
-                .forEach(result::add);
+        index.fieldsByName.values().stream().flatMap(Collection::stream)
+                .filter(f -> f.filePath().equals(file) && changedLines.contains(f.declarationLine()))
+                .map(JavaIndexService.FieldInfo::resolvedKey).forEach(result::add);
 
-        // Fields accessed from changed lines
-        index.fieldAccesses.values().stream()
-                .flatMap(Collection::stream)
-                .filter(fa -> fa.filePath().equals(file)
-                        && fa.resolvedKey() != null
+        index.fieldAccesses.values().stream().flatMap(Collection::stream)
+                .filter(fa -> fa.filePath().equals(file) && fa.resolvedKey() != null
                         && changedLines.contains(fa.line()))
-                .map(JavaIndexService.FieldAccess::resolvedKey)
-                .forEach(result::add);
+                .map(JavaIndexService.FieldAccess::resolvedKey).forEach(result::add);
 
         return result;
     }

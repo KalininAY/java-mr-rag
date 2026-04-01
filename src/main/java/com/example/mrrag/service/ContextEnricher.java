@@ -19,21 +19,19 @@ import java.util.function.ToIntFunction;
  *
  * <p>Enrichment strategies (in priority order):
  * <ol>
- *   <li><b>METHOD_DECLARATION</b>  – any method <em>used</em> in changed lines gets its
- *       declaration lines: from {@code startLine} up to and including the line
- *       containing the opening brace {@code {}, so the full signature is always
- *       captured regardless of annotation count or multi-line parameter lists.</li>
- *   <li><b>FIELD_DECLARATION</b>   – any field accessed in changed lines gets its
- *       declaration line</li>
- *   <li><b>VARIABLE_DECLARATION</b>– any local variable whose name literally appears
- *       in the text of changed lines gets its declaration line (reads real file content)</li>
- *   <li><b>METHOD_CALLERS</b>      – if a method <em>declaration</em> was changed, list all
- *       callers</li>
- *   <li><b>FIELD_USAGES</b>        – if a field declaration was deleted, list all accesses</li>
- *   <li><b>VARIABLE_USAGES</b>     – if a variable declaration was deleted/changed, list all
- *       usages</li>
- *   <li><b>ARGUMENT_CONTEXT</b>    – if call arguments changed, show param names + types</li>
- *   <li><b>METHOD_BODY</b>         – baseline: body of the method containing the change</li>
+ *   <li><b>METHOD_DECLARATION</b>  – declaration (signature up to opening brace) of every
+ *       method called on changed lines, read from the actual source file.</li>
+ *   <li><b>FIELD_DECLARATION</b>   – declaration line of every field accessed on changed lines.</li>
+ *   <li><b>VARIABLE_DECLARATION</b>– declaration line of every local variable whose simple name
+ *       appears in the changed-line text AND is not a Java keyword or annotation attribute.
+ *       Read from the actual source file.</li>
+ *   <li><b>METHOD_CALLERS</b>      – if a method declaration was changed, list all call sites.</li>
+ *   <li><b>FIELD_USAGES</b>        – if a field declaration was deleted, list all accesses.</li>
+ *   <li><b>VARIABLE_USAGES</b>     – if a variable declaration was deleted, list all usages.</li>
+ *   <li><b>ARGUMENT_CONTEXT</b>    – if a method is called with changed arguments, show the
+ *       actual declaration signature read from the source file (no synthetic formatting).
+ *       Only emitted when the argument count/text actually differs between ADD and DELETE.</li>
+ *   <li><b>METHOD_BODY</b>         – baseline: body of the method containing the change.</li>
  * </ol>
  */
 @Slf4j
@@ -48,6 +46,26 @@ public class ContextEnricher {
 
     @Value("${app.enrichment.maxSnippetLines:30}")
     private int maxSnippetLines;
+
+    /**
+     * Java keywords and common annotation-attribute names that must never be
+     * surfaced as VARIABLE_DECLARATION enrichments even if a local variable
+     * with the same simple name exists somewhere in the codebase.
+     */
+    private static final Set<String> KEYWORD_BLACKLIST = Set.of(
+            // Java reserved words
+            "abstract","assert","boolean","break","byte","case","catch","char",
+            "class","const","continue","default","do","double","else","enum",
+            "extends","final","finally","float","for","goto","if","implements",
+            "import","instanceof","int","interface","long","native","new","null",
+            "package","private","protected","public","return","short","static",
+            "strictfp","super","switch","synchronized","this","throw","throws",
+            "transient","try","void","volatile","while","true","false","var",
+            "record","sealed","permits","yield",
+            // Common annotation attribute names that look like identifiers
+            "value","name","type","method","path","required","defaultValue",
+            "produces","consumes","headers","params"
+    );
 
     // -----------------------------------------------------------------------
     // Public API
@@ -79,32 +97,19 @@ public class ContextEnricher {
         List<ChangedLine> deleted = filterByType(group, ChangedLine.LineType.DELETE);
         List<ChangedLine> all     = group.changedLines();
 
-        // 1. Declarations for every method call in changed lines
         strategyMethodDeclarations(all, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir, snippets);
-
-        // 2. Declarations for every field access in changed lines
         strategyFieldDeclarations(all, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir, snippets);
-
-        // 3. Declarations for every local variable whose name appears in the changed text
         strategyVariableDeclarations(all, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir, snippets);
-
-        // 4. If a method declaration changed -> list all callers
         strategyChangedMethodDeclaration(group, added, sourceIndex, sourceRepoDir, snippets);
-
-        // 5. Deleted field/variable declaration -> usages
         strategyDeletedDeclaration(deleted, targetIndex, snippets);
-
-        // 6. Changed call arguments -> param names + types
-        strategyChangedArguments(added, deleted, sourceIndex, snippets);
-
-        // 7. Containing method body (baseline context)
+        strategyChangedArguments(added, deleted, sourceIndex, sourceRepoDir, snippets);
         strategyContainingMethod(group, sourceIndex, sourceRepoDir, snippets);
 
         trim(snippets);
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 1: METHOD_DECLARATION for every called method in changed lines
+    // Strategy 1: METHOD_DECLARATION
     // -----------------------------------------------------------------------
 
     private void strategyMethodDeclarations(
@@ -116,61 +121,31 @@ public class ContextEnricher {
     ) {
         Set<String> seen = new HashSet<>();
         Set<Integer> changedLineNos = changedLineNumbers(all);
-
-        // Only consider call sites that belong to the files present in 'all'
         Set<String> changedFiles = changedFiles(all);
 
         sourceIndex.callSites.forEach((calleeKey, sites) -> {
             if (full(snippets)) return;
             boolean onChangedLine = sites.stream()
                     .anyMatch(cs -> changedFiles.contains(cs.filePath()) && changedLineNos.contains(cs.line()));
-            if (!onChangedLine) return;
-            if (seen.contains(calleeKey)) return;
+            if (!onChangedLine || seen.contains(calleeKey)) return;
             seen.add(calleeKey);
 
             JavaIndexService.MethodInfo decl =
                     sourceIndex.methods.getOrDefault(calleeKey, targetIndex.methods.get(calleeKey));
             if (decl == null) return;
-
             Path repoDir = sourceIndex.methods.containsKey(calleeKey) ? sourceRepoDir : targetRepoDir;
             addMethodDeclarationSnippet(decl, repoDir, snippets);
         });
     }
 
-    /**
-     * Reads the method declaration from {@code startLine} up to and including
-     * the line that contains the opening brace {@code {}.
-     * This correctly handles any number of annotations and multi-line parameter lists
-     * without relying on a fixed line count.
-     */
     private void addMethodDeclarationSnippet(
             JavaIndexService.MethodInfo m, Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
         if (full(snippets)) return;
-        Path file = repoDir.resolve(m.filePath());
-        if (!Files.exists(file)) return;
-
-        List<String> allLines;
-        try {
-            allLines = Files.readAllLines(file);
-        } catch (IOException e) {
-            log.warn("Cannot read {}: {}", file, e.getMessage());
-            return;
-        }
-
-        // Collect lines from startLine until we hit the opening brace of the method body.
-        // startLine is 1-based; method body starts at the line containing '{'.
-        List<String> declLines = new ArrayList<>();
-        int signatureEnd = m.startLine(); // will be updated
-        for (int i = m.startLine() - 1; i < Math.min(allLines.size(), m.endLine()); i++) {
-            String line = allLines.get(i);
-            declLines.add(line.length() > 200 ? line.substring(0, 200) + "..." : line);
-            signatureEnd = i + 1; // 1-based
-            if (line.contains("{")) break;
-        }
-
+        List<String> declLines = readUntilOpenBrace(repoDir, m.filePath(), m.startLine(), m.endLine());
         if (declLines.isEmpty()) return;
+        int signatureEnd = m.startLine() + declLines.size() - 1;
         snippets.add(new EnrichmentSnippet(
                 EnrichmentSnippet.SnippetType.METHOD_DECLARATION,
                 m.filePath(), m.startLine(), signatureEnd, m.name(),
@@ -180,7 +155,7 @@ public class ContextEnricher {
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 2: FIELD_DECLARATION for every field accessed in changed lines
+    // Strategy 2: FIELD_DECLARATION
     // -----------------------------------------------------------------------
 
     private void strategyFieldDeclarations(
@@ -198,14 +173,12 @@ public class ContextEnricher {
             if (full(snippets)) return;
             boolean onChangedLine = accesses.stream()
                     .anyMatch(fa -> changedFiles.contains(fa.filePath()) && changedLineNos.contains(fa.line()));
-            if (!onChangedLine) return;
-            if (seen.contains(fieldKey)) return;
+            if (!onChangedLine || seen.contains(fieldKey)) return;
             seen.add(fieldKey);
 
             JavaIndexService.FieldInfo decl =
                     sourceIndex.fields.getOrDefault(fieldKey, targetIndex.fields.get(fieldKey));
             if (decl == null) return;
-
             Path repoDir = sourceIndex.fields.containsKey(fieldKey) ? sourceRepoDir : targetRepoDir;
             addFieldDeclarationSnippet(decl, repoDir, snippets);
         });
@@ -227,12 +200,14 @@ public class ContextEnricher {
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 3: VARIABLE_DECLARATION for every local var used in changed lines
+    // Strategy 3: VARIABLE_DECLARATION
     //
-    // Fix 1: filter by name literally appearing in the changed text (avoids
-    //        surfacing variables from unrelated files/methods).
-    // Fix 2: read real file content via readLines() instead of constructing a
-    //        synthetic "filepath:line (type: X)" string.
+    // Only surface a variable when its simple name:
+    //  (a) literally appears in the text of a non-CONTEXT changed line,
+    //  (b) is NOT in the keyword/annotation-attribute blacklist,
+    //  (c) appears as a whole word (not a substring of a longer identifier),
+    //  (d) the variable's declaring file is one of the changed files OR the
+    //      declaration is in the same package (heuristic: same project root).
     // -----------------------------------------------------------------------
 
     private void strategyVariableDeclarations(
@@ -243,38 +218,44 @@ public class ContextEnricher {
             Path targetRepoDir,
             List<EnrichmentSnippet> snippets
     ) {
-        // Collect all identifier tokens that appear literally in the changed line texts.
-        // This prevents surfacing declarations for variables that SymbolSolver resolved
-        // by accident from unrelated scopes.
-        Set<String> namesInChangedText = extractIdentifiers(all);
+        Set<String> namesInText = extractRelevantIdentifiers(all);
+        Set<String> changedFiles = changedFiles(all);
         Set<String> seen = new HashSet<>();
 
         sourceIndex.nameUsagesBySimpleName.forEach((name, usages) -> {
             if (full(snippets)) return;
-            // Only surface variables whose name actually appears in the changed text
-            if (!namesInChangedText.contains(name)) return;
+            if (!namesInText.contains(name)) return;
             if (seen.contains(name)) return;
 
+            // Collect candidate variable infos
             List<JavaIndexService.VariableInfo> vars = new ArrayList<>();
             sourceIndex.variables.forEach((k, v) -> { if (k.endsWith("#" + name)) vars.addAll(v); });
             if (vars.isEmpty()) {
                 targetIndex.variables.forEach((k, v) -> { if (k.endsWith("#" + name)) vars.addAll(v); });
             }
             if (vars.isEmpty()) return;
+
+            // Prefer a variable declared in one of the changed files
+            JavaIndexService.VariableInfo vi = vars.stream()
+                    .filter(v -> changedFiles.contains(v.filePath()))
+                    .findFirst()
+                    .orElse(vars.get(0));
+
+            // Skip if the declaring file is completely outside the changed files
+            // and the name is very common (length < 4) – avoids noise like 's', 'i'
+            if (!changedFiles.contains(vi.filePath()) && name.length() < 4) return;
+
             seen.add(name);
 
-            JavaIndexService.VariableInfo vi = vars.get(0);
-            // Determine which repo dir to use based on which index owns the variable
             boolean inSource = sourceIndex.variables.entrySet().stream()
                     .anyMatch(e -> e.getKey().endsWith("#" + name) && !e.getValue().isEmpty());
             Path repoDir = inSource ? sourceRepoDir : targetRepoDir;
 
-            // Read the real declaration line from the file
             List<String> lineContent = readLines(repoDir, vi.filePath(),
                     vi.declarationLine(), vi.declarationLine());
             if (lineContent.isEmpty()) {
-                // Fallback: at least show file+line so the reviewer can navigate
-                lineContent = List.of(vi.filePath() + ":" + vi.declarationLine() + "  (type: " + vi.type() + ")");
+                lineContent = List.of(vi.filePath() + ":" + vi.declarationLine()
+                        + "  // type: " + vi.type());
             }
 
             snippets.add(new EnrichmentSnippet(
@@ -287,18 +268,24 @@ public class ContextEnricher {
     }
 
     /**
-     * Extracts all Java-identifier tokens from the text of non-CONTEXT changed lines.
-     * Used as a relevance gate for variable-declaration enrichment.
+     * Extracts Java-identifier tokens from non-CONTEXT changed lines,
+     * excluding Java keywords and known annotation-attribute names.
+     * Also strips comment prefixes ({@code //}) before tokenising so that
+     * commented-out code contributes its real identifiers.
      */
-    private Set<String> extractIdentifiers(List<ChangedLine> lines) {
+    private Set<String> extractRelevantIdentifiers(List<ChangedLine> lines) {
         Set<String> ids = new HashSet<>();
         for (ChangedLine l : lines) {
             if (l.type() == ChangedLine.LineType.CONTEXT) continue;
             String text = l.text();
             if (text == null || text.isBlank()) continue;
-            // Split on anything that is not a Java identifier character
-            for (String token : text.split("[^\\w]+")) {
-                if (!token.isBlank() && Character.isLetter(token.charAt(0))) {
+            // Strip comment prefix so `//   hooks.add(x)` contributes `hooks`, `add`, `x`
+            String stripped = text.strip();
+            if (stripped.startsWith("//")) stripped = stripped.substring(2).strip();
+            for (String token : stripped.split("[^\\w]+")) {
+                if (!token.isBlank()
+                        && Character.isLetter(token.charAt(0))
+                        && !KEYWORD_BLACKLIST.contains(token)) {
                     ids.add(token);
                 }
             }
@@ -307,7 +294,7 @@ public class ContextEnricher {
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 4: METHOD_CALLERS when method declaration was changed
+    // Strategy 4: METHOD_CALLERS
     // -----------------------------------------------------------------------
 
     private void strategyChangedMethodDeclaration(
@@ -331,9 +318,9 @@ public class ContextEnricher {
                     EnrichmentSnippet.SnippetType.METHOD_CALLERS,
                     method.filePath(), method.startLine(), method.endLine(), method.name(),
                     callers.stream().limit(10)
-                            .map(cs -> cs.filePath() + ":" + cs.line() +
-                                    "  " + cs.methodName() +
-                                    "(" + String.join(", ", cs.argumentTexts()) + ")")
+                            .map(cs -> cs.filePath() + ":" + cs.line()
+                                    + "  " + cs.methodName()
+                                    + "(" + String.join(", ", cs.argumentTexts()) + ")")
                             .toList(),
                     "All callers of changed method '" + method.signature() + "'"
             ));
@@ -396,43 +383,76 @@ public class ContextEnricher {
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 6: ARGUMENT_CONTEXT when call arguments changed
+    // Strategy 6: ARGUMENT_CONTEXT
+    //
+    // Triggered only when the same callee key appears in BOTH ADD and DELETE
+    // lines AND the argument texts actually differ (not just line-number churn).
+    // Content is read directly from the source file (real declaration lines)
+    // instead of being assembled synthetically.
     // -----------------------------------------------------------------------
 
     private void strategyChangedArguments(
             List<ChangedLine> added, List<ChangedLine> deleted,
             JavaIndexService.ProjectIndex sourceIndex,
+            Path sourceRepoDir,
             List<EnrichmentSnippet> snippets
     ) {
-        Set<Integer> addedLines   = lineNumberSet(added);
-        Set<Integer> deletedLines = lineNumberSet(deleted);
+        // Build maps: calleeKey -> set of argument-text fingerprints per side
+        Map<String, Set<String>> addedArgs   = collectArgFingerprints(added, sourceIndex);
+        Map<String, Set<String>> deletedArgs = collectArgFingerprints(deleted, sourceIndex);
 
         Set<String> shownKeys = new HashSet<>();
-        sourceIndex.callSites.forEach((calleeKey, sites) -> {
-            if (full(snippets)) return;
-            boolean inAdded   = sites.stream().anyMatch(cs -> addedLines.contains(cs.line()));
-            boolean inDeleted = sites.stream().anyMatch(cs -> deletedLines.contains(cs.line()));
-            if (!inAdded || !inDeleted) return;
-            if (shownKeys.contains(calleeKey)) return;
+        for (String calleeKey : addedArgs.keySet()) {
+            if (full(snippets)) break;
+            if (!deletedArgs.containsKey(calleeKey)) continue; // only in ADD side – new call, not changed
+            if (shownKeys.contains(calleeKey)) continue;
+
+            Set<String> aArgs = addedArgs.get(calleeKey);
+            Set<String> dArgs = deletedArgs.get(calleeKey);
+            if (aArgs.equals(dArgs)) continue; // arguments did not actually change
+
             shownKeys.add(calleeKey);
 
             JavaIndexService.MethodInfo decl = sourceIndex.methods.get(calleeKey);
-            if (decl == null) return;
+            if (decl == null) continue;
 
-            List<String> content = new ArrayList<>();
-            content.add(decl.signature() + "  // parameters:");
-            decl.parameters().forEach(p -> content.add("    " + p));
+            // Read the real declaration from file (signature up to opening brace)
+            List<String> sigLines = readUntilOpenBrace(sourceRepoDir, decl.filePath(),
+                    decl.startLine(), decl.endLine());
+            if (sigLines.isEmpty()) continue;
+
             snippets.add(new EnrichmentSnippet(
                     EnrichmentSnippet.SnippetType.ARGUMENT_CONTEXT,
-                    decl.filePath(), decl.startLine(), decl.startLine(), decl.name(),
-                    content,
-                    "Arguments changed for '" + decl.name() + "' – verify new args match param types"
+                    decl.filePath(), decl.startLine(),
+                    decl.startLine() + sigLines.size() - 1, decl.name(),
+                    sigLines,
+                    "Arguments changed for '" + decl.name() + "' – verify new args match parameter types"
             ));
+        }
+    }
+
+    /**
+     * For each call site on one side of the diff, collect a fingerprint of the
+     * argument texts so we can compare ADD-side vs DELETE-side arguments.
+     */
+    private Map<String, Set<String>> collectArgFingerprints(
+            List<ChangedLine> lines, JavaIndexService.ProjectIndex index) {
+        Set<Integer> lineNos = lineNumberSet(lines);
+        Set<String> files = changedFiles(lines);
+        Map<String, Set<String>> result = new LinkedHashMap<>();
+        index.callSites.forEach((calleeKey, sites) -> {
+            for (JavaIndexService.CallSite cs : sites) {
+                if (files.contains(cs.filePath()) && lineNos.contains(cs.line())) {
+                    result.computeIfAbsent(calleeKey, k -> new LinkedHashSet<>())
+                          .add(String.join(",", cs.argumentTexts()));
+                }
+            }
         });
+        return result;
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 7: METHOD_BODY – containing method as baseline context
+    // Strategy 7: METHOD_BODY
     // -----------------------------------------------------------------------
 
     private void strategyContainingMethod(
@@ -469,8 +489,28 @@ public class ContextEnricher {
     }
 
     // -----------------------------------------------------------------------
-    // File reading
+    // File reading helpers
     // -----------------------------------------------------------------------
+
+    /**
+     * Reads lines from {@code startLine} (1-based, inclusive) until the first
+     * line that contains {@code '{'}, inclusive.  Used to extract method signatures.
+     */
+    private List<String> readUntilOpenBrace(Path repoDir, String relPath, int startLine, int maxLine) {
+        Path file = repoDir.resolve(relPath);
+        if (!Files.exists(file)) return List.of();
+        List<String> all;
+        try { all = Files.readAllLines(file); }
+        catch (IOException e) { log.warn("Cannot read {}: {}", file, e.getMessage()); return List.of(); }
+
+        List<String> result = new ArrayList<>();
+        for (int i = startLine - 1; i < Math.min(all.size(), maxLine); i++) {
+            String line = all.get(i);
+            result.add(line.length() > 200 ? line.substring(0, 200) + "..." : line);
+            if (line.contains("{")) break;
+        }
+        return result;
+    }
 
     private List<String> readLines(Path repoDir, String relPath, int from, int to) {
         Path file = repoDir.resolve(relPath);
