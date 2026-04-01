@@ -40,10 +40,8 @@ public class ChangeGrouper {
      * {@code try catch finally else} (with optional surrounding braces/spaces).
      *
      * <p>The pattern is applied after stripping the {@code //} prefix and all
-     * surrounding whitespace, so it handles cases like
-     * {@code "//        } finally {"} correctly.
+     * surrounding whitespace.
      */
-    // Matches the content AFTER comment-prefix and whitespace has been stripped
     private static final Pattern STRUCTURAL_CONTENT = Pattern.compile(
             "^[\\{\\}\\(\\)\\[\\]\\s]*"
             + "(?:(?:try|catch(?:\\s*\\([^)]*\\))?|finally|else(?:\\s+if\\s*\\([^)]*\\))?)"
@@ -63,7 +61,7 @@ public class ChangeGrouper {
                                    JavaIndexService.ProjectIndex index) {
         // Step 1: drop structural-only lines (lone braces, try/finally, etc.)
         List<ChangedLine> meaningful = lines.stream()
-                .filter(l -> l.type() == ChangedLine.LineType.CONTEXT || !isStructural(l.text()))
+                .filter(l -> l.type() == ChangedLine.LineType.CONTEXT || !isStructural(l.content()))
                 .toList();
         int dropped = lines.size() - meaningful.size();
         if (dropped > 0) log.debug("Structural-line filter: dropped {}", dropped);
@@ -84,18 +82,6 @@ public class ChangeGrouper {
     // Structural-line detection
     // -----------------------------------------------------------------------
 
-    /**
-     * Returns {@code true} if the line carries no semantic information and
-     * should be suppressed from grouping and enrichment.
-     *
-     * <p>Logic:
-     * <ol>
-     *   <li>Strip leading/trailing whitespace.</li>
-     *   <li>If the line starts with {@code //}, strip the comment prefix
-     *       (and any further whitespace) to get the "content".</li>
-     *   <li>Test the content against {@link #STRUCTURAL_CONTENT}.</li>
-     * </ol>
-     */
     static boolean isStructural(String text) {
         if (text == null) return true;
         String stripped = text.strip();
@@ -106,20 +92,9 @@ public class ChangeGrouper {
 
     // -----------------------------------------------------------------------
     // Mirror-comment pair merging
-    //
-    // A "mirror pair" is: DELETE line with text T  +  ADD line with text "// T"
-    // (or vice-versa: ADD "// T" before DELETE T is also accepted).
-    // Such pairs result from the common "comment-out" refactoring and should
-    // appear as a single logical change rather than two independent groups.
-    //
-    // Algorithm: single-pass scan within each file.  On a DELETE, look ahead
-    // for an ADD whose uncommented text matches.  When found, emit a synthetic
-    // CONTEXT line for the DELETE and keep the ADD (so the pair ends up in the
-    // same bucket during code-block grouping).
     // -----------------------------------------------------------------------
 
     private List<ChangedLine> mergeMirrorCommentPairs(List<ChangedLine> lines) {
-        // Group by file to avoid cross-file false positives
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
         for (ChangedLine l : lines) byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
 
@@ -142,19 +117,16 @@ public class ChangeGrouper {
                 out.add(del);
                 continue;
             }
-            // Look ahead up to 3 positions for a matching ADD
-            String delNorm = normaliseForMirror(del.text());
+            String delNorm = normaliseForMirror(del.content());
             boolean paired = false;
             for (int j = i + 1; j < Math.min(n, i + 4); j++) {
                 if (consumed[j]) continue;
                 ChangedLine add = lines.get(j);
                 if (add.type() != ChangedLine.LineType.ADD) continue;
-                String addNorm = normaliseForMirror(uncomment(add.text()));
+                String addNorm = normaliseForMirror(uncomment(add.content()));
                 if (delNorm.equals(addNorm) && !delNorm.isBlank()) {
-                    // Merge: keep ADD (it has the new content), drop DELETE
                     consumed[j] = true;
                     consumed[i] = true;
-                    // Emit DELETE first (as context so same bucket), then ADD
                     out.add(del.asContext());
                     out.add(add);
                     paired = true;
@@ -167,15 +139,12 @@ public class ChangeGrouper {
         return out;
     }
 
-    /** Strips the leading {@code //} comment marker and surrounding whitespace. */
     private static String uncomment(String text) {
         if (text == null) return "";
         String s = text.strip();
-        if (s.startsWith("//")) return s.substring(2).strip();
-        return s;
+        return s.startsWith("//") ? s.substring(2).strip() : s;
     }
 
-    /** Normalises a line for mirror-pair comparison: strip, remove comment prefix, lowercase. */
     private static String normaliseForMirror(String text) {
         if (text == null) return "";
         return uncomment(text).toLowerCase(java.util.Locale.ROOT);
