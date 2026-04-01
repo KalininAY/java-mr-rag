@@ -24,7 +24,7 @@ dependencies {
     // GitLab API
     implementation 'org.gitlab4j:gitlab4j-api:6.0.0'
 
-    // Spoon — full AST graph (replaces javaparser-symbol-solver)
+    // Spoon — full AST graph
     implementation 'fr.inria.gforge.spoon:spoon-core:10.4.2'
 
     // JGit for local repo operations
@@ -32,6 +32,7 @@ dependencies {
 
     // Utilities
     implementation 'org.apache.commons:commons-lang3:3.17.0'
+    implementation 'commons-io:commons-io:2.18.0'
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
 
