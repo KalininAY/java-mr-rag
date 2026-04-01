@@ -25,8 +25,8 @@ import java.util.function.ToIntFunction;
  *       captured regardless of annotation count or multi-line parameter lists.</li>
  *   <li><b>FIELD_DECLARATION</b>   – any field accessed in changed lines gets its
  *       declaration line</li>
- *   <li><b>VARIABLE_DECLARATION</b>– any local variable used in changed lines gets its
- *       declaration line</li>
+ *   <li><b>VARIABLE_DECLARATION</b>– any local variable whose name literally appears
+ *       in the text of changed lines gets its declaration line (reads real file content)</li>
  *   <li><b>METHOD_CALLERS</b>      – if a method <em>declaration</em> was changed, list all
  *       callers</li>
  *   <li><b>FIELD_USAGES</b>        – if a field declaration was deleted, list all accesses</li>
@@ -85,8 +85,8 @@ public class ContextEnricher {
         // 2. Declarations for every field access in changed lines
         strategyFieldDeclarations(all, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir, snippets);
 
-        // 3. Declarations for every local variable used in changed lines
-        strategyVariableDeclarations(all, sourceIndex, targetIndex, snippets);
+        // 3. Declarations for every local variable whose name appears in the changed text
+        strategyVariableDeclarations(all, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir, snippets);
 
         // 4. If a method declaration changed -> list all callers
         strategyChangedMethodDeclaration(group, added, sourceIndex, sourceRepoDir, snippets);
@@ -115,11 +115,15 @@ public class ContextEnricher {
             List<EnrichmentSnippet> snippets
     ) {
         Set<String> seen = new HashSet<>();
-        Set<Integer> changedLines = changedLineNumbers(all);
+        Set<Integer> changedLineNos = changedLineNumbers(all);
+
+        // Only consider call sites that belong to the files present in 'all'
+        Set<String> changedFiles = changedFiles(all);
 
         sourceIndex.callSites.forEach((calleeKey, sites) -> {
             if (full(snippets)) return;
-            boolean onChangedLine = sites.stream().anyMatch(cs -> changedLines.contains(cs.line()));
+            boolean onChangedLine = sites.stream()
+                    .anyMatch(cs -> changedFiles.contains(cs.filePath()) && changedLineNos.contains(cs.line()));
             if (!onChangedLine) return;
             if (seen.contains(calleeKey)) return;
             seen.add(calleeKey);
@@ -187,11 +191,13 @@ public class ContextEnricher {
             List<EnrichmentSnippet> snippets
     ) {
         Set<String> seen = new HashSet<>();
-        Set<Integer> changedLines = changedLineNumbers(all);
+        Set<Integer> changedLineNos = changedLineNumbers(all);
+        Set<String> changedFiles = changedFiles(all);
 
         sourceIndex.fieldAccesses.forEach((fieldKey, accesses) -> {
             if (full(snippets)) return;
-            boolean onChangedLine = accesses.stream().anyMatch(fa -> changedLines.contains(fa.line()));
+            boolean onChangedLine = accesses.stream()
+                    .anyMatch(fa -> changedFiles.contains(fa.filePath()) && changedLineNos.contains(fa.line()));
             if (!onChangedLine) return;
             if (seen.contains(fieldKey)) return;
             seen.add(fieldKey);
@@ -222,21 +228,31 @@ public class ContextEnricher {
 
     // -----------------------------------------------------------------------
     // Strategy 3: VARIABLE_DECLARATION for every local var used in changed lines
+    //
+    // Fix 1: filter by name literally appearing in the changed text (avoids
+    //        surfacing variables from unrelated files/methods).
+    // Fix 2: read real file content via readLines() instead of constructing a
+    //        synthetic "filepath:line (type: X)" string.
     // -----------------------------------------------------------------------
 
     private void strategyVariableDeclarations(
             List<ChangedLine> all,
             JavaIndexService.ProjectIndex sourceIndex,
             JavaIndexService.ProjectIndex targetIndex,
+            Path sourceRepoDir,
+            Path targetRepoDir,
             List<EnrichmentSnippet> snippets
     ) {
-        Set<Integer> changedLines = changedLineNumbers(all);
+        // Collect all identifier tokens that appear literally in the changed line texts.
+        // This prevents surfacing declarations for variables that SymbolSolver resolved
+        // by accident from unrelated scopes.
+        Set<String> namesInChangedText = extractIdentifiers(all);
         Set<String> seen = new HashSet<>();
 
         sourceIndex.nameUsagesBySimpleName.forEach((name, usages) -> {
             if (full(snippets)) return;
-            boolean onChangedLine = usages.stream().anyMatch(u -> changedLines.contains(u.line()));
-            if (!onChangedLine) return;
+            // Only surface variables whose name actually appears in the changed text
+            if (!namesInChangedText.contains(name)) return;
             if (seen.contains(name)) return;
 
             List<JavaIndexService.VariableInfo> vars = new ArrayList<>();
@@ -248,13 +264,46 @@ public class ContextEnricher {
             seen.add(name);
 
             JavaIndexService.VariableInfo vi = vars.get(0);
+            // Determine which repo dir to use based on which index owns the variable
+            boolean inSource = sourceIndex.variables.entrySet().stream()
+                    .anyMatch(e -> e.getKey().endsWith("#" + name) && !e.getValue().isEmpty());
+            Path repoDir = inSource ? sourceRepoDir : targetRepoDir;
+
+            // Read the real declaration line from the file
+            List<String> lineContent = readLines(repoDir, vi.filePath(),
+                    vi.declarationLine(), vi.declarationLine());
+            if (lineContent.isEmpty()) {
+                // Fallback: at least show file+line so the reviewer can navigate
+                lineContent = List.of(vi.filePath() + ":" + vi.declarationLine() + "  (type: " + vi.type() + ")");
+            }
+
             snippets.add(new EnrichmentSnippet(
                     EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION,
                     vi.filePath(), vi.declarationLine(), vi.declarationLine(), vi.name(),
-                    List.of(vi.filePath() + ":" + vi.declarationLine() + "  (type: " + vi.type() + ")"),
-                    "Declaration of local variable '" + vi.name() + "' used in changed lines"
+                    lineContent,
+                    "Declaration of local variable '" + vi.name() + "' (type: " + vi.type() + ") used in changed lines"
             ));
         });
+    }
+
+    /**
+     * Extracts all Java-identifier tokens from the text of non-CONTEXT changed lines.
+     * Used as a relevance gate for variable-declaration enrichment.
+     */
+    private Set<String> extractIdentifiers(List<ChangedLine> lines) {
+        Set<String> ids = new HashSet<>();
+        for (ChangedLine l : lines) {
+            if (l.type() == ChangedLine.LineType.CONTEXT) continue;
+            String text = l.text();
+            if (text == null || text.isBlank()) continue;
+            // Split on anything that is not a Java identifier character
+            for (String token : text.split("[^\\w]+")) {
+                if (!token.isBlank() && Character.isLetter(token.charAt(0))) {
+                    ids.add(token);
+                }
+            }
+        }
+        return ids;
     }
 
     // -----------------------------------------------------------------------
@@ -456,6 +505,14 @@ public class ContextEnricher {
             if (l.oldLineNumber() > 0) set.add(l.oldLineNumber());
         }
         return set;
+    }
+
+    private Set<String> changedFiles(List<ChangedLine> lines) {
+        Set<String> files = new HashSet<>();
+        for (ChangedLine l : lines) {
+            if (l.type() != ChangedLine.LineType.CONTEXT) files.add(l.filePath());
+        }
+        return files;
     }
 
     private Set<Integer> lineNumberSet(List<ChangedLine> lines) {

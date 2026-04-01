@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
 
 /**
  * Groups changed lines into cohesive ChangeGroups.
@@ -36,6 +37,20 @@ public class ChangeGrouper {
 
     private final AtomicInteger groupCounter = new AtomicInteger(0);
 
+    /**
+     * Lines that carry no semantic meaning on their own and should not form
+     * independent groups or pollute context enrichment.
+     *
+     * <p>A line is structural if, after stripping leading whitespace and optional
+     * comment prefixes ({@code //}), it matches only braces/brackets, keywords like
+     * {@code try/catch/finally/else}, or is empty.
+     */
+    private static final Pattern STRUCTURAL_LINE = Pattern.compile(
+            "^(?://+\\s*)?[\\{\\}\\(\\)\\[\\]]*\\s*" +
+            "(?:try|catch|finally|else|\\}\\s*else|\\}\\s*catch|\\}\\s*finally)?" +
+            "[\\{\\}\\(\\)\\[\\]]*\\s*$"
+    );
+
     // -----------------------------------------------------------------------
     // Public API
     // -----------------------------------------------------------------------
@@ -56,11 +71,40 @@ public class ChangeGrouper {
      */
     public List<ChangeGroup> group(List<ChangedLine> lines,
                                    JavaIndexService.ProjectIndex index) {
-        List<ChangeGroup> phase1 = codeBlockGroup(lines, index);
+        // Remove pure structural changes before grouping so that a deleted `}` or
+        // `try {` does not become its own group and pollute cross-file AST merge.
+        List<ChangedLine> meaningful = lines.stream()
+                .filter(l -> l.type() == ChangedLine.LineType.CONTEXT || !isStructural(l.text()))
+                .toList();
+
+        int dropped = lines.size() - meaningful.size();
+        if (dropped > 0) {
+            log.debug("Structural-line filter: dropped {} lines (e.g. lone braces, try/finally)", dropped);
+        }
+
+        List<ChangeGroup> phase1 = codeBlockGroup(meaningful, index);
         log.debug("Phase 1 (code-block): {} groups", phase1.size());
         List<ChangeGroup> phase2 = semanticMerge(phase1, index);
         log.debug("Phase 2 (cross-file AST): {} groups", phase2.size());
         return phase2;
+    }
+
+    // -----------------------------------------------------------------------
+    // Structural-line detection
+    // -----------------------------------------------------------------------
+
+    /**
+     * Returns {@code true} if the line text is purely structural (brace/bracket,
+     * {@code try}, {@code catch}, {@code finally}, {@code else}, or empty/commented-out
+     * equivalent) and carries no semantic information for the reviewer.
+     */
+    static boolean isStructural(String text) {
+        if (text == null) return true;
+        String stripped = text.strip();
+        if (stripped.isEmpty()) return true;
+        // Commented-out lines that are themselves structural (e.g. `//        try {`)
+        String withoutComment = stripped.startsWith("//") ? stripped.substring(2).strip() : stripped;
+        return STRUCTURAL_LINE.matcher(withoutComment).matches();
     }
 
     // -----------------------------------------------------------------------
