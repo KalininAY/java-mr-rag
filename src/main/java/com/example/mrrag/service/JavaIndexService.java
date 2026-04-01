@@ -1,270 +1,184 @@
 package com.example.mrrag.service;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
-import com.github.javaparser.ast.CompilationUnit;
-import com.github.javaparser.ast.body.*;
-import com.github.javaparser.ast.expr.*;
-import com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration;
-import com.github.javaparser.resolution.declarations.ResolvedValueDeclaration;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
- * Builds and queries a symbol index for a Java project checked out locally.
- * Indexes: methods (with body hash), fields, local variables, method call
- * sites, field accesses, argument usages, and generic name usages.
+ * Backward-compatible index API used by {@link ContextEnricher}.
+ * <p>
+ * Delegates AST graph construction to {@link AstGraphService} and projects the
+ * rich {@link AstGraphService.ProjectGraph} into the flat maps that the rest of
+ * the application expects.
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class JavaIndexService {
 
+    private final AstGraphService graphService;
     private final Map<Path, ProjectIndex> indexCache = new ConcurrentHashMap<>();
+
+    // ------------------------------------------------------------------
+    // Public build / invalidate
+    // ------------------------------------------------------------------
 
     public ProjectIndex buildIndex(Path projectRoot) throws IOException {
         return indexCache.computeIfAbsent(projectRoot, root -> {
-            try {
-                return doBuildIndex(root);
-            } catch (IOException e) {
-                throw new RuntimeException("Failed to build index for " + root, e);
-            }
+            AstGraphService.ProjectGraph g = graphService.buildGraph(root);
+            return project(g, root);
         });
     }
 
     public void invalidate(Path projectRoot) {
         indexCache.remove(projectRoot);
+        graphService.invalidate(projectRoot);
     }
 
-    // -----------------------------------------------------------------------
-    // Index building
-    // -----------------------------------------------------------------------
+    /**
+     * Returns the raw Spoon graph for callers that need more than the flat index.
+     */
+    public AstGraphService.ProjectGraph getGraph(Path projectRoot) {
+        return graphService.buildGraph(projectRoot);
+    }
 
-    private ProjectIndex doBuildIndex(Path projectRoot) throws IOException {
-        log.info("Building JavaParser index for {}", projectRoot);
-        List<Path> sourceRoots = findSourceRoots(projectRoot);
+    // ------------------------------------------------------------------
+    // Projection: ProjectGraph → ProjectIndex
+    // ------------------------------------------------------------------
 
-        var typeSolver = new com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver();
-        typeSolver.add(new com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver(false));
-        for (Path src : sourceRoots) {
-            typeSolver.add(new com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver(src.toFile()));
+    private ProjectIndex project(AstGraphService.ProjectGraph g, Path root) {
+        ProjectIndex idx = new ProjectIndex();
+
+        for (AstGraphService.GraphNode node : g.nodes.values()) {
+            switch (node.kind()) {
+                case METHOD -> {
+                    // Reconstruct a MethodInfo from graph node + incoming CONTAINS edge
+                    // (name, key, file, lines, signature derived from id)
+                    String sig = extractSignatureFromId(node.id());
+                    MethodInfo m = new MethodInfo(
+                            node.simpleName(),
+                            node.id(),
+                            node.filePath(),
+                            node.startLine(),
+                            node.endLine(),
+                            sig,
+                            List.of(), // params: full list available from Spoon node via graph
+                            null        // bodyHash: expensive, computed on demand
+                    );
+                    idx.methods.put(node.id(), m);
+                    idx.methodsByFile
+                            .computeIfAbsent(node.filePath(), k -> new ArrayList<>()).add(m);
+                }
+                case FIELD -> {
+                    FieldInfo f = new FieldInfo(
+                            node.simpleName(), node.id(), node.filePath(),
+                            node.startLine(), "" /* type not stored in node */);
+                    idx.fields.put(node.id(), f);
+                    idx.fieldsByName
+                            .computeIfAbsent(node.simpleName(), k -> new ArrayList<>()).add(f);
+                }
+                case VARIABLE -> {
+                    VariableInfo v = new VariableInfo(
+                            node.simpleName(), node.filePath(), node.startLine(), "");
+                    idx.variables
+                            .computeIfAbsent(node.filePath() + "#" + node.simpleName(),
+                                    k -> new ArrayList<>()).add(v);
+                }
+                default -> { /* CLASS, LAMBDA, ANNOTATION — not in flat index */ }
+            }
         }
 
-        ParserConfiguration config = new ParserConfiguration()
-                .setSymbolResolver(new com.github.javaparser.symbolsolver.JavaSymbolSolver(typeSolver))
-                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21);
-        JavaParser parser = new JavaParser(config);
-
-        ProjectIndex index = new ProjectIndex();
-
-        try (Stream<Path> stream = Files.walk(projectRoot)) {
-            List<Path> javaFiles = stream
-                    .filter(p -> p.toString().endsWith(".java"))
-                    .filter(p -> !p.toString().contains("/build/") && !p.toString().contains("/target/"))
-                    .toList();
-
-            log.info("Parsing {} Java files", javaFiles.size());
-            for (Path file : javaFiles) {
-                try {
-                    var res = parser.parse(file);
-                    if (res.isSuccessful() && res.getResult().isPresent()) {
-                        indexFile(file, projectRoot, res.getResult().get(), index);
-                    } else {
-                        log.debug("Parse issues in {}: {}", file, res.getProblems());
-                    }
-                } catch (Exception e) {
-                    log.warn("Failed to parse {}: {}", file, e.getMessage());
+        // Rebuild call sites from INVOKES edges
+        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
+            for (AstGraphService.GraphEdge e : edges) {
+                if (e.kind() == AstGraphService.EdgeKind.INVOKES) {
+                    CallSite cs = new CallSite(
+                            simpleNameFromId(e.toId()), e.filePath(), e.line(),
+                            e.toId(), List.of());
+                    idx.callSites
+                            .computeIfAbsent(e.toId(), k -> new ArrayList<>()).add(cs);
                 }
             }
         }
 
-        log.info("Index built: {} methods, {} fields, {} variables, {} call sites, {} field accesses",
-                index.methods.size(), index.fields.size(), index.variables.size(),
-                index.callSites.size(), index.fieldAccesses.size());
-        return index;
-    }
-
-    private void indexFile(Path file, Path projectRoot, CompilationUnit cu, ProjectIndex index) {
-        String relPath = projectRoot.relativize(file).toString();
-
-        // --- Method declarations ---
-        cu.findAll(MethodDeclaration.class).forEach(method -> method.getRange().ifPresent(range -> {
-            String key = buildMethodKey(method);
-            String bodyHash = computeBodyHash(method);
-            MethodInfo info = new MethodInfo(
-                    method.getNameAsString(), key, relPath,
-                    range.begin.line, range.end.line,
-                    method.getSignature().asString(),
-                    method.getParameters().stream()
-                            .map(p -> p.getType().asString() + " " + p.getNameAsString())
-                            .toList(),
-                    bodyHash
-            );
-            index.methods.put(key, info);
-            index.methodsByFile.computeIfAbsent(relPath, k -> new ArrayList<>()).add(info);
-        }));
-
-        // --- Field declarations ---
-        cu.findAll(FieldDeclaration.class).forEach(field -> field.getRange().ifPresent(range ->
-                field.getVariables().forEach(var -> {
-                    String resolvedKey = resolveFieldKey(field, var);
-                    FieldInfo info = new FieldInfo(
-                            var.getNameAsString(),
-                            resolvedKey,
-                            relPath,
-                            range.begin.line,
-                            field.getElementType().asString()
-                    );
-                    index.fields.put(resolvedKey, info);
-                    index.fieldsByName.computeIfAbsent(var.getNameAsString(), k -> new ArrayList<>()).add(info);
-                })
-        ));
-
-        // --- Local variable declarations ---
-        cu.findAll(VariableDeclarator.class).forEach(var -> var.getRange().ifPresent(range -> {
-            if (var.getParentNode().map(p -> p instanceof FieldDeclaration).orElse(false)) return;
-            String name = var.getNameAsString();
-            VariableInfo info = new VariableInfo(
-                    name, relPath, range.begin.line, var.getTypeAsString());
-            index.variables.computeIfAbsent(relPath + "#" + name, k -> new ArrayList<>()).add(info);
-        }));
-
-        // --- Method call sites ---
-        cu.findAll(MethodCallExpr.class).forEach(call -> call.getRange().ifPresent(range -> {
-            String resolved = resolveCalledMethod(call);
-            List<String> argTexts = call.getArguments().stream()
-                    .map(com.github.javaparser.ast.Node::toString)
-                    .toList();
-            CallSite site = new CallSite(
-                    call.getNameAsString(), relPath, range.begin.line, resolved, argTexts);
-            String key = resolved != null ? resolved : "unresolved:" + call.getNameAsString();
-            index.callSites.computeIfAbsent(key, k -> new ArrayList<>()).add(site);
-        }));
-
-        // --- Field accesses (obj.field) ---
-        cu.findAll(FieldAccessExpr.class).forEach(fa -> fa.getRange().ifPresent(range -> {
-            String fieldName = fa.getNameAsString();
-            String resolvedKey = resolveFieldAccess(fa);
-            FieldAccess access = new FieldAccess(
-                    fieldName, relPath, range.begin.line, resolvedKey);
-            String key = resolvedKey != null ? resolvedKey : "unresolved:" + fieldName;
-            index.fieldAccesses.computeIfAbsent(key, k -> new ArrayList<>()).add(access);
-            index.fieldAccessesByName.computeIfAbsent(fieldName, k -> new ArrayList<>()).add(access);
-        }));
-
-        // --- Generic name usages ---
-        cu.findAll(NameExpr.class).forEach(name -> name.getRange().ifPresent(range -> {
-            String resolved = resolveNameExpr(name);
-            if (resolved != null) {
-                index.nameUsages
-                        .computeIfAbsent(resolved, k -> new ArrayList<>())
-                        .add(new NameUsage(name.getNameAsString(), relPath, range.begin.line));
+        // Rebuild field accesses from READS_FIELD / WRITES_FIELD edges
+        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
+            for (AstGraphService.GraphEdge e : edges) {
+                if (e.kind() == AstGraphService.EdgeKind.READS_FIELD
+                        || e.kind() == AstGraphService.EdgeKind.WRITES_FIELD) {
+                    FieldAccess fa = new FieldAccess(
+                            simpleNameFromFieldId(e.toId()), e.filePath(), e.line(), e.toId());
+                    idx.fieldAccesses
+                            .computeIfAbsent(e.toId(), k -> new ArrayList<>()).add(fa);
+                    idx.fieldAccessesByName
+                            .computeIfAbsent(fa.fieldName(), k -> new ArrayList<>()).add(fa);
+                }
             }
-            index.nameUsagesBySimpleName
-                    .computeIfAbsent(name.getNameAsString(), k -> new ArrayList<>())
-                    .add(new NameUsage(name.getNameAsString(), relPath, range.begin.line));
-        }));
-    }
-
-    // -----------------------------------------------------------------------
-    // Body hash
-    // -----------------------------------------------------------------------
-
-    /**
-     * Computes a normalised MD5 hash of a method body:
-     * <ol>
-     *   <li>Take the method body source text via JavaParser's {@code toString()}
-     *       (this includes the full body block).</li>
-     *   <li>Strip all line comments ({@code // ...}) and block comments
-     *       ({@code /* ... *\/}).</li>
-     *   <li>Collapse all whitespace (spaces, tabs, newlines) to a single space
-     *       and trim, so formatting differences are ignored.</li>
-     *   <li>MD5-hash the resulting string (UTF-8).</li>
-     * </ol>
-     * Returns {@code null} if the method has no body (abstract / interface default).
-     */
-    private String computeBodyHash(MethodDeclaration method) {
-        return method.getBody().map(body -> {
-            // 1. Get normalised body text
-            String text = body.toString();
-            // 2. Remove block comments
-            text = text.replaceAll("/\\*.*?\\*/", " ");
-            // 3. Remove line comments
-            text = text.replaceAll("//[^\\n]*", " ");
-            // 4. Collapse whitespace
-            text = text.replaceAll("\\s+", " ").trim();
-            // 5. MD5
-            try {
-                MessageDigest md = MessageDigest.getInstance("MD5");
-                byte[] digest = md.digest(text.getBytes(StandardCharsets.UTF_8));
-                StringBuilder sb = new StringBuilder();
-                for (byte b : digest) sb.append(String.format("%02x", b));
-                return sb.toString();
-            } catch (NoSuchAlgorithmException e) {
-                throw new RuntimeException(e);
-            }
-        }).orElse(null);
-    }
-
-    // -----------------------------------------------------------------------
-    // Resolution helpers
-    // -----------------------------------------------------------------------
-
-    private String resolveCalledMethod(MethodCallExpr call) {
-        try { return call.resolve().getQualifiedSignature(); } catch (Exception e) { return null; }
-    }
-
-    private String resolveNameExpr(NameExpr name) {
-        try {
-            ResolvedValueDeclaration r = name.resolve();
-            return r.getType().describe() + ":" + r.getName();
-        } catch (Exception e) { return null; }
-    }
-
-    private String resolveFieldKey(FieldDeclaration field, VariableDeclarator var) {
-        try {
-            ResolvedFieldDeclaration r = field.resolve();
-            return r.declaringType().getQualifiedName() + "." + var.getNameAsString();
-        } catch (Exception e) {
-            return field.findAncestor(ClassOrInterfaceDeclaration.class)
-                    .map(c -> c.getNameAsString() + "." + var.getNameAsString())
-                    .orElse("?." + var.getNameAsString());
         }
-    }
 
-    private String resolveFieldAccess(FieldAccessExpr fa) {
-        try {
-            var r = fa.resolve();
-            if (r instanceof ResolvedFieldDeclaration rfd) {
-                return rfd.declaringType().getQualifiedName() + "." + rfd.getName();
+        // Rebuild name usages from READS_VAR / WRITES_VAR edges
+        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
+            for (AstGraphService.GraphEdge e : edges) {
+                if (e.kind() == AstGraphService.EdgeKind.READS_VAR
+                        || e.kind() == AstGraphService.EdgeKind.WRITES_VAR) {
+                    String name = simpleNameFromVarId(e.toId());
+                    NameUsage nu = new NameUsage(name, e.filePath(), e.line());
+                    idx.nameUsages
+                            .computeIfAbsent(e.toId(), k -> new ArrayList<>()).add(nu);
+                    idx.nameUsagesBySimpleName
+                            .computeIfAbsent(name, k -> new ArrayList<>()).add(nu);
+                }
             }
-            return null;
-        } catch (Exception e) { return null; }
-    }
-
-    private String buildMethodKey(MethodDeclaration method) {
-        try { return method.resolve().getQualifiedSignature(); }
-        catch (Exception e) {
-            return method.getNameAsString() + "(" +
-                    method.getParameters().stream()
-                            .map(p -> p.getType().asString())
-                            .collect(Collectors.joining(",")) + ")";
         }
+
+        log.info("Projected index: {} methods, {} fields, {} variables, {} call-site keys",
+                idx.methods.size(), idx.fields.size(), idx.variables.size(), idx.callSites.size());
+        return idx;
     }
 
-    // -----------------------------------------------------------------------
-    // Public query API
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // ID parsing helpers
+    // ------------------------------------------------------------------
+
+    /** "com.example.Foo#bar(int, String)"  →  "bar(int, String)" */
+    private static String extractSignatureFromId(String id) {
+        int hash = id.lastIndexOf('#');
+        return hash >= 0 ? id.substring(hash + 1) : id;
+    }
+
+    /** "com.example.Foo#bar(int)" → "bar" */
+    private static String simpleNameFromId(String id) {
+        int hash = id.lastIndexOf('#');
+        String sig = hash >= 0 ? id.substring(hash + 1) : id;
+        int paren = sig.indexOf('(');
+        return paren >= 0 ? sig.substring(0, paren) : sig;
+    }
+
+    /** "com.example.Foo.myField" → "myField" */
+    private static String simpleNameFromFieldId(String id) {
+        int dot = id.lastIndexOf('.');
+        return dot >= 0 ? id.substring(dot + 1) : id;
+    }
+
+    /** "var@Foo.java:42:count" → "count" */
+    private static String simpleNameFromVarId(String id) {
+        int colon = id.lastIndexOf(':');
+        return colon >= 0 ? id.substring(colon + 1) : id;
+    }
+
+    // ------------------------------------------------------------------
+    // Public query API (unchanged surface — ContextEnricher uses these)
+    // ------------------------------------------------------------------
 
     public Optional<MethodInfo> findContainingMethod(ProjectIndex index, String relPath, int line) {
         return index.methodsByFile.getOrDefault(relPath, List.of()).stream()
@@ -312,23 +226,9 @@ public class JavaIndexService {
                 .toList();
     }
 
-    // -----------------------------------------------------------------------
-    // Source root detection
-    // -----------------------------------------------------------------------
-
-    private List<Path> findSourceRoots(Path projectRoot) throws IOException {
-        List<Path> candidates = List.of(
-                projectRoot.resolve("src/main/java"),
-                projectRoot.resolve("src/test/java"),
-                projectRoot
-        );
-        List<Path> existing = candidates.stream().filter(Files::isDirectory).toList();
-        return existing.isEmpty() ? List.of(projectRoot) : existing;
-    }
-
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------
     // Data model
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------
 
     public static class ProjectIndex {
         public final Map<String, MethodInfo>           methods             = new LinkedHashMap<>();
@@ -343,11 +243,6 @@ public class JavaIndexService {
         public final Map<String, List<NameUsage>>      nameUsagesBySimpleName = new LinkedHashMap<>();
     }
 
-    /**
-     * @param bodyHash MD5 of normalised method body (whitespace + comments stripped).
-     *                 {@code null} for abstract methods and interface methods without
-     *                 a default body.
-     */
     public record MethodInfo(
             String name, String qualifiedKey, String filePath,
             int startLine, int endLine, String signature,

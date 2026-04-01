@@ -24,8 +24,8 @@ dependencies {
     // GitLab API
     implementation 'org.gitlab4j:gitlab4j-api:6.0.0'
 
-    // JavaParser + Symbol Solver
-    implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.26.1'
+    // Spoon — full AST graph (replaces javaparser-symbol-solver)
+    implementation 'fr.inria.gforge.spoon:spoon-core:10.4.2'
 
     // JGit for local repo operations
     implementation 'org.eclipse.jgit:org.eclipse.jgit:7.1.0.202411261347-r'
@@ -50,13 +50,11 @@ if (envFile.exists()) {
     def envVars = [:]
     envFile.eachLine { line ->
         line = line.trim()
-        // skip blank lines and comments
         if (!line || line.startsWith('#')) return
         def idx = line.indexOf('=')
         if (idx > 0) {
             def key   = line.substring(0, idx).trim()
             def value = line.substring(idx + 1).trim()
-            // strip surrounding quotes if present
             if ((value.startsWith('"') && value.endsWith('"')) ||
                 (value.startsWith("'") && value.endsWith("'"))) {
                 value = value.substring(1, value.length() - 1)
