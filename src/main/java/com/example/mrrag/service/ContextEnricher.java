@@ -12,34 +12,31 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
-import java.util.function.ToIntFunction;
 
 /**
- * Enriches ChangeGroups with contextual snippets from the indexed codebase.
+ * Enriches ChangeGroups with contextual snippets.
  *
- * <p>Enrichment strategies (in priority order):
+ * <p><b>Design principle:</b> Every strategy starts from a graph query by
+ * (filePath, lineNumber) — never from text parsing or token matching.
+ *
  * <ol>
- *   <li><b>METHOD_DECLARATION</b>  – declaration (signature up to opening brace) of every
- *       method called on changed lines, read from the actual source file.</li>
- *   <li><b>FIELD_DECLARATION</b>   – declaration line of every field accessed on changed lines.</li>
- *   <li><b>VARIABLE_DECLARATION</b>– declaration line of every local variable whose simple name
- *       appears in the changed-line text AND is not a Java keyword or annotation attribute.
- *       Read from the actual source file.</li>
- *   <li><b>METHOD_CALLERS</b>      – if a method declaration was changed, list all call sites.</li>
- *   <li><b>FIELD_USAGES</b>        – if a field declaration was deleted, list all accesses.</li>
- *   <li><b>VARIABLE_USAGES</b>     – if a variable declaration was deleted, list all usages.</li>
- *   <li><b>ARGUMENT_CONTEXT</b>    – if a method is called with changed arguments, show the
- *       actual declaration signature read from the source file (no synthetic formatting).
- *       Only emitted when the argument count/text actually differs between ADD and DELETE.</li>
- *   <li><b>METHOD_BODY</b>         – baseline: body of the method containing the change.</li>
+ *   <li>For each changed line: look up all outgoing edges at that line in the
+ *       source graph ({@code edgesFrom} where {@code edge.filePath==file} and
+ *       {@code edge.line==lineNo}).</li>
+ *   <li>Follow the edge to its target node to find the declaration.</li>
+ *   <li>Read the declaration from the actual source file using the node's
+ *       {@code filePath / startLine / endLine}.</li>
  * </ol>
+ *
+ * <p>No tokenisation, no keyword blacklists, no name-matching heuristics.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ContextEnricher {
 
-    private final JavaIndexService indexService;
+    private final AstGraphService graphService;
+    private final JavaIndexService indexService; // kept for readLines / file helpers
 
     @Value("${app.enrichment.maxSnippetsPerGroup:12}")
     private int maxSnippetsPerGroup;
@@ -47,47 +44,34 @@ public class ContextEnricher {
     @Value("${app.enrichment.maxSnippetLines:30}")
     private int maxSnippetLines;
 
-    /**
-     * Java keywords and common annotation-attribute names that must never be
-     * surfaced as VARIABLE_DECLARATION enrichments even if a local variable
-     * with the same simple name exists somewhere in the codebase.
-     */
-    private static final Set<String> KEYWORD_BLACKLIST = Set.of(
-            // Java reserved words
-            "abstract","assert","boolean","break","byte","case","catch","char",
-            "class","const","continue","default","do","double","else","enum",
-            "extends","final","finally","float","for","goto","if","implements",
-            "import","instanceof","int","interface","long","native","new","null",
-            "package","private","protected","public","return","short","static",
-            "strictfp","super","switch","synchronized","this","throw","throws",
-            "transient","try","void","volatile","while","true","false","var",
-            "record","sealed","permits","yield",
-            // Common annotation attribute names that look like identifiers
-            "value","name","type","method","path","required","defaultValue",
-            "produces","consumes","headers","params"
-    );
-
     // -----------------------------------------------------------------------
     // Public API
     // -----------------------------------------------------------------------
 
     public List<ChangeGroup> enrich(
             List<ChangeGroup> groups,
-            JavaIndexService.ProjectIndex sourceIndex,
-            JavaIndexService.ProjectIndex targetIndex,
+            JavaIndexService.ProjectIndex sourceIndex,   // kept for compat, not used for lookups
+            JavaIndexService.ProjectIndex targetIndex,   // kept for compat, not used for lookups
             Path sourceRepoDir,
             Path targetRepoDir
     ) {
+        AstGraphService.ProjectGraph sourceGraph = graphService.buildGraph(sourceRepoDir);
+        AstGraphService.ProjectGraph targetGraph = graphService.buildGraph(targetRepoDir);
+
         for (ChangeGroup group : groups) {
-            enrichGroup(group, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir);
+            enrichGroup(group, sourceGraph, targetGraph, sourceRepoDir, targetRepoDir);
         }
         return groups;
     }
 
+    // -----------------------------------------------------------------------
+    // Per-group dispatch
+    // -----------------------------------------------------------------------
+
     private void enrichGroup(
             ChangeGroup group,
-            JavaIndexService.ProjectIndex sourceIndex,
-            JavaIndexService.ProjectIndex targetIndex,
+            AstGraphService.ProjectGraph sourceGraph,
+            AstGraphService.ProjectGraph targetGraph,
             Path sourceRepoDir,
             Path targetRepoDir
     ) {
@@ -97,406 +81,226 @@ public class ContextEnricher {
         List<ChangedLine> deleted = filterByType(group, ChangedLine.LineType.DELETE);
         List<ChangedLine> all     = group.changedLines();
 
-        strategyMethodDeclarations(all, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir, snippets);
-        strategyFieldDeclarations(all, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir, snippets);
-        strategyVariableDeclarations(all, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir, snippets);
-        strategyChangedMethodDeclaration(group, added, sourceIndex, sourceRepoDir, snippets);
-        strategyDeletedDeclaration(deleted, targetIndex, snippets);
-        strategyChangedArguments(added, deleted, sourceIndex, sourceRepoDir, snippets);
-        strategyContainingMethod(group, sourceIndex, sourceRepoDir, snippets);
+        // 1. For every edge at a changed line: emit declaration of the target node
+        strategyEdgesAtChangedLines(all, sourceGraph, sourceRepoDir, snippets);
+
+        // 2. Deleted lines: find what was declared there and list all usages in target
+        strategyDeletedDeclarations(deleted, targetGraph, snippets);
+
+        // 3. Containing method body (baseline context)
+        strategyContainingMethod(all, sourceGraph, sourceRepoDir, snippets);
 
         trim(snippets);
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 1: METHOD_DECLARATION
-    // -----------------------------------------------------------------------
-
-    private void strategyMethodDeclarations(
-            List<ChangedLine> all,
-            JavaIndexService.ProjectIndex sourceIndex,
-            JavaIndexService.ProjectIndex targetIndex,
-            Path sourceRepoDir, Path targetRepoDir,
-            List<EnrichmentSnippet> snippets
-    ) {
-        Set<String> seen = new HashSet<>();
-        Set<Integer> changedLineNos = changedLineNumbers(all);
-        Set<String> changedFiles = changedFiles(all);
-
-        sourceIndex.callSites.forEach((calleeKey, sites) -> {
-            if (full(snippets)) return;
-            boolean onChangedLine = sites.stream()
-                    .anyMatch(cs -> changedFiles.contains(cs.filePath()) && changedLineNos.contains(cs.line()));
-            if (!onChangedLine || seen.contains(calleeKey)) return;
-            seen.add(calleeKey);
-
-            JavaIndexService.MethodInfo decl =
-                    sourceIndex.methods.getOrDefault(calleeKey, targetIndex.methods.get(calleeKey));
-            if (decl == null) return;
-            Path repoDir = sourceIndex.methods.containsKey(calleeKey) ? sourceRepoDir : targetRepoDir;
-            addMethodDeclarationSnippet(decl, repoDir, snippets);
-        });
-    }
-
-    private void addMethodDeclarationSnippet(
-            JavaIndexService.MethodInfo m, Path repoDir,
-            List<EnrichmentSnippet> snippets
-    ) {
-        if (full(snippets)) return;
-        List<String> declLines = readUntilOpenBrace(repoDir, m.filePath(), m.startLine(), m.endLine());
-        if (declLines.isEmpty()) return;
-        int signatureEnd = m.startLine() + declLines.size() - 1;
-        snippets.add(new EnrichmentSnippet(
-                EnrichmentSnippet.SnippetType.METHOD_DECLARATION,
-                m.filePath(), m.startLine(), signatureEnd, m.name(),
-                declLines,
-                "Declaration of method '" + m.name() + "' used in changed lines"
-        ));
-    }
-
-    // -----------------------------------------------------------------------
-    // Strategy 2: FIELD_DECLARATION
-    // -----------------------------------------------------------------------
-
-    private void strategyFieldDeclarations(
-            List<ChangedLine> all,
-            JavaIndexService.ProjectIndex sourceIndex,
-            JavaIndexService.ProjectIndex targetIndex,
-            Path sourceRepoDir, Path targetRepoDir,
-            List<EnrichmentSnippet> snippets
-    ) {
-        Set<String> seen = new HashSet<>();
-        Set<Integer> changedLineNos = changedLineNumbers(all);
-        Set<String> changedFiles = changedFiles(all);
-
-        sourceIndex.fieldAccesses.forEach((fieldKey, accesses) -> {
-            if (full(snippets)) return;
-            boolean onChangedLine = accesses.stream()
-                    .anyMatch(fa -> changedFiles.contains(fa.filePath()) && changedLineNos.contains(fa.line()));
-            if (!onChangedLine || seen.contains(fieldKey)) return;
-            seen.add(fieldKey);
-
-            JavaIndexService.FieldInfo decl =
-                    sourceIndex.fields.getOrDefault(fieldKey, targetIndex.fields.get(fieldKey));
-            if (decl == null) return;
-            Path repoDir = sourceIndex.fields.containsKey(fieldKey) ? sourceRepoDir : targetRepoDir;
-            addFieldDeclarationSnippet(decl, repoDir, snippets);
-        });
-    }
-
-    private void addFieldDeclarationSnippet(
-            JavaIndexService.FieldInfo f, Path repoDir,
-            List<EnrichmentSnippet> snippets
-    ) {
-        if (full(snippets)) return;
-        List<String> lines = readLines(repoDir, f.filePath(), f.declarationLine(), f.declarationLine());
-        if (lines.isEmpty()) return;
-        snippets.add(new EnrichmentSnippet(
-                EnrichmentSnippet.SnippetType.FIELD_DECLARATION,
-                f.filePath(), f.declarationLine(), f.declarationLine(), f.name(),
-                lines,
-                "Declaration of field '" + f.name() + "' (type: " + f.type() + ") used in changed lines"
-        ));
-    }
-
-    // -----------------------------------------------------------------------
-    // Strategy 3: VARIABLE_DECLARATION
+    // Strategy 1: edges at changed lines → declarations
     //
-    // Only surface a variable when its simple name:
-    //  (a) literally appears in the text of a non-CONTEXT changed line,
-    //  (b) is NOT in the keyword/annotation-attribute blacklist,
-    //  (c) appears as a whole word (not a substring of a longer identifier),
-    //  (d) the variable's declaring file is one of the changed files OR the
-    //      declaration is in the same package (heuristic: same project root).
+    // For every non-CONTEXT changed line:
+    //   - find all outgoing edges from any node in that method/lambda
+    //     whose (filePath, line) matches the changed line
+    //   - group by edge kind → emit the appropriate snippet type
     // -----------------------------------------------------------------------
 
-    private void strategyVariableDeclarations(
-            List<ChangedLine> all,
-            JavaIndexService.ProjectIndex sourceIndex,
-            JavaIndexService.ProjectIndex targetIndex,
-            Path sourceRepoDir,
-            Path targetRepoDir,
+    private void strategyEdgesAtChangedLines(
+            List<ChangedLine> lines,
+            AstGraphService.ProjectGraph graph,
+            Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
-        Set<String> namesInText = extractRelevantIdentifiers(all);
-        Set<String> changedFiles = changedFiles(all);
-        Set<String> seen = new HashSet<>();
+        Set<String> seenDecl = new HashSet<>();
 
-        sourceIndex.nameUsagesBySimpleName.forEach((name, usages) -> {
-            if (full(snippets)) return;
-            if (!namesInText.contains(name)) return;
-            if (seen.contains(name)) return;
+        for (ChangedLine cl : lines) {
+            if (cl.type() == ChangedLine.LineType.CONTEXT) continue;
+            if (full(snippets)) break;
 
-            // Collect candidate variable infos
-            List<JavaIndexService.VariableInfo> vars = new ArrayList<>();
-            sourceIndex.variables.forEach((k, v) -> { if (k.endsWith("#" + name)) vars.addAll(v); });
-            if (vars.isEmpty()) {
-                targetIndex.variables.forEach((k, v) -> { if (k.endsWith("#" + name)) vars.addAll(v); });
-            }
-            if (vars.isEmpty()) return;
+            String file = cl.filePath();
+            int    line = cl.lineNumber() > 0 ? cl.lineNumber() : cl.oldLineNumber();
+            if (line <= 0) continue;
 
-            // Prefer a variable declared in one of the changed files
-            JavaIndexService.VariableInfo vi = vars.stream()
-                    .filter(v -> changedFiles.contains(v.filePath()))
-                    .findFirst()
-                    .orElse(vars.get(0));
+            // All graph nodes whose range covers this line (e.g. the enclosing method)
+            List<AstGraphService.GraphNode> enclosing = graph.nodesAtLine(file, line);
 
-            // Skip if the declaring file is completely outside the changed files
-            // and the name is very common (length < 4) – avoids noise like 's', 'i'
-            if (!changedFiles.contains(vi.filePath()) && name.length() < 4) return;
+            for (AstGraphService.GraphNode enc : enclosing) {
+                if (full(snippets)) break;
 
-            seen.add(name);
+                // All outgoing edges from this node that were recorded at exactly this line
+                for (AstGraphService.GraphEdge edge : graph.outgoing(enc.id())) {
+                    if (full(snippets)) break;
+                    if (!file.equals(edge.filePath()) || edge.line() != line) continue;
 
-            boolean inSource = sourceIndex.variables.entrySet().stream()
-                    .anyMatch(e -> e.getKey().endsWith("#" + name) && !e.getValue().isEmpty());
-            Path repoDir = inSource ? sourceRepoDir : targetRepoDir;
+                    String targetId = edge.toId();
+                    if (seenDecl.contains(targetId)) continue;
+                    seenDecl.add(targetId);
 
-            List<String> lineContent = readLines(repoDir, vi.filePath(),
-                    vi.declarationLine(), vi.declarationLine());
-            if (lineContent.isEmpty()) {
-                lineContent = List.of(vi.filePath() + ":" + vi.declarationLine()
-                        + "  // type: " + vi.type());
-            }
+                    AstGraphService.GraphNode target = graph.nodes.get(targetId);
+                    if (target == null) continue; // external / unresolved
 
-            snippets.add(new EnrichmentSnippet(
-                    EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION,
-                    vi.filePath(), vi.declarationLine(), vi.declarationLine(), vi.name(),
-                    lineContent,
-                    "Declaration of local variable '" + vi.name() + "' (type: " + vi.type() + ") used in changed lines"
-            ));
-        });
-    }
-
-    /**
-     * Extracts Java-identifier tokens from non-CONTEXT changed lines,
-     * excluding Java keywords and known annotation-attribute names.
-     * Also strips comment prefixes ({@code //}) before tokenising so that
-     * commented-out code contributes its real identifiers.
-     */
-    private Set<String> extractRelevantIdentifiers(List<ChangedLine> lines) {
-        Set<String> ids = new HashSet<>();
-        for (ChangedLine l : lines) {
-            if (l.type() == ChangedLine.LineType.CONTEXT) continue;
-            String text = l.text();
-            if (text == null || text.isBlank()) continue;
-            // Strip comment prefix so `//   hooks.add(x)` contributes `hooks`, `add`, `x`
-            String stripped = text.strip();
-            if (stripped.startsWith("//")) stripped = stripped.substring(2).strip();
-            for (String token : stripped.split("[^\\w]+")) {
-                if (!token.isBlank()
-                        && Character.isLetter(token.charAt(0))
-                        && !KEYWORD_BLACKLIST.contains(token)) {
-                    ids.add(token);
+                    switch (edge.kind()) {
+                        case INVOKES ->
+                                emitMethodDeclaration(target, repoDir, snippets);
+                        case READS_FIELD, WRITES_FIELD ->
+                                emitFieldDeclaration(target, repoDir, snippets);
+                        case READS_VAR, WRITES_VAR ->
+                                emitVariableDeclaration(target, repoDir, snippets);
+                        default -> { /* CONTAINS, OVERRIDES etc. — not enrichment material */ }
+                    }
                 }
             }
         }
-        return ids;
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 4: METHOD_CALLERS
+    // Strategy 2: deleted declarations → list usages in target graph
     // -----------------------------------------------------------------------
 
-    private void strategyChangedMethodDeclaration(
-            ChangeGroup group, List<ChangedLine> added,
-            JavaIndexService.ProjectIndex sourceIndex, Path sourceRepoDir,
-            List<EnrichmentSnippet> snippets
-    ) {
-        int firstAdd = minLine(added, ChangedLine::lineNumber);
-        int lastAdd  = maxLine(added, ChangedLine::lineNumber);
-        if (firstAdd == 0) return;
-
-        List<JavaIndexService.MethodInfo> changedMethods =
-                indexService.findMethodsInRange(sourceIndex, group.primaryFile(), firstAdd, lastAdd);
-
-        for (JavaIndexService.MethodInfo method : changedMethods) {
-            if (full(snippets)) break;
-            List<JavaIndexService.CallSite> callers =
-                    indexService.findCallSites(sourceIndex, method.qualifiedKey());
-            if (callers.isEmpty()) continue;
-            snippets.add(new EnrichmentSnippet(
-                    EnrichmentSnippet.SnippetType.METHOD_CALLERS,
-                    method.filePath(), method.startLine(), method.endLine(), method.name(),
-                    callers.stream().limit(10)
-                            .map(cs -> cs.filePath() + ":" + cs.line()
-                                    + "  " + cs.methodName()
-                                    + "(" + String.join(", ", cs.argumentTexts()) + ")")
-                            .toList(),
-                    "All callers of changed method '" + method.signature() + "'"
-            ));
-            addMethodBodySnippet(method, sourceRepoDir, snippets);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Strategy 5: FIELD_USAGES / VARIABLE_USAGES for deleted declarations
-    // -----------------------------------------------------------------------
-
-    private void strategyDeletedDeclaration(
+    private void strategyDeletedDeclarations(
             List<ChangedLine> deleted,
-            JavaIndexService.ProjectIndex targetIndex,
+            AstGraphService.ProjectGraph targetGraph,
             List<EnrichmentSnippet> snippets
     ) {
-        for (ChangedLine line : deleted) {
+        for (ChangedLine cl : deleted) {
             if (full(snippets)) break;
-            int oldLine = line.oldLineNumber();
+
+            String file    = cl.filePath();
+            int    oldLine = cl.oldLineNumber();
             if (oldLine <= 0) continue;
-            String file = line.filePath();
 
-            targetIndex.fieldsByName.values().stream()
-                    .flatMap(Collection::stream)
-                    .filter(f -> f.filePath().equals(file) && f.declarationLine() == oldLine)
-                    .findFirst()
-                    .ifPresent(f -> {
-                        List<JavaIndexService.FieldAccess> accesses =
-                                indexService.findFieldAccessesByName(targetIndex, f.name());
-                        if (!accesses.isEmpty()) {
-                            snippets.add(new EnrichmentSnippet(
-                                    EnrichmentSnippet.SnippetType.FIELD_USAGES,
-                                    f.filePath(), f.declarationLine(), f.declarationLine(), f.name(),
-                                    accesses.stream().limit(10)
-                                            .map(a -> a.filePath() + ":" + a.line()).toList(),
-                                    "Field '" + f.name() + "' is deleted but still accessed in target"
-                            ));
-                        }
-                    });
+            // Nodes declared at this exact line in the target (pre-change) codebase
+            List<AstGraphService.GraphNode> declared =
+                    targetGraph.byLine.getOrDefault(file + "#" + oldLine, List.of());
 
-            targetIndex.variables.forEach((key, vars) ->
-                    vars.stream()
-                            .filter(v -> v.filePath().equals(file) && v.declarationLine() == oldLine)
-                            .findFirst()
-                            .ifPresent(v -> {
-                                List<JavaIndexService.NameUsage> usages =
-                                        indexService.findUsagesByName(targetIndex, v.name());
-                                if (usages.size() > 1) {
-                                    snippets.add(new EnrichmentSnippet(
-                                            EnrichmentSnippet.SnippetType.VARIABLE_USAGES,
-                                            v.filePath(), v.declarationLine(), v.declarationLine(), v.name(),
-                                            usages.stream().limit(10)
-                                                    .map(u -> u.filePath() + ":" + u.line()).toList(),
-                                            "Variable '" + v.name() + "' is deleted but still used in target"
-                                    ));
-                                }
-                            })
-            );
-        }
-    }
+            for (AstGraphService.GraphNode decl : declared) {
+                if (full(snippets)) break;
 
-    // -----------------------------------------------------------------------
-    // Strategy 6: ARGUMENT_CONTEXT
-    //
-    // Triggered only when the same callee key appears in BOTH ADD and DELETE
-    // lines AND the argument texts actually differ (not just line-number churn).
-    // Content is read directly from the source file (real declaration lines)
-    // instead of being assembled synthetically.
-    // -----------------------------------------------------------------------
+                // Incoming edges in target → all places that reference this declaration
+                List<AstGraphService.GraphEdge> usageEdges = targetGraph.incoming(decl.id());
+                if (usageEdges.isEmpty()) continue;
 
-    private void strategyChangedArguments(
-            List<ChangedLine> added, List<ChangedLine> deleted,
-            JavaIndexService.ProjectIndex sourceIndex,
-            Path sourceRepoDir,
-            List<EnrichmentSnippet> snippets
-    ) {
-        // Build maps: calleeKey -> set of argument-text fingerprints per side
-        Map<String, Set<String>> addedArgs   = collectArgFingerprints(added, sourceIndex);
-        Map<String, Set<String>> deletedArgs = collectArgFingerprints(deleted, sourceIndex);
+                EnrichmentSnippet.SnippetType type = switch (decl.kind()) {
+                    case METHOD    -> EnrichmentSnippet.SnippetType.METHOD_CALLERS;
+                    case FIELD     -> EnrichmentSnippet.SnippetType.FIELD_USAGES;
+                    case VARIABLE  -> EnrichmentSnippet.SnippetType.VARIABLE_USAGES;
+                    default        -> EnrichmentSnippet.SnippetType.VARIABLE_USAGES;
+                };
 
-        Set<String> shownKeys = new HashSet<>();
-        for (String calleeKey : addedArgs.keySet()) {
-            if (full(snippets)) break;
-            if (!deletedArgs.containsKey(calleeKey)) continue; // only in ADD side – new call, not changed
-            if (shownKeys.contains(calleeKey)) continue;
+                List<String> usageLines = usageEdges.stream()
+                        .filter(e -> e.kind() != AstGraphService.EdgeKind.CONTAINS)
+                        .limit(10)
+                        .map(e -> e.filePath() + ":" + e.line())
+                        .distinct()
+                        .toList();
 
-            Set<String> aArgs = addedArgs.get(calleeKey);
-            Set<String> dArgs = deletedArgs.get(calleeKey);
-            if (aArgs.equals(dArgs)) continue; // arguments did not actually change
+                if (usageLines.isEmpty()) continue;
 
-            shownKeys.add(calleeKey);
-
-            JavaIndexService.MethodInfo decl = sourceIndex.methods.get(calleeKey);
-            if (decl == null) continue;
-
-            // Read the real declaration from file (signature up to opening brace)
-            List<String> sigLines = readUntilOpenBrace(sourceRepoDir, decl.filePath(),
-                    decl.startLine(), decl.endLine());
-            if (sigLines.isEmpty()) continue;
-
-            snippets.add(new EnrichmentSnippet(
-                    EnrichmentSnippet.SnippetType.ARGUMENT_CONTEXT,
-                    decl.filePath(), decl.startLine(),
-                    decl.startLine() + sigLines.size() - 1, decl.name(),
-                    sigLines,
-                    "Arguments changed for '" + decl.name() + "' – verify new args match parameter types"
-            ));
-        }
-    }
-
-    /**
-     * For each call site on one side of the diff, collect a fingerprint of the
-     * argument texts so we can compare ADD-side vs DELETE-side arguments.
-     */
-    private Map<String, Set<String>> collectArgFingerprints(
-            List<ChangedLine> lines, JavaIndexService.ProjectIndex index) {
-        Set<Integer> lineNos = lineNumberSet(lines);
-        Set<String> files = changedFiles(lines);
-        Map<String, Set<String>> result = new LinkedHashMap<>();
-        index.callSites.forEach((calleeKey, sites) -> {
-            for (JavaIndexService.CallSite cs : sites) {
-                if (files.contains(cs.filePath()) && lineNos.contains(cs.line())) {
-                    result.computeIfAbsent(calleeKey, k -> new LinkedHashSet<>())
-                          .add(String.join(",", cs.argumentTexts()));
-                }
+                snippets.add(new EnrichmentSnippet(
+                        type,
+                        decl.filePath(), decl.startLine(), decl.endLine(), decl.simpleName(),
+                        usageLines,
+                        describeDeletedUsages(decl, usageLines.size())
+                ));
             }
-        });
-        return result;
+        }
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 7: METHOD_BODY
+    // Strategy 3: METHOD_BODY — enclosing method of the changed lines
     // -----------------------------------------------------------------------
 
     private void strategyContainingMethod(
-            ChangeGroup group,
-            JavaIndexService.ProjectIndex sourceIndex, Path sourceRepoDir,
+            List<ChangedLine> all,
+            AstGraphService.ProjectGraph graph,
+            Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
         if (full(snippets)) return;
-        int firstLine = group.changedLines().stream()
-                .mapToInt(l -> l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber())
-                .filter(n -> n > 0).min().orElse(0);
-        if (firstLine == 0) return;
-        indexService.findContainingMethod(sourceIndex, group.primaryFile(), firstLine)
-                .ifPresent(m -> addMethodBodySnippet(m, sourceRepoDir, snippets));
+
+        // Find the first non-CONTEXT changed line that has a line number
+        ChangedLine first = all.stream()
+                .filter(l -> l.type() != ChangedLine.LineType.CONTEXT)
+                .filter(l -> (l.lineNumber() > 0 || l.oldLineNumber() > 0))
+                .findFirst().orElse(null);
+        if (first == null) return;
+
+        String file = first.filePath();
+        int    line = first.lineNumber() > 0 ? first.lineNumber() : first.oldLineNumber();
+
+        // Find enclosing METHOD node (smallest range that covers the line)
+        graph.nodesAtLine(file, line).stream()
+                .filter(n -> n.kind() == AstGraphService.NodeKind.METHOD)
+                .min(Comparator.comparingInt(n -> n.endLine() - n.startLine()))
+                .ifPresent(method -> {
+                    if (full(snippets)) return;
+                    int end = Math.min(method.endLine(), method.startLine() + maxSnippetLines - 1);
+                    List<String> lines = readLines(repoDir, method.filePath(), method.startLine(), end);
+                    if (lines.isEmpty()) return;
+                    snippets.add(new EnrichmentSnippet(
+                            EnrichmentSnippet.SnippetType.METHOD_BODY,
+                            method.filePath(), method.startLine(), end, method.simpleName(),
+                            lines,
+                            "Body of enclosing method '" + method.simpleName() + "'"
+                    ));
+                });
     }
 
     // -----------------------------------------------------------------------
-    // Snippet builders
+    // Snippet emitters
     // -----------------------------------------------------------------------
 
-    private void addMethodBodySnippet(
-            JavaIndexService.MethodInfo m, Path repoDir,
+    private void emitMethodDeclaration(
+            AstGraphService.GraphNode node, Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
-        if (full(snippets)) return;
-        int end = Math.min(m.endLine(), m.startLine() + maxSnippetLines - 1);
-        List<String> lines = readLines(repoDir, m.filePath(), m.startLine(), end);
+        List<String> sigLines = readUntilOpenBrace(repoDir, node.filePath(),
+                node.startLine(), node.endLine());
+        if (sigLines.isEmpty()) return;
+        int sigEnd = node.startLine() + sigLines.size() - 1;
+        snippets.add(new EnrichmentSnippet(
+                EnrichmentSnippet.SnippetType.METHOD_DECLARATION,
+                node.filePath(), node.startLine(), sigEnd, node.simpleName(),
+                sigLines,
+                "Declaration of method '" + node.simpleName() + "' called on changed line"
+        ));
+    }
+
+    private void emitFieldDeclaration(
+            AstGraphService.GraphNode node, Path repoDir,
+            List<EnrichmentSnippet> snippets
+    ) {
+        List<String> lines = readLines(repoDir, node.filePath(),
+                node.startLine(), node.endLine());
         if (lines.isEmpty()) return;
         snippets.add(new EnrichmentSnippet(
-                EnrichmentSnippet.SnippetType.METHOD_BODY,
-                m.filePath(), m.startLine(), end, m.name(),
-                lines, "Body of method '" + m.signature() + "'"
+                EnrichmentSnippet.SnippetType.FIELD_DECLARATION,
+                node.filePath(), node.startLine(), node.endLine(), node.simpleName(),
+                lines,
+                "Declaration of field '" + node.simpleName() + "' accessed on changed line"
+        ));
+    }
+
+    private void emitVariableDeclaration(
+            AstGraphService.GraphNode node, Path repoDir,
+            List<EnrichmentSnippet> snippets
+    ) {
+        List<String> lines = readLines(repoDir, node.filePath(),
+                node.startLine(), node.endLine());
+        if (lines.isEmpty()) return;
+        snippets.add(new EnrichmentSnippet(
+                EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION,
+                node.filePath(), node.startLine(), node.endLine(), node.simpleName(),
+                lines,
+                "Declaration of variable '" + node.simpleName() + "' used on changed line"
         ));
     }
 
     // -----------------------------------------------------------------------
-    // File reading helpers
+    // File-reading helpers
     // -----------------------------------------------------------------------
 
-    /**
-     * Reads lines from {@code startLine} (1-based, inclusive) until the first
-     * line that contains {@code '{'}, inclusive.  Used to extract method signatures.
-     */
-    private List<String> readUntilOpenBrace(Path repoDir, String relPath, int startLine, int maxLine) {
+    /** Read lines from {@code from} to the first line that contains '{' (inclusive). */
+    private List<String> readUntilOpenBrace(
+            Path repoDir, String relPath, int from, int maxLine
+    ) {
         Path file = repoDir.resolve(relPath);
         if (!Files.exists(file)) return List.of();
         List<String> all;
@@ -504,10 +308,10 @@ public class ContextEnricher {
         catch (IOException e) { log.warn("Cannot read {}: {}", file, e.getMessage()); return List.of(); }
 
         List<String> result = new ArrayList<>();
-        for (int i = startLine - 1; i < Math.min(all.size(), maxLine); i++) {
-            String line = all.get(i);
-            result.add(line.length() > 200 ? line.substring(0, 200) + "..." : line);
-            if (line.contains("{")) break;
+        for (int i = from - 1; i < Math.min(all.size(), maxLine); i++) {
+            String l = all.get(i);
+            result.add(l.length() > 200 ? l.substring(0, 200) + "..." : l);
+            if (l.contains("{")) break;
         }
         return result;
     }
@@ -530,46 +334,11 @@ public class ContextEnricher {
     }
 
     // -----------------------------------------------------------------------
-    // Helpers
+    // Misc helpers
     // -----------------------------------------------------------------------
 
     private List<ChangedLine> filterByType(ChangeGroup g, ChangedLine.LineType type) {
         return g.changedLines().stream().filter(l -> l.type() == type).toList();
-    }
-
-    private Set<Integer> changedLineNumbers(List<ChangedLine> lines) {
-        Set<Integer> set = new HashSet<>();
-        for (ChangedLine l : lines) {
-            if (l.type() == ChangedLine.LineType.CONTEXT) continue;
-            if (l.lineNumber()    > 0) set.add(l.lineNumber());
-            if (l.oldLineNumber() > 0) set.add(l.oldLineNumber());
-        }
-        return set;
-    }
-
-    private Set<String> changedFiles(List<ChangedLine> lines) {
-        Set<String> files = new HashSet<>();
-        for (ChangedLine l : lines) {
-            if (l.type() != ChangedLine.LineType.CONTEXT) files.add(l.filePath());
-        }
-        return files;
-    }
-
-    private Set<Integer> lineNumberSet(List<ChangedLine> lines) {
-        Set<Integer> set = new HashSet<>();
-        for (ChangedLine l : lines) {
-            if (l.lineNumber()    > 0) set.add(l.lineNumber());
-            if (l.oldLineNumber() > 0) set.add(l.oldLineNumber());
-        }
-        return set;
-    }
-
-    private int minLine(List<ChangedLine> lines, ToIntFunction<ChangedLine> fn) {
-        return lines.stream().mapToInt(fn).filter(n -> n > 0).min().orElse(0);
-    }
-
-    private int maxLine(List<ChangedLine> lines, ToIntFunction<ChangedLine> fn) {
-        return lines.stream().mapToInt(fn).filter(n -> n > 0).max().orElse(0);
     }
 
     private boolean full(List<EnrichmentSnippet> snippets) {
@@ -578,5 +347,15 @@ public class ContextEnricher {
 
     private void trim(List<EnrichmentSnippet> snippets) {
         while (snippets.size() > maxSnippetsPerGroup) snippets.remove(snippets.size() - 1);
+    }
+
+    private String describeDeletedUsages(AstGraphService.GraphNode decl, int count) {
+        String kind = switch (decl.kind()) {
+            case METHOD   -> "method";
+            case FIELD    -> "field";
+            case VARIABLE -> "variable";
+            default       -> "symbol";
+        };
+        return decl.simpleName() + " (" + kind + ") is deleted but referenced in " + count + " place(s)";
     }
 }
