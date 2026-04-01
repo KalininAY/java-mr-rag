@@ -120,14 +120,15 @@ public class AstGraphService {
         launcher.getEnvironment().setNoClasspath(true);
         launcher.getEnvironment().setCommentEnabled(false);
         launcher.getEnvironment().setAutoImports(false);
-        launcher.getEnvironment().setComplianceLevel(21);
-        launcher.getEnvironment().setLevel("OFF");
+        // Do NOT call setComplianceLevel() — Spoon 10.x uses JDT internally
+        // and passes the level as "-<N>" which JDT only understands up to 17.
+        // Without an explicit level Spoon picks a safe default automatically.
 
         var model = launcher.buildModel();
         var graph = new ProjectGraph();
         String root = projectRoot.toString();
 
-        // ---- 1. Type nodes (class / interface / enum / record / annotation) ----
+        // ---- 1. Type nodes -----------------------------------------------------
         model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
             String id = qualifiedName(type);
             if (id == null) return;
@@ -136,8 +137,7 @@ public class AstGraphService {
             graph.addNode(new GraphNode(id, NodeKind.CLASS, type.getSimpleName(), file, ln[0], ln[1]));
         });
 
-        // ---- 2. Method / constructor nodes -------------------------------------
-        // CtMethod and CtConstructor both implement CtTypeMember, so getDeclaringType() is safe.
+        // ---- 2. Method nodes ---------------------------------------------------
         model.getElements(new TypeFilter<>(CtMethod.class)).forEach(m -> {
             String id = typeMemberExecId(m);
             if (id == null) return;
@@ -145,12 +145,10 @@ public class AstGraphService {
             int[] ln = lines(m);
             graph.addNode(new GraphNode(id, NodeKind.METHOD, m.getSimpleName(), file, ln[0], ln[1]));
 
-            // CONTAINS: class → method
             String classId = qualifiedName(m.getDeclaringType());
             if (classId != null)
                 graph.addEdge(new GraphEdge(classId, id, EdgeKind.CONTAINS, file, ln[0]));
 
-            // OVERRIDES
             CtMethod<?> top = m.getTopDefinitions().stream().findFirst().orElse(null);
             if (top != null && top != m) {
                 String superId = typeMemberExecId(top);
@@ -158,13 +156,13 @@ public class AstGraphService {
                     graph.addEdge(new GraphEdge(id, superId, EdgeKind.OVERRIDES, file, ln[0]));
             }
 
-            // ANNOTATED_WITH
             m.getAnnotations().forEach(ann ->
                     graph.addEdge(new GraphEdge(id,
                             ann.getAnnotationType().getQualifiedName(),
                             EdgeKind.ANNOTATED_WITH, file, ln[0])));
         });
 
+        // ---- 3. Constructor nodes ----------------------------------------------
         model.getElements(new TypeFilter<>(CtConstructor.class)).forEach(c -> {
             String id = typeMemberExecId(c);
             if (id == null) return;
@@ -177,7 +175,7 @@ public class AstGraphService {
                 graph.addEdge(new GraphEdge(classId, id, EdgeKind.CONTAINS, file, ln[0]));
         });
 
-        // ---- 3. Field nodes ----------------------------------------------------
+        // ---- 4. Field nodes ----------------------------------------------------
         model.getElements(new TypeFilter<>(CtField.class)).forEach(field -> {
             String id = fieldId(field);
             if (id == null) return;
@@ -190,9 +188,9 @@ public class AstGraphService {
                 graph.addEdge(new GraphEdge(classId, id, EdgeKind.CONTAINS, file, ln[0]));
         });
 
-        // ---- 4. Local variable + parameter nodes --------------------------------
+        // ---- 5. Local variable + parameter nodes --------------------------------
         model.getElements(new TypeFilter<>(CtVariable.class)).forEach(v -> {
-            if (v instanceof CtField) return; // already handled above
+            if (v instanceof CtField) return;
             String id = varId(v);
             if (id == null) return;
             String file = relPath(root, sourceFile(v));
@@ -200,69 +198,59 @@ public class AstGraphService {
             graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(), file, ln[0], ln[1]));
         });
 
-        // ---- 5. Lambda nodes ---------------------------------------------------
+        // ---- 6. Lambda nodes ---------------------------------------------------
         model.getElements(new TypeFilter<>(CtLambda.class)).forEach(lambda -> {
             String file = relPath(root, sourceFile(lambda));
             int[] ln = lines(lambda);
             String id = "lambda@" + file + ":" + ln[0];
             graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb", file, ln[0], ln[1]));
 
-            // CONTAINS: nearest enclosing method/constructor → lambda
-            // Use getParent(CtMethod.class) / getParent(CtConstructor.class) to avoid
-            // calling getDeclaringType() on CtLambda which doesn't implement CtTypeMember.
-            CtExecutable<?> enclosing = lambda.getParent(CtMethod.class);
-            if (enclosing == null) enclosing = lambda.getParent(CtConstructor.class);
-            if (enclosing instanceof CtMethod<?> em) {
+            CtMethod<?> em = lambda.getParent(CtMethod.class);
+            if (em != null) {
                 String encId = typeMemberExecId(em);
                 if (encId != null)
                     graph.addEdge(new GraphEdge(encId, id, EdgeKind.CONTAINS, file, ln[0]));
-            } else if (enclosing instanceof CtConstructor<?> ec) {
-                String encId = typeMemberExecId(ec);
-                if (encId != null)
-                    graph.addEdge(new GraphEdge(encId, id, EdgeKind.CONTAINS, file, ln[0]));
+            } else {
+                CtConstructor<?> ec = lambda.getParent(CtConstructor.class);
+                if (ec != null) {
+                    String encId = typeMemberExecId(ec);
+                    if (encId != null)
+                        graph.addEdge(new GraphEdge(encId, id, EdgeKind.CONTAINS, file, ln[0]));
+                }
             }
         });
 
-        // ---- 6. INVOKES edges --------------------------------------------------
+        // ---- 7. INVOKES edges --------------------------------------------------
         model.getElements(new TypeFilter<>(CtInvocation.class)).forEach(inv -> {
-            // Caller: nearest enclosing CtMethod or CtConstructor
             String callerId = nearestExecId(inv);
             if (callerId == null) return;
-
-            CtExecutableReference<?> ref = inv.getExecutable();
-            String calleeId = execRefId(ref);
-            String file = relPath(root, sourceFile(inv));
-            int line = posLine(inv);
-            graph.addEdge(new GraphEdge(callerId, calleeId, EdgeKind.INVOKES, file, line));
+            String calleeId = execRefId(inv.getExecutable());
+            graph.addEdge(new GraphEdge(callerId, calleeId, EdgeKind.INVOKES,
+                    relPath(root, sourceFile(inv)), posLine(inv)));
         });
 
-        // ---- 7. Field read / write edges ---------------------------------------
+        // ---- 8. Field read / write edges ---------------------------------------
         model.getElements(new TypeFilter<>(CtFieldAccess.class)).forEach(fa -> {
             String execId = nearestExecId(fa);
             if (execId == null) return;
-
             CtFieldReference<?> ref = fa.getVariable();
             String fId = ref.getDeclaringType() != null
                     ? ref.getDeclaringType().getQualifiedName() + "." + ref.getSimpleName()
                     : "?." + ref.getSimpleName();
-
-            String file = relPath(root, sourceFile(fa));
-            int line = posLine(fa);
             EdgeKind kind = (fa instanceof CtFieldWrite) ? EdgeKind.WRITES_FIELD : EdgeKind.READS_FIELD;
-            graph.addEdge(new GraphEdge(execId, fId, kind, file, line));
+            graph.addEdge(new GraphEdge(execId, fId, kind,
+                    relPath(root, sourceFile(fa)), posLine(fa)));
         });
 
-        // ---- 8. Variable read / write edges ------------------------------------
+        // ---- 9. Variable read / write edges ------------------------------------
         model.getElements(new TypeFilter<>(CtVariableAccess.class)).forEach(va -> {
             if (va instanceof CtFieldAccess) return;
             String execId = nearestExecId(va);
             if (execId == null) return;
-
             String vId = varRefId(va.getVariable());
-            String file = relPath(root, sourceFile(va));
-            int line = posLine(va);
             EdgeKind kind = (va instanceof CtVariableWrite) ? EdgeKind.WRITES_VAR : EdgeKind.READS_VAR;
-            graph.addEdge(new GraphEdge(execId, vId, kind, file, line));
+            graph.addEdge(new GraphEdge(execId, vId, kind,
+                    relPath(root, sourceFile(va)), posLine(va)));
         });
 
         log.info("Spoon graph built: {} nodes, {} edge-sources",
@@ -280,11 +268,7 @@ public class AstGraphService {
         return (q == null || q.isBlank()) ? null : q;
     }
 
-    /**
-     * ID for CtMethod or CtConstructor (both implement CtTypeMember,
-     * so getDeclaringType() is guaranteed to exist).
-     */
-    private <T> String typeMemberExecId(CtTypeMember member) {
+    private String typeMemberExecId(CtTypeMember member) {
         if (member == null) return null;
         try {
             CtType<?> declaring = member.getDeclaringType();
@@ -330,10 +314,6 @@ public class AstGraphService {
         return "var@" + ref.getSimpleName();
     }
 
-    /**
-     * Finds the ID of the nearest enclosing CtMethod or CtConstructor.
-     * Safe for elements inside lambdas — walks up until it hits a real method/constructor.
-     */
     private String nearestExecId(CtElement el) {
         CtMethod<?> m = el.getParent(CtMethod.class);
         if (m != null) return typeMemberExecId(m);
