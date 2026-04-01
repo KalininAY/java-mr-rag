@@ -10,8 +10,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.stream.Collectors;
-
 @Slf4j
 @RestController
 @RequiredArgsConstructor
@@ -36,8 +34,7 @@ public class MrReviewController {
     }
 
     /**
-     * Same as {@code GET /{projectId}/{mrIid}} but returns all ChangeGroups
-     * rendered as Markdown — convenient for human inspection.
+     * Returns all ChangeGroups rendered as Markdown — convenient for human inspection.
      *
      * <pre>GET /api/review/{projectId}/{mrIid}/markdown</pre>
      */
@@ -45,8 +42,7 @@ public class MrReviewController {
                 produces = MediaType.TEXT_PLAIN_VALUE)
     public String reviewMarkdown(@PathVariable long projectId,
                                  @PathVariable long mrIid) throws Exception {
-        ReviewContext ctx = reviewService.buildReviewContext(projectId, mrIid);
-        return renderContext(ctx);
+        return renderContext(reviewService.buildReviewContext(projectId, mrIid));
     }
 
     // -----------------------------------------------------------------------
@@ -55,18 +51,18 @@ public class MrReviewController {
         StringBuilder sb = new StringBuilder();
         sb.append("# MR ").append(ctx.mrIid())
           .append(": ").append(ctx.mrTitle()).append("\n");
-        sb.append("`").append(ctx.sourceBranch()).append("` → `")
+        sb.append("`").append(ctx.sourceBranch()).append("` \u2192 `")
           .append(ctx.targetBranch()).append("`\n\n");
 
         sb.append("**Stats:** ")
-          .append(ctx.stats().changedLines()).append(" changed lines, ")
-          .append(ctx.stats().changeGroups()).append(" groups, ")
-          .append(ctx.stats().totalSnippets()).append(" snippets")
-          .append(" (").append(ctx.stats().totalSnippetLines()).append(" lines)\n\n");
+          .append(ctx.stats().totalChangedLines()).append(" changed lines, ")
+          .append(ctx.stats().totalGroups()).append(" groups, ")
+          .append(ctx.stats().totalEnrichmentSnippets()).append(" snippets")
+          .append(" (").append(ctx.stats().totalEnrichmentLines()).append(" lines)\n\n");
 
         sb.append("---\n\n");
 
-        for (ChangeGroup group : ctx.changeGroups()) {
+        for (ChangeGroup group : ctx.groups()) {
             sb.append(ChangeGroupMarkdown.render(group));
             sb.append("---\n\n");
         }
