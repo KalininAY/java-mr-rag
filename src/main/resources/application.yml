@@ -18,6 +18,49 @@ app:
     maxSnippetsPerGroup: 10
     # Max lines per snippet
     maxSnippetLines: 30
+
+graph:
+  edge:
+    # Structural
+    DECLARES:
+      enabled: true
+    # Type hierarchy
+    EXTENDS:
+      enabled: true
+    IMPLEMENTS:
+      enabled: true
+    # Invocations
+    INVOKES:
+      enabled: true
+    INSTANTIATES:
+      enabled: true
+    INSTANTIATES_ANONYMOUS:
+      enabled: true
+    REFERENCES_METHOD:
+      enabled: true
+    # Field access
+    READS_FIELD:
+      enabled: true
+    WRITES_FIELD:
+      enabled: true
+    # Local variables (can be noisy on large projects — disable if needed)
+    READS_LOCAL_VAR:
+      enabled: false
+    WRITES_LOCAL_VAR:
+      enabled: false
+    # Exceptions
+    THROWS:
+      enabled: true
+    # Annotations
+    ANNOTATED_WITH:
+      enabled: true
+    # Type references (Foo.class, instanceof, cast)
+    REFERENCES_TYPE:
+      enabled: true
+    # Overrides
+    OVERRIDES:
+      enabled: true
+
 logging:
   level:
     com.example: DEBUG

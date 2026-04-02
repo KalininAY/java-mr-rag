@@ -1,5 +1,6 @@
 package com.example.mrrag.service;
 
+import com.example.mrrag.config.EdgeKindConfig;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import spoon.Launcher;
@@ -17,10 +18,14 @@ import java.util.stream.Stream;
 
 /**
  * Builds a rich symbol graph for a Java project using Spoon.
- * <p>
- * Nodes: CLASS, METHOD, FIELD, VARIABLE, LAMBDA, ANNOTATION<br>
- * Edges: INVOKES, READS_FIELD, WRITES_FIELD, READS_VAR, WRITES_VAR,
- *        CONTAINS, OVERRIDES, ANNOTATED_WITH
+ *
+ * <p><b>Nodes:</b> CLASS, CONSTRUCTOR, METHOD, FIELD, VARIABLE, LAMBDA, ANNOTATION<br>
+ * <b>Edges:</b> DECLARES, EXTENDS, IMPLEMENTS, INVOKES, INSTANTIATES, INSTANTIATES_ANONYMOUS,
+ * REFERENCES_METHOD, READS_FIELD, WRITES_FIELD, READS_LOCAL_VAR, WRITES_LOCAL_VAR,
+ * THROWS, ANNOTATED_WITH, REFERENCES_TYPE, OVERRIDES
+ *
+ * <p>Each edge type can be individually enabled/disabled via
+ * {@code graph.edge.<EDGE_KIND>.enabled} in {@code application.yml}.
  */
 @Slf4j
 @Service
@@ -30,13 +35,138 @@ public class AstGraphService {
     // Public model
     // ------------------------------------------------------------------
 
-    public enum NodeKind { CLASS, METHOD, FIELD, VARIABLE, LAMBDA, ANNOTATION }
-
-    public enum EdgeKind {
-        INVOKES, READS_FIELD, WRITES_FIELD, READS_VAR, WRITES_VAR,
-        CONTAINS, OVERRIDES, ANNOTATED_WITH
+    /** Kinds of graph nodes. */
+    public enum NodeKind {
+        /** A class, interface, enum or annotation type. */
+        CLASS,
+        /** A constructor ({@code <init>}). */
+        CONSTRUCTOR,
+        /** An instance or static method. */
+        METHOD,
+        /** A class field. */
+        FIELD,
+        /** A local variable or method parameter. */
+        VARIABLE,
+        /** A lambda expression. */
+        LAMBDA,
+        /** An annotation type (target of {@code ANNOTATED_WITH} edges). */
+        ANNOTATION
     }
 
+    /**
+     * Kinds of directed graph edges.
+     * Each value can be toggled via {@code graph.edge.<name>.enabled=true/false}.
+     */
+    public enum EdgeKind {
+
+        // ── Structural (declaration) ────────────────────────────────────────
+
+        /**
+         * Owner declares a child member.
+         * Examples: CLASS→METHOD, CLASS→FIELD, CLASS→CONSTRUCTOR, METHOD→LAMBDA.
+         */
+        DECLARES,
+
+        // ── Type hierarchy ──────────────────────────────────────────────────
+
+        /**
+         * A class extends another class.
+         * {@code class A extends B} → A –EXTENDS→ B
+         */
+        EXTENDS,
+
+        /**
+         * A class or abstract type implements an interface.
+         * {@code class A implements I} → A –IMPLEMENTS→ I
+         */
+        IMPLEMENTS,
+
+        // ── Invocations ─────────────────────────────────────────────────────
+
+        /**
+         * Caller method/constructor invokes a callee method.
+         * {@code foo.bar()} → caller –INVOKES→ callee
+         */
+        INVOKES,
+
+        /**
+         * Caller instantiates a class via its constructor.
+         * {@code new Foo(arg)} → caller –INSTANTIATES→ Foo
+         */
+        INSTANTIATES,
+
+        /**
+         * Caller creates an anonymous class.
+         * {@code new Runnable() \{ ... \}} → caller –INSTANTIATES_ANONYMOUS→ anonymous-type
+         */
+        INSTANTIATES_ANONYMOUS,
+
+        /**
+         * Method reference to a method or constructor.
+         * {@code Foo::bar}, {@code Foo::new} → caller –REFERENCES_METHOD→ target
+         */
+        REFERENCES_METHOD,
+
+        // ── Field access ────────────────────────────────────────────────────
+
+        /**
+         * Caller reads a class field.
+         * {@code this.value}, {@code obj.field}
+         */
+        READS_FIELD,
+
+        /**
+         * Caller writes a class field.
+         * {@code this.value = x}
+         */
+        WRITES_FIELD,
+
+        // ── Local variable access ───────────────────────────────────────────
+
+        /**
+         * Caller reads a local variable or method parameter.
+         */
+        READS_LOCAL_VAR,
+
+        /**
+         * Caller writes a local variable or method parameter.
+         */
+        WRITES_LOCAL_VAR,
+
+        // ── Exceptions ──────────────────────────────────────────────────────
+
+        /**
+         * A method/constructor contains a {@code throw new FooException(...)} statement.
+         * caller –THROWS→ ExceptionType
+         */
+        THROWS,
+
+        // ── Annotations ─────────────────────────────────────────────────────
+
+        /**
+         * A node is annotated with an annotation type.
+         * CLASS/METHOD/FIELD → ANNOTATION
+         */
+        ANNOTATED_WITH,
+
+        // ── Type references ─────────────────────────────────────────────────
+
+        /**
+         * An access to a type as a value:
+         * {@code Foo.class}, {@code instanceof Foo}, cast to {@code Foo}.
+         */
+        REFERENCES_TYPE,
+
+        // ── Inheritance ─────────────────────────────────────────────────────
+
+        /**
+         * A method overrides a method in a supertype.
+         * child –OVERRIDES→ parent
+         */
+        OVERRIDES
+    }
+
+    /** A node in the symbol graph. */
     public record GraphNode(
             String id,
             NodeKind kind,
@@ -46,14 +176,18 @@ public class AstGraphService {
             int endLine
     ) {}
 
+    /** A directed, typed edge between two graph nodes. */
     public record GraphEdge(
+            /** ID of the source node (caller / owner / subtype). */
             String fromId,
+            /** ID of the target node (callee / member / supertype). */
             String toId,
             EdgeKind kind,
             String filePath,
             int line
     ) {}
 
+    /** The full symbol graph of a project. */
     public static class ProjectGraph {
         public final Map<String, GraphNode>       nodes        = new LinkedHashMap<>();
         public final Map<String, List<GraphEdge>> edgesFrom    = new LinkedHashMap<>();
@@ -63,8 +197,7 @@ public class AstGraphService {
         public final Map<String, List<GraphNode>> byFile       = new LinkedHashMap<>();
 
         /**
-         * All file paths stored in the graph (relative to the project root that
-         * was passed to {@link AstGraphService#buildGraph}).
+         * All file paths stored in the graph (relative to the project root).
          * Used by {@link AstGraphService#normalizeFilePath} for suffix matching.
          */
         public Set<String> allFilePaths() {
@@ -83,18 +216,22 @@ public class AstGraphService {
             edgesTo.computeIfAbsent(e.toId(), k -> new ArrayList<>()).add(e);
         }
 
+        /** All outgoing edges from a node. */
         public List<GraphEdge> outgoing(String nodeId) {
             return edgesFrom.getOrDefault(nodeId, List.of());
         }
 
+        /** All incoming edges to a node. */
         public List<GraphEdge> incoming(String nodeId) {
             return edgesTo.getOrDefault(nodeId, List.of());
         }
 
+        /** All outgoing edges of a specific kind from a node. */
         public List<GraphEdge> outgoing(String nodeId, EdgeKind kind) {
             return outgoing(nodeId).stream().filter(e -> e.kind() == kind).toList();
         }
 
+        /** All incoming edges of a specific kind to a node. */
         public List<GraphEdge> incoming(String nodeId, EdgeKind kind) {
             return incoming(nodeId).stream().filter(e -> e.kind() == kind).toList();
         }
@@ -108,10 +245,15 @@ public class AstGraphService {
     }
 
     // ------------------------------------------------------------------
-    // Cache
+    // Dependencies & cache
     // ------------------------------------------------------------------
 
+    private final EdgeKindConfig edgeConfig;
     private final Map<Path, ProjectGraph> cache = new ConcurrentHashMap<>();
+
+    public AstGraphService(EdgeKindConfig edgeConfig) {
+        this.edgeConfig = edgeConfig;
+    }
 
     public ProjectGraph buildGraph(Path projectRoot) {
         return cache.computeIfAbsent(projectRoot, this::doBuildGraph);
@@ -136,22 +278,20 @@ public class AstGraphService {
      * (or is equal to). This handles both mono-repo sub-module prefixes
      * and cases where the paths are already identical.
      *
-     * @param diffPath  path as reported by GitLab diff
-     * @param graph     the project graph to look up known paths in
+     * @param diffPath path as reported by GitLab diff
+     * @param graph    the project graph to look up known paths in
      * @return the matching graph-relative path, or {@code diffPath} unchanged
      *         when no suffix match is found
      */
     public String normalizeFilePath(String diffPath, ProjectGraph graph) {
         if (diffPath == null || diffPath.isBlank()) return diffPath;
-        // normalise separators
         String normalised = diffPath.replace('\\', '/');
         for (String known : graph.allFilePaths()) {
             String knownNorm = known.replace('\\', '/');
-            if (normalised.equals(knownNorm)) return known;           // exact match
-            if (normalised.endsWith("/" + knownNorm)) return known;   // prefix stripped
-            if (knownNorm.endsWith("/" + normalised)) return known;   // inverse (unlikely)
+            if (normalised.equals(knownNorm)) return known;
+            if (normalised.endsWith("/" + knownNorm)) return known;
+            if (knownNorm.endsWith("/" + normalised)) return known;
         }
-        // fallback: try stripping leading path segments one by one
         String[] parts = normalised.split("/");
         for (int i = 1; i < parts.length; i++) {
             String candidate = String.join("/", Arrays.copyOfRange(parts, i, parts.length));
@@ -172,10 +312,8 @@ public class AstGraphService {
     );
 
     /**
-     * Collects only real source directories (src/main/java, src/test/java,
-     * or the project root itself), explicitly skipping build/target output
-     * directories that contain duplicate .java files and trigger
-     * "type already defined" errors in JDT.
+     * Collects only real source directories ({@code src/main/java}, {@code src/test/java},
+     * or the project root itself), skipping build/target output directories.
      */
     private List<String> collectSourceRoots(Path projectRoot) throws IOException {
         List<Path> candidates = List.of(
@@ -190,8 +328,6 @@ public class AstGraphService {
             log.debug("Using standard source roots: {}", roots);
             return roots;
         }
-
-        // Fallback: walk top-level subdirectories, exclude known output dirs
         List<String> fallback = new ArrayList<>();
         try (Stream<Path> top = Files.list(projectRoot)) {
             top.filter(Files::isDirectory)
@@ -203,10 +339,10 @@ public class AstGraphService {
             log.debug("Fallback source roots: {}", fallback);
             return fallback;
         }
-
         return List.of(projectRoot.toString());
     }
 
+    @SuppressWarnings("unchecked")
     private ProjectGraph doBuildGraph(Path projectRoot) {
         log.info("Building Spoon AST graph for {}", projectRoot);
         try {
@@ -238,7 +374,7 @@ public class AstGraphService {
             var graph = new ProjectGraph();
             String root = projectRoot.toString();
 
-            // ---- 1. Type nodes -------------------------------------------------
+            // ── 1. Type nodes ────────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
                 String id = qualifiedName(type);
                 if (id == null) return;
@@ -247,7 +383,31 @@ public class AstGraphService {
                 graph.addNode(new GraphNode(id, NodeKind.CLASS, type.getSimpleName(), file, ln[0], ln[1]));
             });
 
-            // ---- 2. Method nodes -----------------------------------------------
+            // ── 2. EXTENDS / IMPLEMENTS edges ────────────────────────────────
+            if (edgeConfig.isEnabled(EdgeKind.EXTENDS) || edgeConfig.isEnabled(EdgeKind.IMPLEMENTS)) {
+                model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
+                    String id = qualifiedName(type);
+                    if (id == null) return;
+                    String file = relPath(root, sourceFile(type));
+                    int[] ln = lines(type);
+
+                    if (edgeConfig.isEnabled(EdgeKind.EXTENDS) && type instanceof CtClass<?> cls) {
+                        var superRef = cls.getSuperclass();
+                        if (superRef != null) {
+                            String superId = superRef.getQualifiedName();
+                            graph.addEdge(new GraphEdge(id, superId, EdgeKind.EXTENDS, file, ln[0]));
+                        }
+                    }
+
+                    if (edgeConfig.isEnabled(EdgeKind.IMPLEMENTS)) {
+                        type.getSuperInterfaces().forEach(ifRef ->
+                                graph.addEdge(new GraphEdge(id, ifRef.getQualifiedName(),
+                                        EdgeKind.IMPLEMENTS, file, ln[0])));
+                    }
+                });
+            }
+
+            // ── 3. Method nodes ──────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtMethod.class)).forEach(m -> {
                 String id = typeMemberExecId(m);
                 if (id == null) return;
@@ -255,36 +415,44 @@ public class AstGraphService {
                 int[] ln = lines(m);
                 graph.addNode(new GraphNode(id, NodeKind.METHOD, m.getSimpleName(), file, ln[0], ln[1]));
 
-                String classId = qualifiedName(m.getDeclaringType());
-                if (classId != null)
-                    graph.addEdge(new GraphEdge(classId, id, EdgeKind.CONTAINS, file, ln[0]));
+                if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
+                    String classId = qualifiedName(m.getDeclaringType());
+                    if (classId != null)
+                        graph.addEdge(new GraphEdge(classId, id, EdgeKind.DECLARES, file, ln[0]));
+                }
 
-                m.getTopDefinitions().stream().findFirst()
-                        .filter(top -> top != m)
-                        .map(this::typeMemberExecId)
-                        .ifPresent(superId ->
-                                graph.addEdge(new GraphEdge(id, superId, EdgeKind.OVERRIDES, file, ln[0])));
+                if (edgeConfig.isEnabled(EdgeKind.OVERRIDES)) {
+                    m.getTopDefinitions().stream().findFirst()
+                            .filter(top -> top != m)
+                            .map(this::typeMemberExecId)
+                            .ifPresent(superId ->
+                                    graph.addEdge(new GraphEdge(id, superId, EdgeKind.OVERRIDES, file, ln[0])));
+                }
 
-                m.getAnnotations().forEach(ann ->
-                        graph.addEdge(new GraphEdge(id,
-                                ann.getAnnotationType().getQualifiedName(),
-                                EdgeKind.ANNOTATED_WITH, file, ln[0])));
+                if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH)) {
+                    m.getAnnotations().forEach(ann ->
+                            graph.addEdge(new GraphEdge(id,
+                                    ann.getAnnotationType().getQualifiedName(),
+                                    EdgeKind.ANNOTATED_WITH, file, ln[0])));
+                }
             });
 
-            // ---- 3. Constructor nodes ------------------------------------------
+            // ── 4. Constructor nodes ─────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtConstructor.class)).forEach(c -> {
                 String id = typeMemberExecId(c);
                 if (id == null) return;
                 String file = relPath(root, sourceFile(c));
                 int[] ln = lines(c);
-                graph.addNode(new GraphNode(id, NodeKind.METHOD, c.getSimpleName(), file, ln[0], ln[1]));
+                graph.addNode(new GraphNode(id, NodeKind.CONSTRUCTOR, c.getSimpleName(), file, ln[0], ln[1]));
 
-                String classId = qualifiedName(c.getDeclaringType());
-                if (classId != null)
-                    graph.addEdge(new GraphEdge(classId, id, EdgeKind.CONTAINS, file, ln[0]));
+                if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
+                    String classId = qualifiedName(c.getDeclaringType());
+                    if (classId != null)
+                        graph.addEdge(new GraphEdge(classId, id, EdgeKind.DECLARES, file, ln[0]));
+                }
             });
 
-            // ---- 4. Field nodes ------------------------------------------------
+            // ── 5. Field nodes ───────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtField.class)).forEach(field -> {
                 String id = fieldId(field);
                 if (id == null) return;
@@ -292,12 +460,21 @@ public class AstGraphService {
                 int[] ln = lines(field);
                 graph.addNode(new GraphNode(id, NodeKind.FIELD, field.getSimpleName(), file, ln[0], ln[1]));
 
-                String classId = qualifiedName(field.getDeclaringType());
-                if (classId != null)
-                    graph.addEdge(new GraphEdge(classId, id, EdgeKind.CONTAINS, file, ln[0]));
+                if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
+                    String classId = qualifiedName(field.getDeclaringType());
+                    if (classId != null)
+                        graph.addEdge(new GraphEdge(classId, id, EdgeKind.DECLARES, file, ln[0]));
+                }
+
+                if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH)) {
+                    field.getAnnotations().forEach(ann ->
+                            graph.addEdge(new GraphEdge(id,
+                                    ann.getAnnotationType().getQualifiedName(),
+                                    EdgeKind.ANNOTATED_WITH, file, ln[0])));
+                }
             });
 
-            // ---- 5. Local variable + parameter nodes ---------------------------
+            // ── 6. Local variable + parameter nodes ──────────────────────────
             model.getElements(new TypeFilter<>(CtVariable.class)).forEach(v -> {
                 if (v instanceof CtField) return;
                 String id = varId(v);
@@ -307,60 +484,126 @@ public class AstGraphService {
                 graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(), file, ln[0], ln[1]));
             });
 
-            // ---- 6. Lambda nodes -----------------------------------------------
+            // ── 7. Lambda nodes ──────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtLambda.class)).forEach(lambda -> {
                 String file = relPath(root, sourceFile(lambda));
                 int[] ln = lines(lambda);
                 String id = "lambda@" + file + ":" + ln[0];
                 graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb", file, ln[0], ln[1]));
 
-                CtMethod<?> em = lambda.getParent(CtMethod.class);
-                if (em != null) {
-                    String encId = typeMemberExecId(em);
-                    if (encId != null)
-                        graph.addEdge(new GraphEdge(encId, id, EdgeKind.CONTAINS, file, ln[0]));
-                } else {
-                    CtConstructor<?> ec = lambda.getParent(CtConstructor.class);
-                    if (ec != null) {
-                        String encId = typeMemberExecId(ec);
+                if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
+                    CtMethod<?> em = lambda.getParent(CtMethod.class);
+                    if (em != null) {
+                        String encId = typeMemberExecId(em);
                         if (encId != null)
-                            graph.addEdge(new GraphEdge(encId, id, EdgeKind.CONTAINS, file, ln[0]));
+                            graph.addEdge(new GraphEdge(encId, id, EdgeKind.DECLARES, file, ln[0]));
+                    } else {
+                        CtConstructor<?> ec = lambda.getParent(CtConstructor.class);
+                        if (ec != null) {
+                            String encId = typeMemberExecId(ec);
+                            if (encId != null)
+                                graph.addEdge(new GraphEdge(encId, id, EdgeKind.DECLARES, file, ln[0]));
+                        }
                     }
                 }
             });
 
-            // ---- 7. INVOKES edges ----------------------------------------------
-            model.getElements(new TypeFilter<>(CtInvocation.class)).forEach(inv -> {
-                String callerId = nearestExecId(inv);
-                if (callerId == null) return;
-                String calleeId = execRefId(inv.getExecutable());
-                graph.addEdge(new GraphEdge(callerId, calleeId, EdgeKind.INVOKES,
-                        relPath(root, sourceFile(inv)), posLine(inv)));
-            });
+            // ── 8. INVOKES edges ─────────────────────────────────────────────
+            if (edgeConfig.isEnabled(EdgeKind.INVOKES)) {
+                model.getElements(new TypeFilter<>(CtInvocation.class)).forEach(inv -> {
+                    String callerId = nearestExecId(inv);
+                    if (callerId == null) return;
+                    String calleeId = execRefId(inv.getExecutable());
+                    graph.addEdge(new GraphEdge(callerId, calleeId, EdgeKind.INVOKES,
+                            relPath(root, sourceFile(inv)), posLine(inv)));
+                });
+            }
 
-            // ---- 8. Field read / write edges -----------------------------------
-            model.getElements(new TypeFilter<>(CtFieldAccess.class)).forEach(fa -> {
-                String execId = nearestExecId(fa);
-                if (execId == null) return;
-                CtFieldReference<?> ref = fa.getVariable();
-                String fId = ref.getDeclaringType() != null
-                        ? ref.getDeclaringType().getQualifiedName() + "." + ref.getSimpleName()
-                        : "?." + ref.getSimpleName();
-                EdgeKind kind = (fa instanceof CtFieldWrite) ? EdgeKind.WRITES_FIELD : EdgeKind.READS_FIELD;
-                graph.addEdge(new GraphEdge(execId, fId, kind,
-                        relPath(root, sourceFile(fa)), posLine(fa)));
-            });
+            // ── 9. INSTANTIATES / INSTANTIATES_ANONYMOUS edges ───────────────
+            if (edgeConfig.isEnabled(EdgeKind.INSTANTIATES) || edgeConfig.isEnabled(EdgeKind.INSTANTIATES_ANONYMOUS)) {
+                model.getElements(new TypeFilter<>(CtConstructorCall.class)).forEach(cc -> {
+                    String callerId = nearestExecId(cc);
+                    if (callerId == null) return;
+                    String typeId = cc.getExecutable().getDeclaringType() != null
+                            ? cc.getExecutable().getDeclaringType().getQualifiedName()
+                            : "?";
 
-            // ---- 9. Variable read / write edges --------------------------------
-            model.getElements(new TypeFilter<>(CtVariableAccess.class)).forEach(va -> {
-                if (va instanceof CtFieldAccess) return;
-                String execId = nearestExecId(va);
-                if (execId == null) return;
-                String vId = varRefId(va.getVariable());
-                EdgeKind kind = (va instanceof CtVariableWrite) ? EdgeKind.WRITES_VAR : EdgeKind.READS_VAR;
-                graph.addEdge(new GraphEdge(execId, vId, kind,
-                        relPath(root, sourceFile(va)), posLine(va)));
-            });
+                    boolean isAnon = cc instanceof CtNewClass;
+                    EdgeKind kind = isAnon ? EdgeKind.INSTANTIATES_ANONYMOUS : EdgeKind.INSTANTIATES;
+                    if (edgeConfig.isEnabled(kind)) {
+                        graph.addEdge(new GraphEdge(callerId, typeId, kind,
+                                relPath(root, sourceFile(cc)), posLine(cc)));
+                    }
+                });
+            }
+
+            // ── 10. REFERENCES_METHOD edges (method references Foo::bar) ─────
+            if (edgeConfig.isEnabled(EdgeKind.REFERENCES_METHOD)) {
+                model.getElements(new TypeFilter<>(CtExecutableReferenceExpression.class)).forEach(ref -> {
+                    String callerId = nearestExecId(ref);
+                    if (callerId == null) return;
+                    String targetId = execRefId(ref.getExecutable());
+                    graph.addEdge(new GraphEdge(callerId, targetId, EdgeKind.REFERENCES_METHOD,
+                            relPath(root, sourceFile(ref)), posLine(ref)));
+                });
+            }
+
+            // ── 11. READS_FIELD / WRITES_FIELD edges ─────────────────────────
+            if (edgeConfig.isEnabled(EdgeKind.READS_FIELD) || edgeConfig.isEnabled(EdgeKind.WRITES_FIELD)) {
+                model.getElements(new TypeFilter<>(CtFieldAccess.class)).forEach(fa -> {
+                    String execId = nearestExecId(fa);
+                    if (execId == null) return;
+                    CtFieldReference<?> ref = fa.getVariable();
+                    String fId = ref.getDeclaringType() != null
+                            ? ref.getDeclaringType().getQualifiedName() + "." + ref.getSimpleName()
+                            : "?." + ref.getSimpleName();
+                    EdgeKind kind = (fa instanceof CtFieldWrite) ? EdgeKind.WRITES_FIELD : EdgeKind.READS_FIELD;
+                    if (edgeConfig.isEnabled(kind))
+                        graph.addEdge(new GraphEdge(execId, fId, kind,
+                                relPath(root, sourceFile(fa)), posLine(fa)));
+                });
+            }
+
+            // ── 12. READS_LOCAL_VAR / WRITES_LOCAL_VAR edges ─────────────────
+            if (edgeConfig.isEnabled(EdgeKind.READS_LOCAL_VAR) || edgeConfig.isEnabled(EdgeKind.WRITES_LOCAL_VAR)) {
+                model.getElements(new TypeFilter<>(CtVariableAccess.class)).forEach(va -> {
+                    if (va instanceof CtFieldAccess) return;
+                    String execId = nearestExecId(va);
+                    if (execId == null) return;
+                    String vId = varRefId(va.getVariable());
+                    EdgeKind kind = (va instanceof CtVariableWrite) ? EdgeKind.WRITES_LOCAL_VAR : EdgeKind.READS_LOCAL_VAR;
+                    if (edgeConfig.isEnabled(kind))
+                        graph.addEdge(new GraphEdge(execId, vId, kind,
+                                relPath(root, sourceFile(va)), posLine(va)));
+                });
+            }
+
+            // ── 13. THROWS edges ─────────────────────────────────────────────
+            if (edgeConfig.isEnabled(EdgeKind.THROWS)) {
+                model.getElements(new TypeFilter<>(CtThrow.class)).forEach(thr -> {
+                    String execId = nearestExecId(thr);
+                    if (execId == null) return;
+                    CtExpression<?> thrown = thr.getThrownExpression();
+                    String typeId = "?";
+                    if (thrown instanceof CtConstructorCall<?> cc && cc.getExecutable().getDeclaringType() != null) {
+                        typeId = cc.getExecutable().getDeclaringType().getQualifiedName();
+                    }
+                    graph.addEdge(new GraphEdge(execId, typeId, EdgeKind.THROWS,
+                            relPath(root, sourceFile(thr)), posLine(thr)));
+                });
+            }
+
+            // ── 14. REFERENCES_TYPE edges (Foo.class, instanceof, cast) ──────
+            if (edgeConfig.isEnabled(EdgeKind.REFERENCES_TYPE)) {
+                model.getElements(new TypeFilter<>(CtTypeAccess.class)).forEach(ta -> {
+                    String execId = nearestExecId(ta);
+                    if (execId == null) return;
+                    if (ta.getAccessedType() == null) return;
+                    String typeId = ta.getAccessedType().getQualifiedName();
+                    graph.addEdge(new GraphEdge(execId, typeId, EdgeKind.REFERENCES_TYPE,
+                            relPath(root, sourceFile(ta)), posLine(ta)));
+                });
+            }
 
             log.info("Spoon graph built: {} nodes, {} edge-sources",
                     graph.nodes.size(), graph.edgesFrom.size());
