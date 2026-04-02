@@ -7,82 +7,175 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Abstract base for all typed node views.
+ * Abstract base for all typed node views in the symbol graph.
  *
- * <p>Every concrete view holds direct Java references to neighbouring views,
- * so the caller can traverse the graph without any ID look-ups:
+ * <p>Every concrete subclass holds <em>direct Java references</em> to neighbouring
+ * views, so callers can traverse the full graph without any ID look-ups:
  * <pre>{@code
  *   ClassNodeView cls = viewBuilder.classView("com.example.Foo");
  *   cls.getMethods()
  *      .forEach(m -> m.getCallees().forEach(callee -> ...));
  * }</pre>
  *
- * <p>The {@link #getContent()} method returns the pretty-printed source
- * text of the element as produced by Spoon, so every view carries its
- * own source context and can be handed directly to an LLM without
- * further file I/O.
+ * <p><b>Source content</b> — {@link #getContent()} returns the pretty-printed
+ * source text of the element as produced by Spoon, so every view carries its
+ * own source context and can be handed directly to an LLM without further
+ * file I/O.
  *
- * <p>The graph is populated by {@link com.example.mrrag.service.GraphViewBuilder}.
- * All list fields are mutable so the builder can add neighbours in two passes
- * (first create all views, then wire references).
+ * <p><b>Wiring</b> — all list fields are mutable so
+ * {@link com.example.mrrag.service.GraphViewBuilder} can populate neighbours
+ * in two passes: first create all views, then wire references.
+ *
+ * <p><b>Concurrency</b> — view objects are <em>not</em> thread-safe after
+ * construction; they are intended to be built once and then used read-only.
  */
 public abstract class GraphNodeView {
 
+    /** The raw graph node that backs this view. Never {@code null}. */
     private final GraphNode node;
 
-    /** Views that declared this node via a {@code DECLARES} edge (usually one). */
+    /**
+     * Nodes that declared this node via a {@code DECLARES} edge.
+     * For most nodes this list contains exactly one entry (the owner class or
+     * executable).  Top-level classes with no owning type in the graph have
+     * an empty list.
+     */
     private final List<GraphNodeView> declaredBy = new ArrayList<>();
 
+    /**
+     * Constructs a view wrapping the given raw node.
+     *
+     * @param node the raw {@link GraphNode} record; must not be {@code null}
+     */
     protected GraphNodeView(GraphNode node) {
         this.node = node;
     }
 
-    // ── Core identity ─────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
+    // Core identity
+    // -------------------------------------------------------------------------
 
-    /** Unique node id as used in {@link com.example.mrrag.service.AstGraphService.ProjectGraph}. */
+    /**
+     * Returns the unique node identifier as stored in
+     * {@link com.example.mrrag.service.AstGraphService.ProjectGraph}.
+     *
+     * <p>Format depends on node kind:
+     * <ul>
+     *   <li>CLASS — fully qualified name, e.g. {@code com.example.Foo}</li>
+     *   <li>METHOD / CONSTRUCTOR — {@code Owner#signature}, e.g.
+     *       {@code com.example.Foo#doWork(int)}</li>
+     *   <li>FIELD — {@code Owner.fieldName}, e.g. {@code com.example.Foo.count}</li>
+     *   <li>VARIABLE — {@code var@FileName.java:line:name}</li>
+     *   <li>LAMBDA — {@code lambda@relPath:line}</li>
+     *   <li>TYPE_PARAM — {@code Owner#<T>}</li>
+     *   <li>ANNOTATION_ATTRIBUTE — {@code AnnotationType#attrName}</li>
+     * </ul>
+     *
+     * @return unique node id; never {@code null}
+     */
     public String getId()         { return node.id(); }
 
-    /** {@link NodeKind} of this node. */
+    /**
+     * Returns the {@link NodeKind} of this node, e.g. {@code CLASS},
+     * {@code METHOD}, {@code TYPE_PARAM}.
+     *
+     * @return node kind; never {@code null}
+     */
     public NodeKind getKind()     { return node.kind(); }
 
-    /** Simple (unqualified) name. */
+    /**
+     * Returns the simple (unqualified) name of this element.
+     *
+     * <p>Examples: {@code "Foo"} for a class, {@code "doWork"} for a method,
+     * {@code "count"} for a field, {@code "T"} for a type parameter,
+     * {@code "λ"} for a lambda.
+     *
+     * @return simple name; never {@code null}
+     */
     public String getSimpleName() { return node.simpleName(); }
 
-    /** Source-relative file path. */
+    /**
+     * Returns the source-relative path of the file that contains this element,
+     * e.g. {@code src/main/java/com/example/Foo.java}.
+     *
+     * <p>Returns {@code "unknown"} for external / synthetic elements.
+     *
+     * @return relative file path; never {@code null}
+     */
     public String getFilePath()   { return node.filePath(); }
 
-    /** First line of this element in its source file (1-based). */
+    /**
+     * Returns the first source line of this element (1-based).
+     * Returns {@code 0} when position information is unavailable.
+     *
+     * @return start line number
+     */
     public int getStartLine()     { return node.startLine(); }
 
-    /** Last line of this element in its source file (1-based). */
+    /**
+     * Returns the last source line of this element (1-based).
+     * Returns {@code 0} when position information is unavailable.
+     *
+     * @return end line number
+     */
     public int getEndLine()       { return node.endLine(); }
 
     /**
-     * Pretty-printed source text of this element as produced by Spoon.
+     * Returns the pretty-printed source text of this element as produced
+     * by Spoon's pretty-printer.
      *
-     * <p>For classes and methods this is the full declaration including body.
-     * For fields and variables it is the single declaration line.
-     * For lambdas it is the lambda expression text.
-     * External / synthetic stub nodes return an empty string.
+     * <p>Content by node kind:
+     * <ul>
+     *   <li>CLASS — full type declaration including body</li>
+     *   <li>METHOD / CONSTRUCTOR — signature and body</li>
+     *   <li>FIELD — single field declaration line</li>
+     *   <li>VARIABLE — variable declaration statement</li>
+     *   <li>LAMBDA — lambda expression text</li>
+     *   <li>TYPE_PARAM — parameter with bounds, e.g.
+     *       {@code "T extends Comparable<T> & Serializable"}</li>
+     *   <li>ANNOTATION_ATTRIBUTE — method declaration with default clause</li>
+     * </ul>
      *
-     * <p>This value is ready to be embedded in an LLM prompt without
+     * <p>External and synthetic stub nodes return an empty string.
+     * This value is ready to embed directly in an LLM prompt without
      * additional file I/O.
+     *
+     * @return source snippet; never {@code null}, may be empty
      */
     public String getContent()    { return node.sourceSnippet(); }
 
-    /** Raw {@link GraphNode} record backing this view. */
+    /**
+     * Returns the raw {@link GraphNode} record that backs this view.
+     * Prefer the typed getters above; use this only when low-level access
+     * to the record is required.
+     *
+     * @return backing graph node; never {@code null}
+     */
     public GraphNode getNode()    { return node; }
 
-    // ── Structural links ──────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
+    // Structural links
+    // -------------------------------------------------------------------------
 
     /**
-     * The owner that declared this node (e.g. the class that owns a method).
-     * Empty list only for top-level classes that have no owning type in the graph.
+     * Returns the nodes that declared this node via a {@code DECLARES} edge.
+     *
+     * <p>Typical cardinality:
+     * <ul>
+     *   <li>1 — for methods, fields, constructors, lambdas (one owning class or
+     *       executable)</li>
+     *   <li>0 — for top-level classes with no enclosing type in the graph</li>
+     * </ul>
+     *
+     * @return immutable-safe list of declaring nodes; never {@code null}
      */
     public List<GraphNodeView> getDeclaredBy() { return declaredBy; }
 
-    // ── Package-private mutators used by GraphViewBuilder ─────────────────────
+    // -------------------------------------------------------------------------
+    // Package-private mutators used by GraphViewBuilder
+    // -------------------------------------------------------------------------
 
+    /** Registers {@code owner} as a declaring node of this view. */
     void addDeclaredBy(GraphNodeView owner) { declaredBy.add(owner); }
 
     @Override
