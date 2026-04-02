@@ -17,6 +17,11 @@ import java.util.List;
  *      .forEach(m -> m.getCallees().forEach(callee -> ...));
  * }</pre>
  *
+ * <p>The {@link #getContent()} method returns the pretty-printed source
+ * text of the element as produced by Spoon, so every view carries its
+ * own source context and can be handed directly to an LLM without
+ * further file I/O.
+ *
  * <p>The graph is populated by {@link com.example.mrrag.service.GraphViewBuilder}.
  * All list fields are mutable so the builder can add neighbours in two passes
  * (first create all views, then wire references).
@@ -32,7 +37,7 @@ public abstract class GraphNodeView {
         this.node = node;
     }
 
-    // ── Core identity ──────────────────────────────────────────────────────────
+    // ── Core identity ─────────────────────────────────────────────────────────
 
     /** Unique node id as used in {@link com.example.mrrag.service.AstGraphService.ProjectGraph}. */
     public String getId()         { return node.id(); }
@@ -46,11 +51,24 @@ public abstract class GraphNodeView {
     /** Source-relative file path. */
     public String getFilePath()   { return node.filePath(); }
 
-    /** First line of this element in its source file. */
+    /** First line of this element in its source file (1-based). */
     public int getStartLine()     { return node.startLine(); }
 
-    /** Last line of this element in its source file. */
+    /** Last line of this element in its source file (1-based). */
     public int getEndLine()       { return node.endLine(); }
+
+    /**
+     * Pretty-printed source text of this element as produced by Spoon.
+     *
+     * <p>For classes and methods this is the full declaration including body.
+     * For fields and variables it is the single declaration line.
+     * For lambdas it is the lambda expression text.
+     * External / synthetic stub nodes return an empty string.
+     *
+     * <p>This value is ready to be embedded in an LLM prompt without
+     * additional file I/O.
+     */
+    public String getContent()    { return node.sourceSnippet(); }
 
     /** Raw {@link GraphNode} record backing this view. */
     public GraphNode getNode()    { return node; }
@@ -63,7 +81,7 @@ public abstract class GraphNodeView {
      */
     public List<GraphNodeView> getDeclaredBy() { return declaredBy; }
 
-    // ── Package-private mutators used by GraphViewBuilder ────────────────────
+    // ── Package-private mutators used by GraphViewBuilder ─────────────────────
 
     void addDeclaredBy(GraphNodeView owner) { declaredBy.add(owner); }
 

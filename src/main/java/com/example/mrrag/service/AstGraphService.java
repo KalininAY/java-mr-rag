@@ -166,14 +166,27 @@ public class AstGraphService {
         OVERRIDES
     }
 
-    /** A node in the symbol graph. */
+    /**
+     * A node in the symbol graph.
+     *
+     * @param id            unique node identifier
+     * @param kind          {@link NodeKind} of this node
+     * @param simpleName    unqualified name
+     * @param filePath      source-relative file path
+     * @param startLine     first source line (1-based)
+     * @param endLine       last source line (1-based)
+     * @param sourceSnippet pretty-printed source text of the element as
+     *                      produced by Spoon's {@code toString()};
+     *                      may be empty for external / synthetic nodes
+     */
     public record GraphNode(
             String id,
             NodeKind kind,
             String simpleName,
             String filePath,
             int startLine,
-            int endLine
+            int endLine,
+            String sourceSnippet
     ) {}
 
     /** A directed, typed edge between two graph nodes. */
@@ -352,7 +365,7 @@ public class AstGraphService {
             Launcher launcher = new Launcher();
             sourceRoots.forEach(launcher::addInputResource);
             launcher.getEnvironment().setNoClasspath(true);
-            launcher.getEnvironment().setCommentEnabled(false);
+            launcher.getEnvironment().setCommentEnabled(true);
             launcher.getEnvironment().setAutoImports(false);
             try {
                 launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
@@ -380,7 +393,8 @@ public class AstGraphService {
                 if (id == null) return;
                 String file = relPath(root, sourceFile(type));
                 int[] ln = lines(type);
-                graph.addNode(new GraphNode(id, NodeKind.CLASS, type.getSimpleName(), file, ln[0], ln[1]));
+                graph.addNode(new GraphNode(id, NodeKind.CLASS, type.getSimpleName(),
+                        file, ln[0], ln[1], snippet(type)));
             });
 
             // ── 2. EXTENDS / IMPLEMENTS edges ────────────────────────────────
@@ -413,7 +427,8 @@ public class AstGraphService {
                 if (id == null) return;
                 String file = relPath(root, sourceFile(m));
                 int[] ln = lines(m);
-                graph.addNode(new GraphNode(id, NodeKind.METHOD, m.getSimpleName(), file, ln[0], ln[1]));
+                graph.addNode(new GraphNode(id, NodeKind.METHOD, m.getSimpleName(),
+                        file, ln[0], ln[1], snippet(m)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     String classId = qualifiedName(m.getDeclaringType());
@@ -443,7 +458,8 @@ public class AstGraphService {
                 if (id == null) return;
                 String file = relPath(root, sourceFile(c));
                 int[] ln = lines(c);
-                graph.addNode(new GraphNode(id, NodeKind.CONSTRUCTOR, c.getSimpleName(), file, ln[0], ln[1]));
+                graph.addNode(new GraphNode(id, NodeKind.CONSTRUCTOR, c.getSimpleName(),
+                        file, ln[0], ln[1], snippet(c)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     String classId = qualifiedName(c.getDeclaringType());
@@ -458,7 +474,8 @@ public class AstGraphService {
                 if (id == null) return;
                 String file = relPath(root, sourceFile(field));
                 int[] ln = lines(field);
-                graph.addNode(new GraphNode(id, NodeKind.FIELD, field.getSimpleName(), file, ln[0], ln[1]));
+                graph.addNode(new GraphNode(id, NodeKind.FIELD, field.getSimpleName(),
+                        file, ln[0], ln[1], snippet(field)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     String classId = qualifiedName(field.getDeclaringType());
@@ -481,7 +498,8 @@ public class AstGraphService {
                 if (id == null) return;
                 String file = relPath(root, sourceFile(v));
                 int[] ln = lines(v);
-                graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(), file, ln[0], ln[1]));
+                graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(),
+                        file, ln[0], ln[1], snippet(v)));
             });
 
             // ── 7. Lambda nodes ──────────────────────────────────────────────
@@ -489,7 +507,8 @@ public class AstGraphService {
                 String file = relPath(root, sourceFile(lambda));
                 int[] ln = lines(lambda);
                 String id = "lambda@" + file + ":" + ln[0];
-                graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb", file, ln[0], ln[1]));
+                graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb",
+                        file, ln[0], ln[1], snippet(lambda)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     CtMethod<?> em = lambda.getParent(CtMethod.class);
@@ -611,6 +630,28 @@ public class AstGraphService {
 
         } catch (IOException e) {
             throw new RuntimeException("Failed to collect source roots for " + projectRoot, e);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Source snippet helper
+    // ------------------------------------------------------------------
+
+    /**
+     * Returns the pretty-printed source text for a Spoon element.
+     *
+     * <p>Spoon's {@code toString()} runs its own pretty-printer which
+     * preserves the original structure (comments included when
+     * {@code setCommentEnabled(true)}).  The result is normalised to
+     * never be {@code null}: external / synthetic nodes with no real
+     * position get an empty string instead.
+     */
+    private static String snippet(CtElement el) {
+        try {
+            String s = el.toString();
+            return s != null ? s : "";
+        } catch (Exception e) {
+            return "";
         }
     }
 
