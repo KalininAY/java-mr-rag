@@ -6,104 +6,103 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * View for a {@code CLASS} (or interface / enum / annotation type) node.
+ * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#CLASS} node.
  *
- * <h3>Generic type parameters</h3>
- * Raw generic signatures are stored as strings, e.g. {@code "E"} for
- * {@code java.util.List<E>}. The list is empty for non-generic types.
+ * <p>Covers classes, interfaces, enums, record types, and annotation types
+ * ({@code @interface}).  All list fields are pre-populated by
+ * {@link com.example.mrrag.service.GraphViewBuilder} from the two-pass
+ * edge-wiring step.
  *
- * <h3>Navigation</h3>
- * <pre>{@code
- *   ClassNodeView list = builder.classById("java.util.ArrayList");
- *   list.getSuperClass();            // ClassNodeView for AbstractList
- *   list.getInterfaces();            // [List, RandomAccess, Cloneable, …]
- *   list.getSubClasses();            // reverse EXTENDS
- *   list.getMethods();               // all MethodNodeView declared here
- *   list.getFields();                // all FieldNodeView declared here
- *   list.getConstructors();          // all ConstructorNodeView declared here
- * }</pre>
+ * <p>{@link #getContent()} returns the full Spoon pretty-printed source
+ * of the type declaration, including body.
+ *
+ * <h2>Generics</h2>
+ * The type parameters declared on this class are exposed via
+ * {@link #getTypeParameters()}.  Each entry is a {@link TypeParamNodeView}
+ * that carries its bound list and owner back-reference.
  */
 public class ClassNodeView extends GraphNodeView {
 
-    // ── Generic parameters ────────────────────────────────────────────────────
-    /** Raw type-parameter names as declared, e.g. {@code ["E", "K", "V"]}. */
-    private final List<String> typeParameters = new ArrayList<>();
+    // ── Generic type parameters ───────────────────────────────────────────────
 
-    // ── Type hierarchy ────────────────────────────────────────────────────────
-    /** The direct super-class ({@code extends}), or {@code null} for interfaces / Object. */
+    /**
+     * Formal type parameters declared on this class.
+     * {@code class Foo<T, K extends Comparable<K>>} → [T-view, K-view]
+     * Empty for non-generic classes.
+     */
+    private final List<TypeParamNodeView> typeParameters = new ArrayList<>();
+
+    // ── Inheritance ───────────────────────────────────────────────────────────
+
+    /** The direct superclass (EXTENDS edge target), or {@code null}. */
     private ClassNodeView superClass;
-    /** All implemented interfaces ({@code implements}). */
-    private final List<ClassNodeView> interfaces      = new ArrayList<>();
-    /** All classes that directly extend this one (reverse {@code EXTENDS}). */
-    private final List<ClassNodeView> subClasses      = new ArrayList<>();
-    /** All classes that implement this interface (reverse {@code IMPLEMENTS}). */
+
+    /** Interfaces implemented / extended by this type. */
+    private final List<ClassNodeView> interfaces = new ArrayList<>();
+
+    /** Direct known subclasses (reverse EXTENDS). */
+    private final List<ClassNodeView> subClasses = new ArrayList<>();
+
+    /** Types that implement this interface (reverse IMPLEMENTS). */
     private final List<ClassNodeView> implementations = new ArrayList<>();
 
-    // ── Members ───────────────────────────────────────────────────────────────
-    /** Methods declared in this class. */
+    // ── Declared members ─────────────────────────────────────────────────────
+
     private final List<MethodNodeView>      methods      = new ArrayList<>();
-    /** Constructors declared in this class. */
     private final List<ConstructorNodeView> constructors = new ArrayList<>();
-    /** Fields declared in this class. */
     private final List<FieldNodeView>       fields       = new ArrayList<>();
-    /** Inner / anonymous types declared in this class. */
     private final List<ClassNodeView>       innerClasses = new ArrayList<>();
-    /** Lambda expressions directly owned by this class (rare; usually owned by methods). */
     private final List<LambdaNodeView>      lambdas      = new ArrayList<>();
 
-    // ── Usage ─────────────────────────────────────────────────────────────────
-    /** Callables (methods / constructors) that instantiate this class. */
-    private final List<GraphNodeView> instantiatedBy            = new ArrayList<>();
-    /** Callables that anonymously subclass this type. */
-    private final List<GraphNodeView> anonymouslyInstantiatedBy = new ArrayList<>();
-    /** Nodes annotated with this annotation type (reverse {@code ANNOTATED_WITH}). */
-    private final List<GraphNodeView> annotatedNodes            = new ArrayList<>();
-    /** Nodes that reference this type ({@code Foo.class}, cast, instanceof …). */
-    private final List<GraphNodeView> referencedBy              = new ArrayList<>();
-    /** Annotation types applied to this class. */
-    private final List<GraphNodeView> annotations               = new ArrayList<>();
+    /**
+     * Attributes declared inside this {@code @interface}, if applicable.
+     * Empty for regular classes.
+     */
+    private final List<AnnotationAttributeView> annotationAttributes = new ArrayList<>();
 
-    public ClassNodeView(GraphNode node) {
+    // ── Usage ─────────────────────────────────────────────────────────────────
+
+    /** Executables that create an instance of this class via {@code new}. */
+    private final List<GraphNodeView> instantiatedBy = new ArrayList<>();
+
+    /** Nodes that carry an {@code ANNOTATED_WITH} edge pointing to this type. */
+    private final List<GraphNodeView> annotatedNodes = new ArrayList<>();
+
+    ClassNodeView(GraphNode node) {
         super(node);
     }
 
-    // ── Generic parameters ────────────────────────────────────────────────────
-    public List<String>            getTypeParameters()            { return typeParameters; }
+    // ── Accessors ─────────────────────────────────────────────────────────────
 
-    // ── Type hierarchy ────────────────────────────────────────────────────────
-    public ClassNodeView           getSuperClass()                { return superClass; }
-    public List<ClassNodeView>     getInterfaces()                { return interfaces; }
-    public List<ClassNodeView>     getSubClasses()                { return subClasses; }
-    public List<ClassNodeView>     getImplementations()           { return implementations; }
+    /** Generic type parameters declared on this class. */
+    public List<TypeParamNodeView>      getTypeParameters()      { return typeParameters; }
 
-    // ── Members ───────────────────────────────────────────────────────────────
-    public List<MethodNodeView>      getMethods()                 { return methods; }
-    public List<ConstructorNodeView> getConstructors()            { return constructors; }
-    public List<FieldNodeView>       getFields()                  { return fields; }
-    public List<ClassNodeView>       getInnerClasses()            { return innerClasses; }
-    public List<LambdaNodeView>      getLambdas()                 { return lambdas; }
+    public ClassNodeView                getSuperClass()           { return superClass; }
+    public List<ClassNodeView>          getInterfaces()           { return interfaces; }
+    public List<ClassNodeView>          getSubClasses()           { return subClasses; }
+    public List<ClassNodeView>          getImplementations()      { return implementations; }
+    public List<MethodNodeView>         getMethods()              { return methods; }
+    public List<ConstructorNodeView>    getConstructors()         { return constructors; }
+    public List<FieldNodeView>          getFields()               { return fields; }
+    public List<ClassNodeView>          getInnerClasses()         { return innerClasses; }
+    public List<LambdaNodeView>         getLambdas()              { return lambdas; }
+    public List<AnnotationAttributeView> getAnnotationAttributes(){ return annotationAttributes; }
+    public List<GraphNodeView>          getInstantiatedBy()       { return instantiatedBy; }
+    public List<GraphNodeView>          getAnnotatedNodes()       { return annotatedNodes; }
 
-    // ── Usage ─────────────────────────────────────────────────────────────────
-    public List<GraphNodeView>     getInstantiatedBy()            { return instantiatedBy; }
-    public List<GraphNodeView>     getAnonymouslyInstantiatedBy() { return anonymouslyInstantiatedBy; }
-    public List<GraphNodeView>     getAnnotatedNodes()            { return annotatedNodes; }
-    public List<GraphNodeView>     getReferencedBy()              { return referencedBy; }
-    public List<GraphNodeView>     getAnnotations()               { return annotations; }
+    // ── Package-private mutators used by GraphViewBuilder ─────────────────────
 
-    // ── Package-private mutators ──────────────────────────────────────────────
-    void setSuperClass(ClassNodeView v)                { this.superClass = v; }
-    void addInterface(ClassNodeView v)                 { interfaces.add(v); }
-    void addSubClass(ClassNodeView v)                  { subClasses.add(v); }
-    void addImplementation(ClassNodeView v)            { implementations.add(v); }
-    void addMethod(MethodNodeView v)                   { methods.add(v); }
-    void addConstructor(ConstructorNodeView v)         { constructors.add(v); }
-    void addField(FieldNodeView v)                     { fields.add(v); }
-    void addInnerClass(ClassNodeView v)                { innerClasses.add(v); }
-    void addLambda(LambdaNodeView v)                   { lambdas.add(v); }
-    void addInstantiatedBy(GraphNodeView v)            { instantiatedBy.add(v); }
-    void addAnonymouslyInstantiatedBy(GraphNodeView v) { anonymouslyInstantiatedBy.add(v); }
-    void addAnnotatedNode(GraphNodeView v)             { annotatedNodes.add(v); }
-    void addReferencedBy(GraphNodeView v)              { referencedBy.add(v); }
-    void addAnnotation(GraphNodeView v)                { annotations.add(v); }
-    void addTypeParameter(String tp)                   { typeParameters.add(tp); }
+    void addTypeParameter(TypeParamNodeView tp)         { typeParameters.add(tp); }
+    void setSuperClass(ClassNodeView superClass)        { this.superClass = superClass; }
+    void addInterface(ClassNodeView iface)              { interfaces.add(iface); }
+    void addSubClass(ClassNodeView sub)                 { subClasses.add(sub); }
+    void addImplementation(ClassNodeView impl)          { implementations.add(impl); }
+    void addMethod(MethodNodeView m)                    { methods.add(m); }
+    void addConstructor(ConstructorNodeView c)          { constructors.add(c); }
+    void addField(FieldNodeView f)                      { fields.add(f); }
+    void addInnerClass(ClassNodeView inner)             { innerClasses.add(inner); }
+    void addLambda(LambdaNodeView l)                    { lambdas.add(l); }
+    void addAnnotationAttribute(AnnotationAttributeView a) { annotationAttributes.add(a); }
+    void addInstantiatedBy(GraphNodeView caller)        { instantiatedBy.add(caller); }
+    void addAnnotatedNode(GraphNodeView node)           { annotatedNodes.add(node); }
 }
