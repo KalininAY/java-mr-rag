@@ -3,6 +3,7 @@ package com.example.mrrag.controller;
 import com.example.mrrag.service.AstGraphService;
 import com.example.mrrag.service.AstGraphService.ProjectGraph;
 import com.example.mrrag.service.AstGraphService.GraphNode;
+import com.example.mrrag.service.GraphViewBuilder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -41,6 +42,8 @@ public class GraphDebugController {
     public Map<String, Object> stats(@RequestParam String repoDir) {
         Path root = Path.of(repoDir);
         ProjectGraph graph = graphService.buildGraph(root);
+
+        GraphViewBuilder.ViewGraph build = new GraphViewBuilder().build(graph);
 
         Map<String, Long> byKind = graph.nodes.values().stream()
                 .collect(Collectors.groupingBy(n -> n.kind().name(), Collectors.counting()));

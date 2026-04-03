@@ -295,8 +295,11 @@ public class GraphViewBuilder {
 
             // ── Annotations ───────────────────────────────────────────────────
             case ANNOTATED_WITH -> {
-                if (to instanceof ClassNodeView annType)           annType.addAnnotatedNode(from);
-                if      (from instanceof ClassNodeView cls)        cls.addAnnotatedNode(to);
+                if (to instanceof ClassNodeView annType) {
+                    annType.addAnnotatedNode(from);
+                    if (from instanceof ClassNodeView cls)
+                        cls.addAnnotatedBy(annType);
+                }
                 else if (from instanceof MethodNodeView m)         m.addAnnotation(to);
                 else if (from instanceof FieldNodeView f)          f.addAnnotation(to);
                 else if (from instanceof ConstructorNodeView c)    c.addAnnotation(to);

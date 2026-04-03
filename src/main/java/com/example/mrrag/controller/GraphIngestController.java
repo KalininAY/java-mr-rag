@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.io.*;
 import java.nio.file.*;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -157,13 +158,14 @@ public class GraphIngestController {
         long totalEdges = graph.edgesFrom.values().stream()
                 .mapToLong(java.util.List::size).sum();
 
-        return new GraphBuildStats(
+        GraphBuildStats graphBuildStats = new GraphBuildStats(
                 repoUrl, cloneDir.toString(),
                 cloneMs, buildMs, totalMs,
                 graph.nodes.size(), totalEdges,
                 nodesByKind, edgesByKind,
                 graph.byFile.size()
         );
+        return graphBuildStats;
     }
 
     // -----------------------------------------------------------------------
@@ -179,12 +181,13 @@ public class GraphIngestController {
      * GitHub accepts {@code oauth2} or any non-empty username with the PAT.
      */
     private void cloneWithJGit(String repoUrl, String branch, Path targetDir, String token)
-            throws GitAPIException {
+            throws GitAPIException, IOException {
 
         var cmd = Git.cloneRepository()
                 .setURI(repoUrl)
                 .setDirectory(targetDir.toFile())
                 .setDepth(1)
+
                 .setCloneAllBranches(false);
 
         if (branch != null && !branch.isBlank()) {
@@ -243,22 +246,22 @@ public class GraphIngestController {
             extends org.eclipse.jgit.lib.BatchingProgressMonitor {
 
         @Override
-        protected void onUpdate(String taskName, int workCurr) {
+        protected void onUpdate(String taskName, int workCurr, Duration d) {
             log.debug("[jgit] {} {}", taskName, workCurr);
         }
 
         @Override
-        protected void onEndTask(String taskName, int workCurr) {
+        protected void onEndTask(String taskName, int workCurr, Duration d) {
             log.info("[jgit] {} done ({})", taskName, workCurr);
         }
 
         @Override
-        protected void onUpdate(String taskName, int workCurr, int workTotal, int percentDone) {
+        protected void onUpdate(String taskName, int workCurr, int workTotal, int percentDone, Duration d) {
             log.debug("[jgit] {} {}/{} ({}%)", taskName, workCurr, workTotal, percentDone);
         }
 
         @Override
-        protected void onEndTask(String taskName, int workCurr, int workTotal, int percentDone) {
+        protected void onEndTask(String taskName, int workCurr, int workTotal, int percentDone, Duration d) {
             log.info("[jgit] {} done {}/{}", taskName, workCurr, workTotal);
         }
     }
