@@ -152,6 +152,12 @@ public class ClassNodeView extends GraphNodeView {
     private final List<GraphNodeView> anonymouslyInstantiatedBy = new ArrayList<>();
 
     /**
+     * Nodes (methods, constructors, lambdas) that reference this type
+     * in their signatures or bodies (reverse {@code REFERENCES_TYPE} edges).
+     */
+    private final List<GraphNodeView> referencedBy = new ArrayList<>();
+
+    /**
      * Nodes (classes, methods, fields) that are annotated with this type
      * (reverse {@code ANNOTATED_WITH} edges).
      *
@@ -264,6 +270,14 @@ public class ClassNodeView extends GraphNodeView {
     public List<GraphNodeView> getAnonymouslyInstantiatedBy() { return anonymouslyInstantiatedBy; }
 
     /**
+     * Returns the nodes that reference this type in their signatures or bodies
+     * (reverse {@code REFERENCES_TYPE} edges).
+     *
+     * @return list of referencing node views; never {@code null}
+     */
+    public List<GraphNodeView> getReferencedBy()             { return referencedBy; }
+
+    /**
      * Returns the nodes annotated with this annotation type.
      * Non-empty only when this class is an annotation type.
      *
@@ -288,5 +302,6 @@ public class ClassNodeView extends GraphNodeView {
     public void addAnnotationAttribute(AnnotationAttributeView a) { annotationAttributes.add(a); }
     public void addInstantiatedBy(GraphNodeView caller)           { instantiatedBy.add(caller); }
     public void addAnonymouslyInstantiatedBy(GraphNodeView caller){ anonymouslyInstantiatedBy.add(caller); }
+    public void addReferencedBy(GraphNodeView node)               { referencedBy.add(node); }
     public void addAnnotatedNode(GraphNodeView node)              { annotatedNodes.add(node); }
 }
