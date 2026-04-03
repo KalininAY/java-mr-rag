@@ -217,15 +217,15 @@ public class LambdaNodeView extends GraphNodeView {
     // Package-private mutators used by GraphViewBuilder
     // -------------------------------------------------------------------------
 
-    void setDeclaredByExecutable(GraphNodeView v) { this.declaredByExecutable = v; }
-    void addCallee(GraphNodeView v)               { callees.add(v); }
-    void addCaller(GraphNodeView v)               { callers.add(v); }
-    void addInstantiates(ClassNodeView v)         { instantiates.add(v); }
-    void addInstantiatesAnon(ClassNodeView v)     { instantiatesAnon.add(v); }
-    void addReadsField(FieldNodeView v)           { readsFields.add(v); }
-    void addWritesField(FieldNodeView v)          { writesFields.add(v); }
-    void addReadsLocalVar(VariableNodeView v)     { readsLocalVars.add(v); }
-    void addWritesLocalVar(VariableNodeView v)    { writesLocalVars.add(v); }
-    void addThrowsType(GraphNodeView v)           { throwsTypes.add(v); }
-    void addReferencesType(GraphNodeView v)       { referencesTypes.add(v); }
+    public void setDeclaredByExecutable(GraphNodeView v) { this.declaredByExecutable = v; }
+    public void addCallee(GraphNodeView v)               { callees.add(v); }
+    public void addCaller(GraphNodeView v)               { callers.add(v); }
+    public void addInstantiates(ClassNodeView v)         { instantiates.add(v); }
+    public void addInstantiatesAnon(ClassNodeView v)     { instantiatesAnon.add(v); }
+    public void addReadsField(FieldNodeView v)           { readsFields.add(v); }
+    public void addWritesField(FieldNodeView v)          { writesFields.add(v); }
+    public void addReadsLocalVar(VariableNodeView v)     { readsLocalVars.add(v); }
+    public void addWritesLocalVar(VariableNodeView v)    { writesLocalVars.add(v); }
+    public void addThrowsType(GraphNodeView v)           { throwsTypes.add(v); }
+    public void addReferencesType(GraphNodeView v)       { referencesTypes.add(v); }
 }

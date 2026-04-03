@@ -329,21 +329,21 @@ public class MethodNodeView extends GraphNodeView {
     // Package-private mutators used by GraphViewBuilder
     // -------------------------------------------------------------------------
 
-    void setDeclaredByClass(ClassNodeView v)     { this.declaredByClass = v; }
-    void addTypeParameter(TypeParamNodeView tp)  { typeParameters.add(tp); }
-    void addCaller(GraphNodeView v)              { callers.add(v); }
-    void addCallee(GraphNodeView v)              { callees.add(v); }
-    void addInstantiates(ClassNodeView v)        { instantiates.add(v); }
-    void addInstantiatesAnon(ClassNodeView v)    { instantiatesAnon.add(v); }
-    void addReferencedMethod(GraphNodeView v)    { referencedMethods.add(v); }
-    void addReadsField(FieldNodeView v)          { readsFields.add(v); }
-    void addWritesField(FieldNodeView v)         { writesFields.add(v); }
-    void addReadsLocalVar(VariableNodeView v)    { readsLocalVars.add(v); }
-    void addWritesLocalVar(VariableNodeView v)   { writesLocalVars.add(v); }
-    void addThrowsType(GraphNodeView v)          { throwsTypes.add(v); }
-    void addReferencesType(GraphNodeView v)      { referencesTypes.add(v); }
-    void setOverrides(MethodNodeView v)          { this.overrides = v; }
-    void addOverriddenBy(MethodNodeView v)       { overriddenBy.add(v); }
-    void addAnnotation(GraphNodeView v)          { annotations.add(v); }
-    void addLambda(LambdaNodeView v)             { lambdas.add(v); }
+    public void setDeclaredByClass(ClassNodeView v)     { this.declaredByClass = v; }
+    public void addTypeParameter(TypeParamNodeView tp)  { typeParameters.add(tp); }
+    public void addCaller(GraphNodeView v)              { callers.add(v); }
+    public void addCallee(GraphNodeView v)              { callees.add(v); }
+    public void addInstantiates(ClassNodeView v)        { instantiates.add(v); }
+    public void addInstantiatesAnon(ClassNodeView v)    { instantiatesAnon.add(v); }
+    public void addReferencedMethod(GraphNodeView v)    { referencedMethods.add(v); }
+    public void addReadsField(FieldNodeView v)          { readsFields.add(v); }
+    public void addWritesField(FieldNodeView v)         { writesFields.add(v); }
+    public void addReadsLocalVar(VariableNodeView v)    { readsLocalVars.add(v); }
+    public void addWritesLocalVar(VariableNodeView v)   { writesLocalVars.add(v); }
+    public void addThrowsType(GraphNodeView v)          { throwsTypes.add(v); }
+    public void addReferencesType(GraphNodeView v)      { referencesTypes.add(v); }
+    public void setOverrides(MethodNodeView v)          { this.overrides = v; }
+    public void addOverriddenBy(MethodNodeView v)       { overriddenBy.add(v); }
+    public void addAnnotation(GraphNodeView v)          { annotations.add(v); }
+    public void addLambda(LambdaNodeView v)             { lambdas.add(v); }
 }

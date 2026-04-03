@@ -1,6 +1,8 @@
 package com.example.mrrag.controller;
 
+import com.example.mrrag.config.AppConfig;
 import com.example.mrrag.logging.InMemoryLogAppender;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.*;
@@ -21,6 +23,8 @@ import java.util.List;
 @RequestMapping("/logs")
 public class LogController {
 
+    @Autowired
+    AppConfig config;
     private InMemoryLogAppender appender() {
         return InMemoryLogAppender.getInstance();
     }

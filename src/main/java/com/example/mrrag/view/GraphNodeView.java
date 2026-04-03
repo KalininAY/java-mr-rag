@@ -176,7 +176,7 @@ public abstract class GraphNodeView {
     // -------------------------------------------------------------------------
 
     /** Registers {@code owner} as a declaring node of this view. */
-    void addDeclaredBy(GraphNodeView owner) { declaredBy.add(owner); }
+    public void addDeclaredBy(GraphNodeView owner) { declaredBy.add(owner); }
 
     @Override
     public String toString() {

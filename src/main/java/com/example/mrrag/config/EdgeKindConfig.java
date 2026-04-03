@@ -1,41 +1,57 @@
 package com.example.mrrag.config;
 
-import com.example.mrrag.service.AstGraphService.EdgeKind;
+import com.example.mrrag.service.AstGraphService;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 /**
- * Reads per-edge-kind enable/disable flags from {@code application.yml}.
+ * Конфигурация включения/отключения типов рёбер графа.
  *
- * <p>Each flag follows the pattern:
- * <pre>graph.edge.&lt;EDGE_KIND&gt;.enabled: true</pre>
+ * <p>Читает свойства вида {@code graph.edge.<NAME>.enabled}
+ * из {@code application.properties} (или любого другого
+ * источника Spring Environment). Если свойство не задано,
+ * ребро считается <strong>включённым</strong> по умолчанию.
  *
- * <p>If a property is not defined, the default is {@code true} (all edges enabled).
+ * <p>Пример в {@code application.properties}:
+ * <pre>
+ * graph.edge.READS_LOCAL_VAR.enabled=false
+ * graph.edge.WRITES_LOCAL_VAR.enabled=false
+ * </pre>
  *
- * <p>Usage example:
+ * <p>Типичное использование в сервисе:
  * <pre>{@code
- * if (edgeConfig.isEnabled(EdgeKind.INSTANTIATES)) {
- *     // add edge
+ * if (edgeKindConfig.isEnabled(EdgeKind.INSTANTIATES)) {
+ *     graph.addEdge(caller, EdgeKind.INSTANTIATES, callee);
  * }
  * }</pre>
+ *
+ * @see AstGraphService.EdgeKind
  */
 @Component
 public class EdgeKindConfig {
 
     private final Environment env;
 
+    /**
+     * Создаёт конфигурацию, использующую переданный {@link Environment}
+     * для чтения свойств.
+     *
+     * @param env Spring-окружение; не должен быть {@code null}
+     */
     public EdgeKindConfig(Environment env) {
         this.env = env;
     }
 
     /**
-     * Returns {@code true} if the given edge kind is enabled.
-     * Defaults to {@code true} when the property is absent.
+     * Проверяет, разрешено ли добавлять рёбра данного типа в граф.
      *
-     * @param kind the edge kind to check
-     * @return whether edges of this kind should be added to the graph
+     * <p>Читает свойство {@code graph.edge.<KIND_NAME>.enabled}.
+     * Если свойство отсутствует, возвращает {@code true}.
+     *
+     * @param kind тип ребра; не должен быть {@code null}
+     * @return {@code true}, если ребро включено; {@code false} иначе
      */
-    public boolean isEnabled(EdgeKind kind) {
+    public boolean isEnabled(AstGraphService.EdgeKind kind) {
         return env.getProperty(
                 "graph.edge." + kind.name() + ".enabled",
                 Boolean.class,

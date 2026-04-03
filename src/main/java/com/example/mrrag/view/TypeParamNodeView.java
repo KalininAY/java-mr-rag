@@ -61,7 +61,7 @@ public class TypeParamNodeView extends GraphNodeView {
      */
     private GraphNodeView owner;
 
-    TypeParamNodeView(GraphNode node) {
+    public TypeParamNodeView(GraphNode node) {
         super(node);
     }
 

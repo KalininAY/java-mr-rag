@@ -4,6 +4,7 @@ import com.example.mrrag.model.ChangeGroup;
 import com.example.mrrag.model.ChangeGroupMarkdown;
 import com.example.mrrag.model.ReviewContext;
 import com.example.mrrag.model.ReviewRequest;
+import com.example.mrrag.service.AstGraphService;
 import com.example.mrrag.service.ReviewService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,12 +18,15 @@ import org.springframework.web.bind.annotation.*;
 public class MrReviewController {
 
     private final ReviewService reviewService;
+    private final AstGraphService graphService;
 
     /** Full review context as JSON. */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
                  produces = MediaType.APPLICATION_JSON_VALUE)
     public ReviewContext review(@RequestBody ReviewRequest request) throws Exception {
-        return reviewService.buildReviewContext(request);
+        ReviewContext reviewContext = reviewService.buildReviewContext(request);
+        String s = renderContext(reviewContext);
+        return reviewContext;
     }
 
     /** Auto-detect branches from GitLab MR metadata, return JSON. */
@@ -30,7 +34,9 @@ public class MrReviewController {
                 produces = MediaType.APPLICATION_JSON_VALUE)
     public ReviewContext review(@PathVariable long projectId,
                                 @PathVariable long mrIid) throws Exception {
-        return reviewService.buildReviewContext(projectId, mrIid);
+        ReviewContext reviewContext = reviewService.buildReviewContext(projectId, mrIid);
+        String s = renderContext(reviewContext);
+        return reviewContext;
     }
 
     /**

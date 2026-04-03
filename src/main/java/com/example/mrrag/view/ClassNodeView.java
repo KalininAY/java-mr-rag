@@ -153,7 +153,7 @@ public class ClassNodeView extends GraphNodeView {
      */
     private final List<GraphNodeView> annotatedNodes = new ArrayList<>();
 
-    ClassNodeView(GraphNode node) {
+    public ClassNodeView(GraphNode node) {
         super(node);
     }
 
@@ -261,17 +261,17 @@ public class ClassNodeView extends GraphNodeView {
     // Package-private mutators used by GraphViewBuilder
     // -------------------------------------------------------------------------
 
-    void addTypeParameter(TypeParamNodeView tp)            { typeParameters.add(tp); }
-    void setSuperClass(ClassNodeView superClass)           { this.superClass = superClass; }
-    void addInterface(ClassNodeView iface)                 { interfaces.add(iface); }
-    void addSubClass(ClassNodeView sub)                    { subClasses.add(sub); }
-    void addImplementation(ClassNodeView impl)             { implementations.add(impl); }
-    void addMethod(MethodNodeView m)                       { methods.add(m); }
-    void addConstructor(ConstructorNodeView c)             { constructors.add(c); }
-    void addField(FieldNodeView f)                         { fields.add(f); }
-    void addInnerClass(ClassNodeView inner)                { innerClasses.add(inner); }
-    void addLambda(LambdaNodeView l)                       { lambdas.add(l); }
-    void addAnnotationAttribute(AnnotationAttributeView a) { annotationAttributes.add(a); }
-    void addInstantiatedBy(GraphNodeView caller)           { instantiatedBy.add(caller); }
-    void addAnnotatedNode(GraphNodeView node)              { annotatedNodes.add(node); }
+    public void addTypeParameter(TypeParamNodeView tp)            { typeParameters.add(tp); }
+    public void setSuperClass(ClassNodeView superClass)           { this.superClass = superClass; }
+    public void addInterface(ClassNodeView iface)                 { interfaces.add(iface); }
+    public void addSubClass(ClassNodeView sub)                    { subClasses.add(sub); }
+    public void addImplementation(ClassNodeView impl)             { implementations.add(impl); }
+    public void addMethod(MethodNodeView m)                       { methods.add(m); }
+    public void addConstructor(ConstructorNodeView c)             { constructors.add(c); }
+    public void addField(FieldNodeView f)                         { fields.add(f); }
+    public void addInnerClass(ClassNodeView inner)                { innerClasses.add(inner); }
+    public void addLambda(LambdaNodeView l)                       { lambdas.add(l); }
+    public void addAnnotationAttribute(AnnotationAttributeView a) { annotationAttributes.add(a); }
+    public void addInstantiatedBy(GraphNodeView caller)           { instantiatedBy.add(caller); }
+    public void addAnnotatedNode(GraphNodeView node)              { annotatedNodes.add(node); }
 }

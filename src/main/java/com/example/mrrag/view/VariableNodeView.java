@@ -66,6 +66,6 @@ public class VariableNodeView extends GraphNodeView {
     // Package-private mutators used by GraphViewBuilder
     // -------------------------------------------------------------------------
 
-    void addReadBy(GraphNodeView v)    { readBy.add(v); }
-    void addWrittenBy(GraphNodeView v) { writtenBy.add(v); }
+    public void addReadBy(GraphNodeView v)    { readBy.add(v); }
+    public void addWrittenBy(GraphNodeView v) { writtenBy.add(v); }
 }

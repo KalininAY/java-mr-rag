@@ -123,7 +123,7 @@ public class ContextEnricher {
                     // Edge must originate from this file at this exact line
                     if (!file.equals(edge.filePath()) || edge.line() != line) continue;
 
-                    String targetId = edge.toId();
+                    String targetId = edge.callee();
                     if (seenDecl.contains(targetId)) continue;
                     seenDecl.add(targetId);
 

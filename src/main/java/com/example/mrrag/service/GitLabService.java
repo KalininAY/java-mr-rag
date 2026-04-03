@@ -2,7 +2,6 @@ package com.example.mrrag.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.io.FileUtils;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
@@ -58,7 +57,7 @@ public class GitLabService {
 
     /** Fetches the raw diff entries for an MR (all files). */
     public List<Diff> getMrDiffs(long projectId, long mrIid) throws GitLabApiException {
-        return gitLabApi.getMergeRequestApi().getMergeRequestDiffs(projectId, (int) mrIid);
+        return gitLabApi.getMergeRequestApi().getDiffs(projectId, mrIid);
     }
 
     /**
@@ -113,7 +112,7 @@ public class GitLabService {
             return;
         }
         try {
-            FileUtils.deleteDirectory(repoDir.toFile());
+            Files.deleteIfExists(repoDir);
             log.info("Cleaned up: {}", repoDir);
         } catch (IOException e) {
             log.warn("Failed to delete {}: {}", repoDir, e.getMessage());

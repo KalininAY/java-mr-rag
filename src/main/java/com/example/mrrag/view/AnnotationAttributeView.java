@@ -62,7 +62,7 @@ public class AnnotationAttributeView extends GraphNodeView {
      */
     private ClassNodeView declaredByAnnotation;
 
-    AnnotationAttributeView(GraphNode node) {
+    public AnnotationAttributeView(GraphNode node) {
         super(node);
     }
 

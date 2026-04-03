@@ -5,14 +5,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Stream;
 
 /**
  * Backward-compatible index API used by {@link ContextEnricher}.
@@ -103,10 +98,10 @@ public class JavaIndexService {
             for (AstGraphService.GraphEdge e : edges) {
                 if (e.kind() == AstGraphService.EdgeKind.INVOKES) {
                     CallSite cs = new CallSite(
-                            simpleNameFromId(e.toId()), e.filePath(), e.line(),
-                            e.toId(), List.of());
+                            simpleNameFromId(e.callee()), e.filePath(), e.line(),
+                            e.callee(), List.of());
                     idx.callSites
-                            .computeIfAbsent(e.toId(), k -> new ArrayList<>()).add(cs);
+                            .computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(cs);
                 }
             }
         }
@@ -117,9 +112,9 @@ public class JavaIndexService {
                 if (e.kind() == AstGraphService.EdgeKind.READS_FIELD
                         || e.kind() == AstGraphService.EdgeKind.WRITES_FIELD) {
                     FieldAccess fa = new FieldAccess(
-                            simpleNameFromFieldId(e.toId()), e.filePath(), e.line(), e.toId());
+                            simpleNameFromFieldId(e.callee()), e.filePath(), e.line(), e.callee());
                     idx.fieldAccesses
-                            .computeIfAbsent(e.toId(), k -> new ArrayList<>()).add(fa);
+                            .computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(fa);
                     idx.fieldAccessesByName
                             .computeIfAbsent(fa.fieldName(), k -> new ArrayList<>()).add(fa);
                 }
@@ -131,10 +126,10 @@ public class JavaIndexService {
             for (AstGraphService.GraphEdge e : edges) {
                 if (e.kind() == AstGraphService.EdgeKind.READS_VAR
                         || e.kind() == AstGraphService.EdgeKind.WRITES_VAR) {
-                    String name = simpleNameFromVarId(e.toId());
+                    String name = simpleNameFromVarId(e.callee());
                     NameUsage nu = new NameUsage(name, e.filePath(), e.line());
                     idx.nameUsages
-                            .computeIfAbsent(e.toId(), k -> new ArrayList<>()).add(nu);
+                            .computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(nu);
                     idx.nameUsagesBySimpleName
                             .computeIfAbsent(name, k -> new ArrayList<>()).add(nu);
                 }

@@ -3,7 +3,6 @@ package com.example.mrrag.controller;
 import com.example.mrrag.service.AstGraphService;
 import com.example.mrrag.service.AstGraphService.ProjectGraph;
 import com.example.mrrag.service.AstGraphService.GraphNode;
-import com.example.mrrag.service.AstGraphService.GraphEdge;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -112,11 +111,11 @@ public class GraphDebugController {
                 .flatMap(enc -> graph.outgoing(enc.id()).stream()
                         .filter(e -> normalized.equals(e.filePath()) && e.line() == line)
                         .map(e -> {
-                            GraphNode target = graph.nodes.get(e.toId());
+                            GraphNode target = graph.nodes.get(e.callee());
                             Map<String, Object> m = new LinkedHashMap<>();
                             m.put("fromNode",   enc.id());
                             m.put("edgeKind",   e.kind().name());
-                            m.put("toId",       e.toId());
+                            m.put("callee",       e.callee());
                             m.put("toResolved", target != null);
                             if (target != null) {
                                 m.put("toFile",  target.filePath());

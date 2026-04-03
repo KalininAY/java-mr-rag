@@ -147,6 +147,8 @@ public class GraphViewBuilder {
                 case FIELD             -> new FieldNodeView(node);
                 case VARIABLE          -> new VariableNodeView(node);
                 case LAMBDA            -> new LambdaNodeView(node);
+                case TYPE_PARAM        -> new TypeParamNodeView(node);
+                case ANNOTATION_ATTRIBUTE -> new AnnotationAttributeView(node);
             };
             vg.put(view);
         }
@@ -169,8 +171,8 @@ public class GraphViewBuilder {
     // ------------------------------------------------------------------
 
     private void wireEdge(ViewGraph vg, ProjectGraph graph, GraphEdge edge) {
-        GraphNodeView from = resolve(vg, edge.fromId());
-        GraphNodeView to   = resolve(vg, edge.toId());
+        GraphNodeView from = resolve(vg, edge.caller());
+        GraphNodeView to   = resolve(vg, edge.callee());
 
         switch (edge.kind()) {
 
@@ -334,7 +336,8 @@ public class GraphViewBuilder {
                 NodeKind.CLASS,
                 simpleNameOf(id),
                 "external",
-                0, 0
+                0, 0,
+                sourceSnippet
         );
         ClassNodeView stubView = new ClassNodeView(stub);
         vg.put(stubView);

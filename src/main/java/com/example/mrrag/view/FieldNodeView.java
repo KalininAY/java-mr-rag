@@ -97,8 +97,8 @@ public class FieldNodeView extends GraphNodeView {
     // Package-private mutators used by GraphViewBuilder
     // -------------------------------------------------------------------------
 
-    void setDeclaredByClass(ClassNodeView v) { this.declaredByClass = v; }
-    void addReadBy(GraphNodeView v)          { readBy.add(v); }
-    void addWrittenBy(GraphNodeView v)       { writtenBy.add(v); }
-    void addAnnotation(GraphNodeView v)      { annotations.add(v); }
+    public void setDeclaredByClass(ClassNodeView v) { this.declaredByClass = v; }
+    public void addReadBy(GraphNodeView v)          { readBy.add(v); }
+    public void addWrittenBy(GraphNodeView v)       { writtenBy.add(v); }
+    public void addAnnotation(GraphNodeView v)      { annotations.add(v); }
 }
