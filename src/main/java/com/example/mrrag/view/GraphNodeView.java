@@ -219,19 +219,29 @@ public abstract class GraphNodeView {
     public void addAnnotatedBy(ClassNodeView annotation) { annotatedBy.add(annotation); }
 
     // -------------------------------------------------------------------------
-    // toString: markdown dump used for LLM context and debugging
+    // toString (original) + toMarkdown
     // -------------------------------------------------------------------------
 
     /**
+     * Returns a short diagnostic label: {@code ClassName(id)}.
+     * Suitable for logging, debugger display, and collection dumps.
+     */
+    @Override
+    public String toString() {
+        return getClass().getSimpleName() + "(" + getId() + ")";
+    }
+
+    /**
      * Returns a markdown representation of this view suitable for embedding
-     * in an LLM prompt or reading in a debugger.
+     * in an LLM prompt.
      *
      * <p>Format:
      * <pre>
      * # Content
-     * 1|&lt;line 1 of sourceSnippet&gt;
-     * 2|&lt;line 2 of sourceSnippet&gt;
+     * {startLine}|&lt;line startLine of sourceSnippet&gt;
+     * {startLine+1}|&lt;next line&gt;
      * ...
+     * {endLine}|&lt;last line&gt;
      *
      * # Fields
      * ## fieldName
@@ -240,37 +250,47 @@ public abstract class GraphNodeView {
      * ...
      * </pre>
      *
-     * <p>Fields are collected from the concrete class and all its superclasses
-     * up to (but not including) {@link Object}. Each field value is rendered as:
+     * <p>Line numbers in {@code # Content} reflect the actual source range
+     * ({@link #getStartLine()}…{@link #getEndLine()}) stored in the node.
+     * When position information is unavailable ({@code startLine == 0}),
+     * lines are numbered sequentially from 1.
+     *
+     * <p>Fields are collected via Reflection from the concrete class and all
+     * superclasses up to (but not including) {@link Object}. Each field value
+     * is rendered as:
      * <ul>
      *   <li>{@link Collection} — one numbered row per element;
-     *       each element is shown as its {@link #getContent()} when it is a
-     *       {@link GraphNodeView}, otherwise as {@code toString()}</li>
-     *   <li>Scalar {@link GraphNodeView} — a single {@code 0|content-or-id} row</li>
-     *   <li>Any other scalar — a single {@code 0|toString()} row</li>
-     *   <li>{@code null} — a single {@code 0|(null)} row</li>
+     *       each element uses {@link #getContent()} when it is a
+     *       {@link GraphNodeView} with non-blank content, otherwise
+     *       {@link #getId()}</li>
+     *   <li>Scalar {@link GraphNodeView} — single {@code 0|content-or-id} row</li>
+     *   <li>Any other scalar — single {@code 0|toString()} row</li>
+     *   <li>{@code null} — single {@code 0|(null)} row</li>
      * </ul>
      *
-     * <p>The {@code node} field (the backing {@link GraphNode} record) is
-     * excluded to avoid redundancy with the {@code # Content} section.
+     * <p>The {@code node} backing field is excluded (its content is already
+     * shown in the {@code # Content} section).
+     *
+     * @return markdown string; never {@code null}
      */
-    @Override
-    public String toString() {
+    public String toMarkdown() {
         StringBuilder sb = new StringBuilder();
 
-        // ── # Content ────────────────────────────────────────────────────────
+        // ── # Content ───────────────────────────────────────────────────────
         sb.append("# Content\n");
         String content = getContent();
         if (content == null || content.isBlank()) {
             sb.append("(empty)\n");
         } else {
             String[] lines = content.split("\n", -1);
+            // Use real source line numbers when available, otherwise fall back to 1-based
+            int firstLine = (getStartLine() > 0) ? getStartLine() : 1;
             for (int i = 0; i < lines.length; i++) {
-                sb.append(i + 1).append('|').append(lines[i]).append('\n');
+                sb.append(firstLine + i).append('|').append(lines[i]).append('\n');
             }
         }
 
-        // ── # Fields ─────────────────────────────────────────────────────────
+        // ── # Fields ────────────────────────────────────────────────────────
         sb.append("\n# Fields\n");
         for (Field field : collectFields(getClass())) {
             field.setAccessible(true);
@@ -290,7 +310,7 @@ public abstract class GraphNodeView {
                 for (Object element : col) {
                     sb.append(idx++).append('|').append(renderElement(element)).append('\n');
                 }
-                // empty collection produces no rows (intentional — signals "none")
+                // empty collection produces no rows — signals "none"
             } else {
                 sb.append("0|").append(renderElement(value)).append('\n');
             }
@@ -322,7 +342,7 @@ public abstract class GraphNodeView {
      * <ul>
      *   <li>{@link GraphNodeView} — uses {@link #getContent()} when non-blank,
      *       otherwise falls back to {@link #getId()}</li>
-     *   <li>Anything else — {@code toString()}</li>
+     *   <li>Anything else — {@code String.valueOf(element)}</li>
      * </ul>
      */
     private static String renderElement(Object element) {
