@@ -11,8 +11,9 @@ import org.springframework.http.MediaType;
 import org.springframework.util.FileSystemUtils;
 import org.springframework.web.bind.annotation.*;
 
-import java.io.IOException;
+import java.io.*;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.Arrays;
 import java.util.Map;
@@ -41,7 +42,7 @@ import java.util.stream.Collectors;
  *
  * <p>Clone directory layout:
  * <pre>
- *   ${app.workspace.dir}/repos/&lt;repo-slug&gt;/&lt;branch&gt;
+ *   ${app.workspace.dir}/repos/&lt;repo-slug&gt;/&lt;branch-slug&gt;
  * </pre>
  */
 @Slf4j
@@ -99,10 +100,10 @@ public class GraphIngestController {
         boolean forceReclone = Boolean.TRUE.equals(request.force());
 
         // ── 1. Resolve clone directory ────────────────────────────────────
-        String branch   = (request.branch() != null && !request.branch().isBlank())
-                          ? request.branch() : "default";
-        Path cloneDir   = resolveCloneDir(repoUrl, branch);
-        boolean exists  = Files.isDirectory(cloneDir);
+        String branch  = (request.branch() != null && !request.branch().isBlank())
+                         ? request.branch() : "default";
+        Path cloneDir  = resolveCloneDir(repoUrl, branch);
+        boolean exists = Files.isDirectory(cloneDir);
 
         if (forceReclone && exists) {
             log.info("force=true — deleting existing clone dir: {}", cloneDir);
@@ -180,11 +181,10 @@ public class GraphIngestController {
      * {@code <workspaceDir>/repos/<repo-slug>/<branch-slug>}
      */
     private Path resolveCloneDir(String repoUrl, String branch) {
-        // derive a short slug from the repo URL: last path segment without .git
         String repoSlug = repoUrl
-                .replaceAll(".*/", "")     // keep last segment
-                .replaceAll("\\.git$", "")  // strip .git
-                .replaceAll("[^a-zA-Z0-9_.-]", "_"); // make FS-safe
+                .replaceAll(".*/", "")
+                .replaceAll("\\.git$", "")
+                .replaceAll("[^a-zA-Z0-9_.-]", "_");
 
         String branchSlug = branch.replaceAll("[^a-zA-Z0-9_.-]", "_");
 
@@ -202,9 +202,8 @@ public class GraphIngestController {
         if (!repoUrl.startsWith("http")) return repoUrl; // SSH — no injection needed
         try {
             URI uri = URI.create(repoUrl);
-            String userInfo = token; // GitLab: token alone works; GitHub: "oauth2:<token>"
             URI authed = new URI(
-                    uri.getScheme(), userInfo,
+                    uri.getScheme(), token,
                     uri.getHost(), uri.getPort(),
                     uri.getPath(), uri.getQuery(), uri.getFragment()
             );
@@ -215,8 +214,22 @@ public class GraphIngestController {
         }
     }
 
+    /**
+     * Runs {@code git clone} in a subprocess with all interactive credential
+     * prompts disabled so the process never tries to open {@code /dev/tty}.
+     *
+     * <p>Key environment variables set on the child process:
+     * <ul>
+     *   <li>{@code GIT_TERMINAL_PROMPT=0} — disables terminal credential prompts</li>
+     *   <li>{@code GIT_ASKPASS=echo}       — returns empty string for any askpass query</li>
+     *   <li>{@code SSH_ASKPASS=echo}       — same for SSH</li>
+     *   <li>{@code GIT_SSH_COMMAND=ssh -oBatchMode=yes} — disables SSH interactive auth</li>
+     * </ul>
+     * stdout + stderr are captured and forwarded to the application log.
+     */
     private void cloneRepo(String repoUrl, String branch, Path targetDir)
             throws IOException, InterruptedException {
+
         ProcessBuilder pb = new ProcessBuilder();
         if (branch != null && !branch.isBlank()) {
             pb.command("git", "clone", "--depth", "1",
@@ -225,17 +238,39 @@ public class GraphIngestController {
             pb.command("git", "clone", "--depth", "1",
                        repoUrl, targetDir.toString());
         }
-        pb.redirectErrorStream(true);
-        pb.inheritIO();
 
-        // Mask token in log: replace the userinfo part with ***
+        // Disable ALL interactive credential / terminal prompts
+        Map<String, String> env = pb.environment();
+        env.put("GIT_TERMINAL_PROMPT", "0");
+        env.put("GIT_ASKPASS",         "echo");
+        env.put("SSH_ASKPASS",         "echo");
+        env.put("GIT_SSH_COMMAND",     "ssh -oBatchMode=yes -oStrictHostKeyChecking=no");
+
+        pb.redirectErrorStream(true); // merge stderr into stdout
+
         String displayUrl = repoUrl.replaceAll("(https?://)([^@]+@)", "$1***@");
-        log.info("Running: git clone --depth 1 {} {} {}",
+        log.info("git clone --depth 1 {} {} {}",
                  branch != null ? "--branch " + branch : "",
                  displayUrl, targetDir);
 
         Process process = pb.start();
+
+        // Stream git output to application log in a separate thread
+        Thread reader = new Thread(() -> {
+            try (BufferedReader br = new BufferedReader(
+                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    log.info("[git] {}", line);
+                }
+            } catch (IOException ignored) {}
+        }, "git-output-reader");
+        reader.setDaemon(true);
+        reader.start();
+
         int exitCode = process.waitFor();
+        reader.join(5_000);
+
         if (exitCode != 0) {
             throw new IOException(
                     "git clone failed (exit " + exitCode + ") for: " + displayUrl);
