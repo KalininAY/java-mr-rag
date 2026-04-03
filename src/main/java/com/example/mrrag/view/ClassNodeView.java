@@ -60,10 +60,21 @@ public class ClassNodeView extends GraphNodeView {
     /**
      * Interfaces directly implemented or extended by this type.
      *
-     * <p>Populated from {@code IMPLEMENTS} outgoing edges.
-     * Each entry may be a stub for external interface types.
+     * <p>Populated from {@code IMPLEMENTS} outgoing edges where the target is
+     * an external (stub) {@link ClassNodeView}.
+     * For targets that are known {@link InterfaceNodeView}s use
+     * {@link #getImplementedInterfaces()} instead.
      */
     private final List<ClassNodeView> interfaces = new ArrayList<>();
+
+    /**
+     * Known interfaces directly implemented by this class where the interface
+     * is present in the analysed project as an {@link InterfaceNodeView}.
+     *
+     * <p>Populated from {@code IMPLEMENTS} outgoing edges whose target is a
+     * resolved {@link InterfaceNodeView}.
+     */
+    private final List<InterfaceNodeView> implementedInterfaces = new ArrayList<>();
 
     /**
      * Direct known subclasses of this class (reverse {@code EXTENDS} edges).
@@ -72,6 +83,16 @@ public class ClassNodeView extends GraphNodeView {
      * external subclasses are not tracked.
      */
     private final List<ClassNodeView> subClasses = new ArrayList<>();
+
+    /**
+     * Known sub-interfaces that extend this stub/external type
+     * (reverse {@code EXTENDS} edges where the sub-type is an
+     * {@link InterfaceNodeView}).
+     *
+     * <p>Populated when an interface in the project extends an external
+     * (stub) type that is represented as a {@link ClassNodeView}.
+     */
+    private final List<InterfaceNodeView> subInterfaces = new ArrayList<>();
 
     /**
      * Types that directly implement this interface (reverse {@code IMPLEMENTS}
@@ -113,6 +134,12 @@ public class ClassNodeView extends GraphNodeView {
      * nodes).
      */
     private final List<ClassNodeView> innerClasses = new ArrayList<>();
+
+    /**
+     * Inner interfaces declared inside this class
+     * ({@code DECLARES} outgoing edges to {@code INTERFACE} nodes).
+     */
+    private final List<InterfaceNodeView> innerInterfaces = new ArrayList<>();
 
     /**
      * Lambda expressions directly declared inside this type's static
@@ -187,13 +214,15 @@ public class ClassNodeView extends GraphNodeView {
      * @return superclass view, possibly a stub; may be {@code null}
      */
     public ClassNodeView getSuperClass()                     { return superClass; }
+    public List<ClassNodeView> getInterfaces()               { return interfaces; }
 
     /**
-     * Returns the interfaces directly implemented or extended by this type.
+     * Returns known interfaces directly implemented by this class
+     * (resolved {@link InterfaceNodeView} targets of {@code IMPLEMENTS} edges).
      *
      * @return list of interface views; never {@code null}
      */
-    public List<ClassNodeView> getInterfaces()               { return interfaces; }
+    public List<InterfaceNodeView> getImplementedInterfaces() { return implementedInterfaces; }
 
     /**
      * Returns the direct known subclasses of this class.
@@ -203,10 +232,14 @@ public class ClassNodeView extends GraphNodeView {
     public List<ClassNodeView> getSubClasses()               { return subClasses; }
 
     /**
-     * Returns the types that directly implement this interface.
+     * Returns known sub-interfaces of this stub/external type
+     * (reverse {@code EXTENDS} edges where the sub-type is a resolved
+     * {@link InterfaceNodeView}).
      *
-     * @return list of implementation views; never {@code null}
+     * @return list of sub-interface views; never {@code null}
      */
+    public List<InterfaceNodeView> getSubInterfaces()        { return subInterfaces; }
+
     public List<ClassNodeView> getImplementations()          { return implementations; }
 
     /**
@@ -238,12 +271,13 @@ public class ClassNodeView extends GraphNodeView {
     public List<ClassNodeView> getInnerClasses()             { return innerClasses; }
 
     /**
-     * Returns lambda expressions declared in static/field initialisers of
-     * this type.  Lambdas inside method bodies are on
-     * {@link MethodNodeView#getLambdas()} instead.
+     * Returns inner interfaces declared inside this class
+     * ({@code DECLARES} edges to {@code INTERFACE} nodes).
      *
-     * @return list of lambda views; never {@code null}
+     * @return list of inner interface views; never {@code null}
      */
+    public List<InterfaceNodeView> getInnerInterfaces()      { return innerInterfaces; }
+
     public List<LambdaNodeView> getLambdas()                 { return lambdas; }
 
     /**
@@ -291,13 +325,20 @@ public class ClassNodeView extends GraphNodeView {
 
     public void addTypeParameter(TypeParamNodeView tp)            { typeParameters.add(tp); }
     public void setSuperClass(ClassNodeView superClass)           { this.superClass = superClass; }
+    /** Adds a stub (external/unresolved) interface. */
     public void addInterface(ClassNodeView iface)                 { interfaces.add(iface); }
+    /** Adds a resolved interface present in the project graph. */
+    public void addInterface(InterfaceNodeView iface)             { implementedInterfaces.add(iface); }
     public void addSubClass(ClassNodeView sub)                    { subClasses.add(sub); }
+    /** Adds a resolved sub-interface that extends this (stub) type. */
+    public void addSubInterface(InterfaceNodeView sub)            { subInterfaces.add(sub); }
     public void addImplementation(ClassNodeView impl)             { implementations.add(impl); }
     public void addMethod(MethodNodeView m)                       { methods.add(m); }
     public void addConstructor(ConstructorNodeView c)             { constructors.add(c); }
     public void addField(FieldNodeView f)                         { fields.add(f); }
     public void addInnerClass(ClassNodeView inner)                { innerClasses.add(inner); }
+    /** Adds an inner interface declared inside this class. */
+    public void addInnerInterface(InterfaceNodeView inner)        { innerInterfaces.add(inner); }
     public void addLambda(LambdaNodeView l)                       { lambdas.add(l); }
     public void addAnnotationAttribute(AnnotationAttributeView a) { annotationAttributes.add(a); }
     public void addInstantiatedBy(GraphNodeView caller)           { instantiatedBy.add(caller); }

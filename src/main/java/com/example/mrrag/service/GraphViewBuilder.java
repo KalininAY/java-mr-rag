@@ -188,12 +188,12 @@ public class GraphViewBuilder {
                 // from = owner (class/interface/executable), to = member
                 to.addDeclaredBy(from);
                 if (from instanceof ClassNodeView cls) {
-                    if      (to instanceof MethodNodeView m)      { cls.addMethod(m);      m.setDeclaredByClass(cls); }
-                    else if (to instanceof ConstructorNodeView c) { cls.addConstructor(c); c.setDeclaredByClass(cls); }
-                    else if (to instanceof FieldNodeView f)       { cls.addField(f);       f.setDeclaredByClass(cls); }
-                    else if (to instanceof ClassNodeView ic)      { cls.addInnerClass(ic); }
-                    else if (to instanceof InterfaceNodeView ii)  { cls.addInnerClass(ii.asClassNodeViewStub()); }
-                    else if (to instanceof LambdaNodeView l)      { cls.addLambda(l); }
+                    if      (to instanceof MethodNodeView m)          { cls.addMethod(m);           m.setDeclaredByClass(cls); }
+                    else if (to instanceof ConstructorNodeView c)     { cls.addConstructor(c);      c.setDeclaredByClass(cls); }
+                    else if (to instanceof FieldNodeView f)           { cls.addField(f);            f.setDeclaredByClass(cls); }
+                    else if (to instanceof ClassNodeView ic)          { cls.addInnerClass(ic); }
+                    else if (to instanceof InterfaceNodeView ii)      { cls.addInnerInterface(ii); }
+                    else if (to instanceof LambdaNodeView l)          { cls.addLambda(l); }
                     else if (to instanceof AnnotationAttributeView a) { cls.addAnnotationAttribute(a); }
                 } else if (from instanceof InterfaceNodeView iface) {
                     if      (to instanceof MethodNodeView m)      { iface.addMethod(m);    m.setDeclaredByClass(null); }
@@ -236,15 +236,16 @@ public class GraphViewBuilder {
                     sub.addExtendedInterface(sup);
                     sup.addSubInterface(sub);
                 } else if (from instanceof InterfaceNodeView sub) {
-                    // interface extends external stub (ClassNodeView) — treat as super-interface stub
+                    // interface extends external stub (ClassNodeView)
                     ClassNodeView stubSup = (ClassNodeView) to;
-                    stubSup.addSubClass(sub.asClassNodeViewStub());
+                    stubSup.addSubInterface(sub);
                 }
             }
             case IMPLEMENTS -> {
                 if (from instanceof ClassNodeView impl) {
                     if (to instanceof InterfaceNodeView iface) {
-                        impl.addInterface(iface.asClassNodeViewStub());
+                        // resolved interface — use typed overload
+                        impl.addInterface(iface);
                         iface.addImplementation(impl);
                     } else if (to instanceof ClassNodeView iface) {
                         // external stub
