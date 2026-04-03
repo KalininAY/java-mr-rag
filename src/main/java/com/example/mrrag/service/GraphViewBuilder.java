@@ -295,8 +295,8 @@ public class GraphViewBuilder {
 
             // ── Annotations ───────────────────────────────────────────────────
             case ANNOTATED_WITH -> {
-                if (to instanceof ClassNodeView annType) annType.addAnnotatedNode(from);
-                if      (from instanceof ClassNodeView cls)        cls.addAnnotation(to);
+                if (to instanceof ClassNodeView annType)           annType.addAnnotatedNode(from);
+                if      (from instanceof ClassNodeView cls)        cls.addAnnotatedNode(to);
                 else if (from instanceof MethodNodeView m)         m.addAnnotation(to);
                 else if (from instanceof FieldNodeView f)          f.addAnnotation(to);
                 else if (from instanceof ConstructorNodeView c)    c.addAnnotation(to);
@@ -304,7 +304,7 @@ public class GraphViewBuilder {
 
             // ── Type references ───────────────────────────────────────────────
             case REFERENCES_TYPE -> {
-                if (to instanceof ClassNodeView cls) cls.addReferencedBy(from);
+                if (to instanceof ClassNodeView cls)            cls.addReferencedBy(from);
                 if      (from instanceof MethodNodeView m)      m.addReferencesType(to);
                 else if (from instanceof ConstructorNodeView c) c.addReferencesType(to);
                 else if (from instanceof LambdaNodeView l)      l.addReferencesType(to);

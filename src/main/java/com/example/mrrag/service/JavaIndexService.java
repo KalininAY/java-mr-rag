@@ -124,8 +124,8 @@ public class JavaIndexService {
         // Rebuild name usages from READS_VAR / WRITES_VAR edges
         for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
             for (AstGraphService.GraphEdge e : edges) {
-                if (e.kind() == AstGraphService.EdgeKind.READS_VAR
-                        || e.kind() == AstGraphService.EdgeKind.WRITES_VAR) {
+                if (e.kind() == AstGraphService.EdgeKind.READS_LOCAL_VAR
+                        || e.kind() == AstGraphService.EdgeKind.WRITES_LOCAL_VAR) {
                     String name = simpleNameFromVarId(e.callee());
                     NameUsage nu = new NameUsage(name, e.filePath(), e.line());
                     idx.nameUsages
