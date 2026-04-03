@@ -140,10 +140,16 @@ public class ClassNodeView extends GraphNodeView {
 
     /**
      * Executables (methods, constructors, lambdas) that instantiate this
-     * class via {@code new Foo(...)} or {@code new Foo() { ... }}
-     * (reverse {@code INSTANTIATES} and {@code INSTANTIATES_ANONYMOUS} edges).
+     * class via {@code new Foo(...)} (reverse {@code INSTANTIATES} edges).
      */
     private final List<GraphNodeView> instantiatedBy = new ArrayList<>();
+
+    /**
+     * Executables (methods, constructors, lambdas) that instantiate this
+     * class anonymously via {@code new Foo() { ... }}
+     * (reverse {@code INSTANTIATES_ANONYMOUS} edges).
+     */
+    private final List<GraphNodeView> anonymouslyInstantiatedBy = new ArrayList<>();
 
     /**
      * Nodes (classes, methods, fields) that are annotated with this type
@@ -243,11 +249,19 @@ public class ClassNodeView extends GraphNodeView {
     public List<AnnotationAttributeView> getAnnotationAttributes() { return annotationAttributes; }
 
     /**
-     * Returns the executables that instantiate this class via {@code new}.
+     * Returns the executables that instantiate this class via {@code new Foo(...)}.
      *
      * @return list of caller views; never {@code null}
      */
     public List<GraphNodeView> getInstantiatedBy()           { return instantiatedBy; }
+
+    /**
+     * Returns the executables that instantiate this class anonymously via
+     * {@code new Foo() { ... }} (reverse {@code INSTANTIATES_ANONYMOUS} edges).
+     *
+     * @return list of caller views; never {@code null}
+     */
+    public List<GraphNodeView> getAnonymouslyInstantiatedBy() { return anonymouslyInstantiatedBy; }
 
     /**
      * Returns the nodes annotated with this annotation type.
@@ -273,5 +287,6 @@ public class ClassNodeView extends GraphNodeView {
     public void addLambda(LambdaNodeView l)                       { lambdas.add(l); }
     public void addAnnotationAttribute(AnnotationAttributeView a) { annotationAttributes.add(a); }
     public void addInstantiatedBy(GraphNodeView caller)           { instantiatedBy.add(caller); }
+    public void addAnonymouslyInstantiatedBy(GraphNodeView caller){ anonymouslyInstantiatedBy.add(caller); }
     public void addAnnotatedNode(GraphNodeView node)              { annotatedNodes.add(node); }
 }
