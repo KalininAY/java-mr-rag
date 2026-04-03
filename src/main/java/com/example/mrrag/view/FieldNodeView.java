@@ -14,6 +14,10 @@ import java.util.List;
  *
  * <p>{@link #getContent()} returns the Spoon pretty-printed field declaration
  * line, e.g. {@code "private int count = 0;"}.
+ *
+ * <p><b>Annotations</b> — use {@link #getAnnotatedBy()} inherited from
+ * {@link GraphNodeView}; it is populated from {@code ANNOTATED_WITH} outgoing
+ * edges by {@link com.example.mrrag.service.GraphViewBuilder}.
  */
 public class FieldNodeView extends GraphNodeView {
 
@@ -44,18 +48,6 @@ public class FieldNodeView extends GraphNodeView {
      */
     private final List<GraphNodeView> writtenBy = new ArrayList<>();
 
-    // -------------------------------------------------------------------------
-    // Annotations
-    // -------------------------------------------------------------------------
-
-    /**
-     * Annotation types applied to this field
-     * ({@code ANNOTATED_WITH} outgoing edges).
-     *
-     * <p>Example: {@code @Autowired}, {@code @Column(name="count")}.
-     */
-    private final List<GraphNodeView> annotations = new ArrayList<>();
-
     public FieldNodeView(GraphNode node) {
         super(node);
     }
@@ -85,13 +77,7 @@ public class FieldNodeView extends GraphNodeView {
      */
     public List<GraphNodeView> getWrittenBy()   { return writtenBy; }
 
-    /**
-     * Returns the annotation types applied to this field
-     * (ANNOTATED_WITH outgoing).
-     *
-     * @return list of annotation type views; never {@code null}
-     */
-    public List<GraphNodeView> getAnnotations() { return annotations; }
+    // Annotations are inherited from GraphNodeView.getAnnotatedBy().
 
     // -------------------------------------------------------------------------
     // Package-private mutators used by GraphViewBuilder
@@ -100,5 +86,4 @@ public class FieldNodeView extends GraphNodeView {
     public void setDeclaredByClass(ClassNodeView v) { this.declaredByClass = v; }
     public void addReadBy(GraphNodeView v)          { readBy.add(v); }
     public void addWrittenBy(GraphNodeView v)       { writtenBy.add(v); }
-    public void addAnnotation(GraphNodeView v)      { annotations.add(v); }
 }

@@ -178,19 +178,20 @@ public class GraphViewBuilder {
 
             // ── Structural ────────────────────────────────────────────────────
             case DECLARES -> {
-                // to = owner, from = member
-                from.addDeclaredBy(to);
-                if (to instanceof ClassNodeView cls) {
-                    if      (from instanceof MethodNodeView m)      { cls.addMethod(m);      m.setDeclaredByClass(cls); }
-                    else if (from instanceof ConstructorNodeView c) { cls.addConstructor(c); c.setDeclaredByClass(cls); }
-                    else if (from instanceof FieldNodeView f)       { cls.addField(f);       f.setDeclaredByClass(cls); }
-                    else if (from instanceof ClassNodeView ic)      { cls.addInnerClass(ic); }
-                    else if (from instanceof LambdaNodeView l)      { cls.addLambda(l); }
+                // from = owner (class / executable), to = member
+                to.addDeclaredBy(from);
+                if (from instanceof ClassNodeView cls) {
+                    if      (to instanceof MethodNodeView m)      { cls.addMethod(m);      m.setDeclaredByClass(cls); }
+                    else if (to instanceof ConstructorNodeView c) { cls.addConstructor(c); c.setDeclaredByClass(cls); }
+                    else if (to instanceof FieldNodeView f)       { cls.addField(f);       f.setDeclaredByClass(cls); }
+                    else if (to instanceof ClassNodeView ic)      { cls.addInnerClass(ic); }
+                    else if (to instanceof LambdaNodeView l)      { cls.addLambda(l); }
+                    else if (to instanceof AnnotationAttributeView a) { cls.addAnnotationAttribute(a); }
                 }
-                if (to instanceof MethodNodeView m && from instanceof LambdaNodeView l) {
+                if (from instanceof MethodNodeView m && to instanceof LambdaNodeView l) {
                     m.addLambda(l); l.setDeclaredByExecutable(m);
                 }
-                if (to instanceof ConstructorNodeView c && from instanceof LambdaNodeView l) {
+                if (from instanceof ConstructorNodeView c && to instanceof LambdaNodeView l) {
                     c.addLambda(l); l.setDeclaredByExecutable(c);
                 }
             }
@@ -295,14 +296,17 @@ public class GraphViewBuilder {
 
             // ── Annotations ───────────────────────────────────────────────────
             case ANNOTATED_WITH -> {
+                // from = annotated node, to = annotation type
+                // Always wire the forward link on the annotated node:
                 if (to instanceof ClassNodeView annType) {
+                    from.addAnnotatedBy(annType);
+                    // Reverse link: annotation type knows all nodes annotated with it
                     annType.addAnnotatedNode(from);
-                    if (from instanceof ClassNodeView cls)
-                        cls.addAnnotatedBy(annType);
+                } else {
+                    // to is an external stub (not ClassNodeView) — still record it
+                    ClassNodeView stubAnn = (ClassNodeView) resolve(vg, to.getId());
+                    from.addAnnotatedBy(stubAnn);
                 }
-                else if (from instanceof MethodNodeView m)         m.addAnnotation(to);
-                else if (from instanceof FieldNodeView f)          f.addAnnotation(to);
-                else if (from instanceof ConstructorNodeView c)    c.addAnnotation(to);
             }
 
             // ── Type references ───────────────────────────────────────────────

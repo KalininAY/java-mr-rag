@@ -20,10 +20,15 @@ import java.util.List;
  *   m.getOverrides();         // super-method being overridden (or null)
  *   m.getOverriddenBy();      // child methods that override this one
  *   m.getTypeParameters();    // generic type params declared on this method
+ *   m.getAnnotatedBy();       // annotations applied to this method (base)
  * }</pre>
  *
  * <p>{@link #getContent()} returns the full Spoon pretty-printed source of
  * the method including its body.
+ *
+ * <p><b>Annotations</b> — use {@link #getAnnotatedBy()} inherited from
+ * {@link GraphNodeView}; it is populated from {@code ANNOTATED_WITH} outgoing
+ * edges by {@link com.example.mrrag.service.GraphViewBuilder}.
  */
 public class MethodNodeView extends GraphNodeView {
 
@@ -165,18 +170,6 @@ public class MethodNodeView extends GraphNodeView {
     private final List<MethodNodeView> overriddenBy = new ArrayList<>();
 
     // -------------------------------------------------------------------------
-    // Annotations
-    // -------------------------------------------------------------------------
-
-    /**
-     * Annotation types applied to this method
-     * ({@code ANNOTATED_WITH} outgoing edges).
-     *
-     * <p>Example: {@code @Override}, {@code @Transactional}.
-     */
-    private final List<GraphNodeView> annotations = new ArrayList<>();
-
-    // -------------------------------------------------------------------------
     // Lambdas
     // -------------------------------------------------------------------------
 
@@ -310,20 +303,14 @@ public class MethodNodeView extends GraphNodeView {
     public List<MethodNodeView> getOverriddenBy()     { return overriddenBy; }
 
     /**
-     * Returns the annotation types applied to this method
-     * (ANNOTATED_WITH outgoing).
-     *
-     * @return list of annotation type views; never {@code null}
-     */
-    public List<GraphNodeView> getAnnotations()       { return annotations; }
-
-    /**
      * Returns the lambda expressions declared inside this method body
      * (DECLARES outgoing to LAMBDA nodes).
      *
      * @return list of lambda views; never {@code null}
      */
     public List<LambdaNodeView> getLambdas()          { return lambdas; }
+
+    // Annotations are inherited from GraphNodeView.getAnnotatedBy().
 
     // -------------------------------------------------------------------------
     // Package-private mutators used by GraphViewBuilder
@@ -344,6 +331,5 @@ public class MethodNodeView extends GraphNodeView {
     public void addReferencesType(GraphNodeView v)      { referencesTypes.add(v); }
     public void setOverrides(MethodNodeView v)          { this.overrides = v; }
     public void addOverriddenBy(MethodNodeView v)       { overriddenBy.add(v); }
-    public void addAnnotation(GraphNodeView v)          { annotations.add(v); }
     public void addLambda(LambdaNodeView v)             { lambdas.add(v); }
 }

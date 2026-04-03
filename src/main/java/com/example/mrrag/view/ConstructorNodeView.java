@@ -14,6 +14,10 @@ import java.util.List;
  *
  * <p>{@link #getContent()} returns the full Spoon pretty-printed source of
  * the constructor including its body.
+ *
+ * <p><b>Annotations</b> — use {@link #getAnnotatedBy()} inherited from
+ * {@link GraphNodeView}; it is populated from {@code ANNOTATED_WITH} outgoing
+ * edges by {@link com.example.mrrag.service.GraphViewBuilder}.
  */
 public class ConstructorNodeView extends GraphNodeView {
 
@@ -93,7 +97,7 @@ public class ConstructorNodeView extends GraphNodeView {
     private final List<VariableNodeView> writesLocalVars = new ArrayList<>();
 
     // -------------------------------------------------------------------------
-    // Exceptions, type references, annotations, lambdas
+    // Exceptions, type references, lambdas
     // -------------------------------------------------------------------------
 
     /**
@@ -110,12 +114,6 @@ public class ConstructorNodeView extends GraphNodeView {
      * and explicit cast expressions.
      */
     private final List<GraphNodeView> referencesTypes = new ArrayList<>();
-
-    /**
-     * Annotation types applied to this constructor
-     * ({@code ANNOTATED_WITH} outgoing edges).
-     */
-    private final List<GraphNodeView> annotations = new ArrayList<>();
 
     /**
      * Lambda expressions declared inside this constructor body
@@ -217,20 +215,14 @@ public class ConstructorNodeView extends GraphNodeView {
     public List<GraphNodeView> getReferencesTypes() { return referencesTypes; }
 
     /**
-     * Returns the annotation types applied to this constructor
-     * (ANNOTATED_WITH outgoing).
-     *
-     * @return list of annotation type views; never {@code null}
-     */
-    public List<GraphNodeView> getAnnotations()     { return annotations; }
-
-    /**
      * Returns the lambda expressions declared inside this constructor body
      * (DECLARES outgoing to LAMBDA nodes).
      *
      * @return list of lambda views; never {@code null}
      */
     public List<LambdaNodeView> getLambdas()        { return lambdas; }
+
+    // Annotations are inherited from GraphNodeView.getAnnotatedBy().
 
     // -------------------------------------------------------------------------
     // Package-private mutators used by GraphViewBuilder
@@ -247,6 +239,5 @@ public class ConstructorNodeView extends GraphNodeView {
     public void addWritesLocalVar(VariableNodeView v)  { writesLocalVars.add(v); }
     public void addThrowsType(GraphNodeView v)         { throwsTypes.add(v); }
     public void addReferencesType(GraphNodeView v)     { referencesTypes.add(v); }
-    public void addAnnotation(GraphNodeView v)         { annotations.add(v); }
     public void addLambda(LambdaNodeView v)            { lambdas.add(v); }
 }
