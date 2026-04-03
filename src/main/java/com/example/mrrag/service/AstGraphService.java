@@ -20,8 +20,8 @@ import java.util.stream.Stream;
 /**
  * Builds a rich symbol graph for a Java project using Spoon.
  *
- * <p><b>Nodes:</b> CLASS, CONSTRUCTOR, METHOD, FIELD, VARIABLE, LAMBDA,
- * ANNOTATION, TYPE_PARAM, ANNOTATION_ATTRIBUTE<br>
+ * <p><b>Nodes:</b> CLASS, INTERFACE, CONSTRUCTOR, METHOD, FIELD, VARIABLE,
+ * LAMBDA, ANNOTATION, TYPE_PARAM, ANNOTATION_ATTRIBUTE<br>
  * <b>Edges:</b> DECLARES, EXTENDS, IMPLEMENTS, INVOKES, INSTANTIATES,
  * INSTANTIATES_ANONYMOUS, REFERENCES_METHOD, READS_FIELD, WRITES_FIELD,
  * READS_LOCAL_VAR, WRITES_LOCAL_VAR, THROWS, ANNOTATED_WITH,
@@ -37,8 +37,10 @@ public class AstGraphService {
 
     /** Kinds of graph nodes. */
     public enum NodeKind {
-        /** A class, interface, enum or annotation type. */
+        /** A concrete class, enum, or record type. */
         CLASS,
+        /** A Java {@code interface} declaration. */
+        INTERFACE,
         /** A constructor ({@code <init>}). */
         CONSTRUCTOR,
         /** An instance or static method. */
@@ -70,7 +72,7 @@ public class AstGraphService {
      */
     public enum EdgeKind {
 
-        // ── Structural (declaration) ──────────────────────────────────────────
+        // ── Structural (declaration) ───────────────────────────────────────
 
         /**
          * Owner declares a child member.
@@ -86,7 +88,7 @@ public class AstGraphService {
         /** {@code class A implements I} → A –IMPLEMENTS→ I */
         IMPLEMENTS,
 
-        // ── Invocations ───────────────────────────────────────────────────────
+        // ── Invocations ────────────────────────────────────────────────────
 
         /** {@code foo.bar()} → caller –INVOKES→ callee */
         INVOKES,
@@ -100,7 +102,7 @@ public class AstGraphService {
         /** {@code Foo::bar}, {@code Foo::new} → caller –REFERENCES_METHOD→ target */
         REFERENCES_METHOD,
 
-        // ── Field access ──────────────────────────────────────────────────────
+        // ── Field access ────────────────────────────────────────────────
 
         /** {@code this.value}, {@code obj.field} */
         READS_FIELD,
@@ -108,7 +110,7 @@ public class AstGraphService {
         /** {@code this.value = x} */
         WRITES_FIELD,
 
-        // ── Local variable access ─────────────────────────────────────────────
+        // ── Local variable access ─────────────────────────────────────────
 
         /** Caller reads a local variable or method parameter. */
         READS_LOCAL_VAR,
@@ -116,27 +118,27 @@ public class AstGraphService {
         /** Caller writes a local variable or method parameter. */
         WRITES_LOCAL_VAR,
 
-        // ── Exceptions ───────────────────────────────────────────────────────
+        // ── Exceptions ────────────────────────────────────────────────────
 
         /** Method/constructor contains {@code throw new FooException(...)}. */
         THROWS,
 
-        // ── Annotations ──────────────────────────────────────────────────────
+        // ── Annotations ──────────────────────────────────────────────────
 
-        /** CLASS/METHOD/FIELD → ANNOTATION type. */
+        /** CLASS/INTERFACE/METHOD/FIELD → ANNOTATION type. */
         ANNOTATED_WITH,
 
-        // ── Type references ───────────────────────────────────────────────────
+        // ── Type references ───────────────────────────────────────────────
 
         /** {@code Foo.class}, {@code instanceof Foo}, cast to {@code Foo}. */
         REFERENCES_TYPE,
 
-        // ── Inheritance ───────────────────────────────────────────────────────
+        // ── Inheritance ────────────────────────────────────────────────────
 
         /** child –OVERRIDES→ parent method */
         OVERRIDES,
 
-        // ── Generics ─────────────────────────────────────────────────────────
+        // ── Generics ──────────────────────────────────────────────────
 
         /**
          * A type or executable has a generic type parameter.
@@ -151,7 +153,7 @@ public class AstGraphService {
          */
         HAS_BOUND,
 
-        // ── Annotation attributes ─────────────────────────────────────────────
+        // ── Annotation attributes ───────────────────────────────────────────────
 
         /**
          * An annotation type declares an attribute element.
@@ -382,13 +384,26 @@ public class AstGraphService {
             var graph = new ProjectGraph();
             String root = projectRoot.toString();
 
-            // ── 1. Type nodes ────────────────────────────────────────────────
+            // ── 1. Type nodes ───────────────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
                 String id = qualifiedName(type);
                 if (id == null) return;
                 String file = relPath(root, sourceFile(type));
                 int[] ln = lines(type);
-                graph.addNode(new GraphNode(id, NodeKind.CLASS, type.getSimpleName(),
+
+                // Determine NodeKind: CtInterface → INTERFACE,
+                //                     CtAnnotationType → ANNOTATION,
+                //                     everything else → CLASS
+                NodeKind kind;
+                if (type instanceof CtAnnotationType) {
+                    kind = NodeKind.ANNOTATION;
+                } else if (type instanceof CtInterface) {
+                    kind = NodeKind.INTERFACE;
+                } else {
+                    kind = NodeKind.CLASS;
+                }
+
+                graph.addNode(new GraphNode(id, kind, type.getSimpleName(),
                         file, ln[0], ln[1], snippet(type)));
 
                 if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH)) {
@@ -401,7 +416,7 @@ public class AstGraphService {
                 }
             });
 
-            // ── 2. EXTENDS / IMPLEMENTS ──────────────────────────────────────
+            // ── 2. EXTENDS / IMPLEMENTS ──────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.EXTENDS) || edgeConfig.isEnabled(EdgeKind.IMPLEMENTS)) {
                 model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
                     String id = qualifiedName(type);
@@ -409,25 +424,38 @@ public class AstGraphService {
                     String file = relPath(root, sourceFile(type));
                     int[] ln = lines(type);
 
-                    if (edgeConfig.isEnabled(EdgeKind.EXTENDS) && type instanceof CtClass<?> cls) {
-                        var superRef = cls.getSuperclass();
-                        if (superRef != null)
-                            graph.addEdge(new GraphEdge(
-                                    id, EdgeKind.EXTENDS, superRef.getQualifiedName(), file, ln[0]
-                            ));
+                    if (edgeConfig.isEnabled(EdgeKind.EXTENDS)) {
+                        if (type instanceof CtClass<?> cls) {
+                            // class extends class
+                            var superRef = cls.getSuperclass();
+                            if (superRef != null)
+                                graph.addEdge(new GraphEdge(
+                                        id, EdgeKind.EXTENDS, superRef.getQualifiedName(), file, ln[0]
+                                ));
+                        } else if (type instanceof CtInterface<?> iface) {
+                            // interface extends interface(s)
+                            iface.getSuperInterfaces().forEach(superRef ->
+                                    graph.addEdge(new GraphEdge(
+                                            id, EdgeKind.EXTENDS, superRef.getQualifiedName(), file, ln[0]
+                                    ))
+                            );
+                        }
                     }
                     if (edgeConfig.isEnabled(EdgeKind.IMPLEMENTS)) {
-                        type.getSuperInterfaces().forEach(ifRef ->
-                                graph.addEdge(new GraphEdge(
-                                        id, EdgeKind.IMPLEMENTS, ifRef.getQualifiedName(),
-                                        file, ln[0]
-                                ))
-                        );
+                        if (type instanceof CtClass<?> cls) {
+                            cls.getSuperInterfaces().forEach(ifRef ->
+                                    graph.addEdge(new GraphEdge(
+                                            id, EdgeKind.IMPLEMENTS, ifRef.getQualifiedName(),
+                                            file, ln[0]
+                                    ))
+                            );
+                        }
+                        // CtInterface EXTENDS (not IMPLEMENTS) handled above
                     }
                 });
             }
 
-            // ── 3. TYPE_PARAM nodes ──────────────────────────────────────────
+            // ── 3. TYPE_PARAM nodes ────────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.HAS_TYPE_PARAM)) {
                 model.getElements(new TypeFilter<>(CtFormalTypeDeclarer.class)).forEach(declarer -> {
                     String ownerId = formalDeclarerId(declarer);
@@ -446,14 +474,12 @@ public class AstGraphService {
                         ));
 
                         if (edgeConfig.isEnabled(EdgeKind.HAS_BOUND)) {
-                            // Upper class bound (e.g. T extends SomeClass)
                             CtTypeReference<?> superCls = tp.getSuperclass();
                             if (superCls != null && !superCls.getQualifiedName().equals("java.lang.Object")) {
                                 graph.addEdge(new GraphEdge(
                                         tpId, EdgeKind.HAS_BOUND,
                                         superCls.getQualifiedName(), file, tpLn[0]));
                             }
-                            // Interface bounds (e.g. T extends Comparable<T> & Serializable)
                             tp.getSuperInterfaces().forEach(bound ->
                                     graph.addEdge(new GraphEdge(
                                             tpId, EdgeKind.HAS_BOUND,
@@ -463,7 +489,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 4. Method nodes ──────────────────────────────────────────────
+            // ── 4. Method nodes ───────────────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtMethod.class)).forEach(m -> {
                 String id = typeMemberExecId(m);
                 if (id == null) return;
@@ -481,7 +507,8 @@ public class AstGraphService {
                 m.getTopDefinitions().stream().findFirst()
                         .filter(top -> top != m)
                         .ifPresent(superId ->
-                                graph.addEdge(new GraphEdge(id, EdgeKind.OVERRIDES, typeMemberExecId((CtTypeMember) superId), file, ln[0])));
+                                graph.addEdge(new GraphEdge(id, EdgeKind.OVERRIDES,
+                                        typeMemberExecId((CtTypeMember) superId), file, ln[0])));
                 if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH)) {
                     m.getAnnotations().forEach(ann ->
                             graph.addEdge(new GraphEdge(
@@ -492,7 +519,7 @@ public class AstGraphService {
                 }
             });
 
-            // ── 5. Constructor nodes ─────────────────────────────────────────
+            // ── 5. Constructor nodes ───────────────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtConstructor.class)).forEach(c -> {
                 String id = typeMemberExecId(c);
                 if (id == null) return;
@@ -508,9 +535,8 @@ public class AstGraphService {
                 }
             });
 
-            // ── 6. Field nodes ───────────────────────────────────────────────
+            // ── 6. Field nodes ────────────────────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtField.class)).forEach(field -> {
-                // Skip annotation attribute methods — handled in step 8
                 if (field.getDeclaringType() instanceof CtAnnotationType) return;
                 String id = fieldId(field);
                 if (id == null) return;
@@ -534,7 +560,7 @@ public class AstGraphService {
                 }
             });
 
-            // ── 7. Local variable + parameter nodes ──────────────────────────
+            // ── 7. Local variable + parameter nodes ─────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtVariable.class)).forEach(v -> {
                 if (v instanceof CtField) return;
                 String id = varId(v);
@@ -545,15 +571,13 @@ public class AstGraphService {
                         file, ln[0], ln[1], snippet(v)));
             });
 
-            // ── 8. ANNOTATION_ATTRIBUTE nodes ────────────────────────────────
+            // ── 8. ANNOTATION_ATTRIBUTE nodes ─────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATION_ATTR)) {
                 model.getElements(new TypeFilter<>(CtAnnotationType.class)).forEach(ann -> {
                     String annoId = qualifiedName(ann);
                     if (annoId == null) return;
                     String file = relPath(root, sourceFile(ann));
 
-                    // getMethods() on CtAnnotationType returns Collection<CtMethod<?>>
-                    // but raw-type erasure causes javac to infer Object — explicit cast fixes it
                     @SuppressWarnings("unchecked")
                     Collection<CtMethod<?>> methods =
                             (Collection<CtMethod<?>>) (Collection<?>) ann.getMethods();
@@ -569,7 +593,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 9. Lambda nodes ──────────────────────────────────────────────
+            // ── 9. Lambda nodes ───────────────────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtLambda.class)).forEach(lambda -> {
                 String file = relPath(root, sourceFile(lambda));
                 int[] ln = lines(lambda);
@@ -594,7 +618,7 @@ public class AstGraphService {
                 }
             });
 
-            // ── 10. INVOKES ──────────────────────────────────────────────────
+            // ── 10. INVOKES ────────────────────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.INVOKES)) {
                 model.getElements(new TypeFilter<>(CtInvocation.class)).forEach(inv -> {
                     String callerId = nearestExecId(inv);
@@ -606,7 +630,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 11. INSTANTIATES / INSTANTIATES_ANONYMOUS ────────────────────
+            // ── 11. INSTANTIATES / INSTANTIATES_ANONYMOUS ────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.INSTANTIATES) || edgeConfig.isEnabled(EdgeKind.INSTANTIATES_ANONYMOUS)) {
                 model.getElements(new TypeFilter<>(CtConstructorCall.class)).forEach(cc -> {
                     String callerId = nearestExecId(cc);
@@ -623,7 +647,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 12. REFERENCES_METHOD ────────────────────────────────────────
+            // ── 12. REFERENCES_METHOD ─────────────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.REFERENCES_METHOD)) {
                 model.getElements(new TypeFilter<>(CtExecutableReferenceExpression.class)).forEach(ref -> {
                     String callerId = nearestExecId(ref);
@@ -635,7 +659,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 13. READS_FIELD / WRITES_FIELD ───────────────────────────────
+            // ── 13. READS_FIELD / WRITES_FIELD ───────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.READS_FIELD) || edgeConfig.isEnabled(EdgeKind.WRITES_FIELD)) {
                 model.getElements(new TypeFilter<>(CtFieldAccess.class)).forEach(fa -> {
                     String execId = nearestExecId(fa);
@@ -653,7 +677,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 14. READS_LOCAL_VAR / WRITES_LOCAL_VAR ───────────────────────
+            // ── 14. READS_LOCAL_VAR / WRITES_LOCAL_VAR ─────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.READS_LOCAL_VAR) || edgeConfig.isEnabled(EdgeKind.WRITES_LOCAL_VAR)) {
                 model.getElements(new TypeFilter<>(CtVariableAccess.class)).forEach(va -> {
                     if (va instanceof CtFieldAccess) return;
@@ -669,7 +693,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 15. THROWS ───────────────────────────────────────────────────
+            // ── 15. THROWS ───────────────────────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.THROWS)) {
                 model.getElements(new TypeFilter<>(CtThrow.class)).forEach(thr -> {
                     String execId = nearestExecId(thr);
@@ -687,7 +711,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 16. REFERENCES_TYPE ──────────────────────────────────────────
+            // ── 16. REFERENCES_TYPE ─────────────────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.REFERENCES_TYPE)) {
                 model.getElements(new TypeFilter<>(CtTypeAccess.class)).forEach(ta -> {
                     String execId = nearestExecId(ta);
@@ -774,19 +798,10 @@ public class AstGraphService {
         return "var@" + ref.getSimpleName();
     }
 
-    /**
-     * Stable id for a {@link CtTypeParameter}: {@code ownerId#T}
-     * where {@code ownerId} is the qualified name of the declaring type or
-     * the signature of the declaring executable.
-     */
     private String typeParamId(String ownerId, CtTypeParameter tp) {
         return ownerId + "#<" + tp.getSimpleName() + ">";
     }
 
-    /**
-     * Returns a stable id for any {@link CtFormalTypeDeclarer} —
-     * either a qualified class name or an executable id.
-     */
     private String formalDeclarerId(CtFormalTypeDeclarer declarer) {
         if (declarer instanceof CtType<?> t) return qualifiedName(t);
         if (declarer instanceof CtTypeMember m) return typeMemberExecId(m);

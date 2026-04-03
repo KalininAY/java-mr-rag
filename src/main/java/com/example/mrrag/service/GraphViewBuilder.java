@@ -13,23 +13,14 @@ import java.util.*;
  * <h3>Two-pass algorithm</h3>
  * <ol>
  *   <li><b>Pass 1 – instantiate views.</b>  For every {@link GraphNode} in the
- *       graph one typed view ({@link ClassNodeView}, {@link MethodNodeView}, …)
- *       is created and stored in an id→view map.</li>
+ *       graph one typed view ({@link ClassNodeView}, {@link InterfaceNodeView},
+ *       {@link MethodNodeView}, …) is created and stored in an id→view map.</li>
  *   <li><b>Pass 2 – wire edges.</b>  Every {@link GraphEdge} is translated into
  *       a direct Java reference on both the source and the target view.</li>
  * </ol>
  *
  * <p>After {@link #build(ProjectGraph)} returns, any view can be used as the
- * entry-point for a full graph traversal:
- * <pre>{@code
- *   GraphViewBuilder builder = ...;           // injected
- *   ViewGraph vg = builder.build(projectGraph);
- *
- *   ClassNodeView foo = vg.classById("com.example.Foo");
- *   foo.getMethods().forEach(m -> {
- *       m.getCallers().forEach(caller -> System.out.println(caller.getId()));
- *   });
- * }</pre>
+ * entry-point for a full graph traversal.
  *
  * <h3>Unknown / external nodes</h3>
  * Target IDs that have no corresponding {@link GraphNode} in the graph
@@ -78,6 +69,12 @@ public class GraphViewBuilder {
             return v instanceof ClassNodeView c ? c : null;
         }
 
+        /** Convenience cast to {@link InterfaceNodeView}, or {@code null}. */
+        public InterfaceNodeView interfaceById(String id) {
+            GraphNodeView v = byId.get(id);
+            return v instanceof InterfaceNodeView i ? i : null;
+        }
+
         /** Convenience cast to {@link MethodNodeView}, or {@code null}. */
         public MethodNodeView methodById(String id) {
             GraphNodeView v = byId.get(id);
@@ -108,11 +105,19 @@ public class GraphViewBuilder {
             return v instanceof LambdaNodeView l ? l : null;
         }
 
-        /** All {@link ClassNodeView} instances in the graph. */
+        /** All {@link ClassNodeView} instances (concrete classes only). */
         public List<ClassNodeView> allClasses() {
             return byId.values().stream()
                     .filter(v -> v instanceof ClassNodeView)
                     .map(v -> (ClassNodeView) v)
+                    .toList();
+        }
+
+        /** All {@link InterfaceNodeView} instances. */
+        public List<InterfaceNodeView> allInterfaces() {
+            return byId.values().stream()
+                    .filter(v -> v instanceof InterfaceNodeView)
+                    .map(v -> (InterfaceNodeView) v)
                     .toList();
         }
 
@@ -141,12 +146,14 @@ public class GraphViewBuilder {
         // ── Pass 1: create a typed view for every node ─────────────────────────
         for (GraphNode node : graph.nodes.values()) {
             GraphNodeView view = switch (node.kind()) {
-                case CLASS, ANNOTATION -> new ClassNodeView(node);
+                case CLASS             -> new ClassNodeView(node);
+                case INTERFACE         -> new InterfaceNodeView(node);
                 case METHOD            -> new MethodNodeView(node);
                 case CONSTRUCTOR       -> new ConstructorNodeView(node);
                 case FIELD             -> new FieldNodeView(node);
                 case VARIABLE          -> new VariableNodeView(node);
                 case LAMBDA            -> new LambdaNodeView(node);
+                case ANNOTATION        -> new ClassNodeView(node);   // reuses ClassNodeView (has annotatedNodes)
                 case TYPE_PARAM        -> new TypeParamNodeView(node);
                 case ANNOTATION_ATTRIBUTE -> new AnnotationAttributeView(node);
             };
@@ -178,15 +185,21 @@ public class GraphViewBuilder {
 
             // ── Structural ────────────────────────────────────────────────────
             case DECLARES -> {
-                // from = owner (class / executable), to = member
+                // from = owner (class/interface/executable), to = member
                 to.addDeclaredBy(from);
                 if (from instanceof ClassNodeView cls) {
                     if      (to instanceof MethodNodeView m)      { cls.addMethod(m);      m.setDeclaredByClass(cls); }
                     else if (to instanceof ConstructorNodeView c) { cls.addConstructor(c); c.setDeclaredByClass(cls); }
                     else if (to instanceof FieldNodeView f)       { cls.addField(f);       f.setDeclaredByClass(cls); }
                     else if (to instanceof ClassNodeView ic)      { cls.addInnerClass(ic); }
+                    else if (to instanceof InterfaceNodeView ii)  { cls.addInnerClass(ii.asClassNodeViewStub()); }
                     else if (to instanceof LambdaNodeView l)      { cls.addLambda(l); }
                     else if (to instanceof AnnotationAttributeView a) { cls.addAnnotationAttribute(a); }
+                } else if (from instanceof InterfaceNodeView iface) {
+                    if      (to instanceof MethodNodeView m)      { iface.addMethod(m);    m.setDeclaredByClass(null); }
+                    else if (to instanceof FieldNodeView f)       { iface.addField(f);     f.setDeclaredByClass(null); }
+                    else if (to instanceof ClassNodeView ic)      { iface.addInnerType(ic); }
+                    else if (to instanceof InterfaceNodeView ii)  { iface.addInnerType(ii); }
                 }
                 if (from instanceof MethodNodeView m && to instanceof LambdaNodeView l) {
                     m.addLambda(l); l.setDeclaredByExecutable(m);
@@ -198,15 +211,15 @@ public class GraphViewBuilder {
 
             // ── Generic type parameters ───────────────────────────────────────
             case HAS_TYPE_PARAM -> {
-                // from = owning class, to = type parameter
                 if (from instanceof ClassNodeView cls && to instanceof TypeParamNodeView tp) {
                     cls.addTypeParameter(tp);
+                } else if (from instanceof InterfaceNodeView iface && to instanceof TypeParamNodeView tp) {
+                    iface.addTypeParameter(tp);
                 }
             }
 
             // ── Annotation attributes ─────────────────────────────────────────
             case ANNOTATION_ATTR -> {
-                // from = @interface class, to = attribute element
                 if (from instanceof ClassNodeView cls && to instanceof AnnotationAttributeView attr) {
                     cls.addAnnotationAttribute(attr);
                 }
@@ -215,14 +228,29 @@ public class GraphViewBuilder {
             // ── Type hierarchy ────────────────────────────────────────────────
             case EXTENDS -> {
                 if (from instanceof ClassNodeView sub && to instanceof ClassNodeView sup) {
+                    // class extends class
                     sub.setSuperClass(sup);
                     sup.addSubClass(sub);
+                } else if (from instanceof InterfaceNodeView sub && to instanceof InterfaceNodeView sup) {
+                    // interface extends interface
+                    sub.addExtendedInterface(sup);
+                    sup.addSubInterface(sub);
+                } else if (from instanceof InterfaceNodeView sub) {
+                    // interface extends external stub (ClassNodeView) — treat as super-interface stub
+                    ClassNodeView stubSup = (ClassNodeView) to;
+                    stubSup.addSubClass(sub.asClassNodeViewStub());
                 }
             }
             case IMPLEMENTS -> {
-                if (from instanceof ClassNodeView impl && to instanceof ClassNodeView iface) {
-                    impl.addInterface(iface);
-                    iface.addImplementation(impl);
+                if (from instanceof ClassNodeView impl) {
+                    if (to instanceof InterfaceNodeView iface) {
+                        impl.addInterface(iface.asClassNodeViewStub());
+                        iface.addImplementation(impl);
+                    } else if (to instanceof ClassNodeView iface) {
+                        // external stub
+                        impl.addInterface(iface);
+                        iface.addImplementation(impl);
+                    }
                 }
             }
 
@@ -297,13 +325,10 @@ public class GraphViewBuilder {
             // ── Annotations ───────────────────────────────────────────────────
             case ANNOTATED_WITH -> {
                 // from = annotated node, to = annotation type
-                // Always wire the forward link on the annotated node:
                 if (to instanceof ClassNodeView annType) {
                     from.addAnnotatedBy(annType);
-                    // Reverse link: annotation type knows all nodes annotated with it
                     annType.addAnnotatedNode(from);
                 } else {
-                    // to is an external stub (not ClassNodeView) — still record it
                     ClassNodeView stubAnn = (ClassNodeView) resolve(vg, to.getId());
                     from.addAnnotatedBy(stubAnn);
                 }
@@ -312,6 +337,7 @@ public class GraphViewBuilder {
             // ── Type references ───────────────────────────────────────────────
             case REFERENCES_TYPE -> {
                 if (to instanceof ClassNodeView cls)            cls.addReferencedBy(from);
+                else if (to instanceof InterfaceNodeView iface) iface.addReferencedBy(from);
                 if      (from instanceof MethodNodeView m)      m.addReferencesType(to);
                 else if (from instanceof ConstructorNodeView c) c.addReferencesType(to);
                 else if (from instanceof LambdaNodeView l)      l.addReferencesType(to);
@@ -345,11 +371,6 @@ public class GraphViewBuilder {
     // Helper: stub creation for external / unresolved nodes
     // ------------------------------------------------------------------
 
-    /**
-     * Resolves an id to a view.  If the id is not present in the view graph
-     * (e.g. a JDK type), a lightweight stub {@link ClassNodeView} is created
-     * on-the-fly so that edge lists are never null.
-     */
     private GraphNodeView resolve(ViewGraph vg, String id) {
         GraphNodeView existing = vg.byId(id);
         if (existing != null) return existing;
@@ -368,7 +389,6 @@ public class GraphViewBuilder {
         return stubView;
     }
 
-    /** Extracts the simple name from a qualified id (last segment after {@code .} or {@code #}). */
     private static String simpleNameOf(String id) {
         if (id == null || id.isBlank()) return "?";
         int hash = id.lastIndexOf('#');
