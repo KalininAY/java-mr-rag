@@ -23,10 +23,18 @@ import java.util.*;
  * entry-point for a full graph traversal.
  *
  * <h3>Unknown / external nodes</h3>
- * Target IDs that have no corresponding {@link GraphNode} in the graph
- * (e.g. JDK types such as {@code java.util.List}) are represented by a
- * lightweight "stub" {@link ClassNodeView} so that edge lists are never
- * {@code null} and traversal never throws {@link NullPointerException}.
+ * Target IDs that have no corresponding {@link GraphNode} in the graph are
+ * represented by lightweight "stub" views whose type is inferred from the id
+ * format:
+ * <ul>
+ *   <li>ids containing {@code #} and {@code (} (e.g.
+ *       {@code java.util.Iterator#hasNext()}) → {@link MethodNodeView} stub</li>
+ *   <li>ids containing {@code #} but <em>no</em> {@code (} (constructor
+ *       signature style) → {@link ConstructorNodeView} stub</li>
+ *   <li>all other ids → {@link ClassNodeView} stub</li>
+ * </ul>
+ * This ensures that edge lists are never {@code null}, traversal never throws
+ * {@link NullPointerException}, and callee lists reflect the correct node type.
  */
 @Slf4j
 @Service
@@ -369,24 +377,56 @@ public class GraphViewBuilder {
     }
 
     // ------------------------------------------------------------------
-    // Helper: stub creation for external / unresolved nodes
+    // Helper: typed stub creation for external / unresolved nodes
     // ------------------------------------------------------------------
 
+    /**
+     * Resolves a node id to an existing view, or creates and registers a
+     * typed stub view when the id is not present in the graph.
+     *
+     * <p>The stub type is inferred from the id format:
+     * <ul>
+     *   <li>Contains {@code #} <b>and</b> {@code (} →
+     *       {@link MethodNodeView} stub (e.g. {@code java.util.Iterator#hasNext()})</li>
+     *   <li>Contains {@code #} but <b>no</b> {@code (} →
+     *       {@link ConstructorNodeView} stub</li>
+     *   <li>Otherwise → {@link ClassNodeView} stub (external type)</li>
+     * </ul>
+     */
     private GraphNodeView resolve(ViewGraph vg, String id) {
         GraphNodeView existing = vg.byId(id);
         if (existing != null) return existing;
 
+        boolean hasHash  = id != null && id.contains("#");
+        boolean hasParen = id != null && id.contains("(");
+
+        final NodeKind stubKind;
+        if (hasHash && hasParen) {
+            stubKind = NodeKind.METHOD;
+        } else if (hasHash) {
+            stubKind = NodeKind.CONSTRUCTOR;
+        } else {
+            stubKind = NodeKind.CLASS;
+        }
+
         GraphNode stub = new GraphNode(
                 id,
-                NodeKind.CLASS,
+                stubKind,
                 simpleNameOf(id),
                 "external",
                 0, 0,
                 null
         );
-        ClassNodeView stubView = new ClassNodeView(stub);
+
+        GraphNodeView stubView = switch (stubKind) {
+            case METHOD      -> new MethodNodeView(stub);
+            case CONSTRUCTOR -> new ConstructorNodeView(stub);
+            default          -> new ClassNodeView(stub);
+        };
+
         vg.put(stubView);
-        log.trace("GraphViewBuilder: created stub view for external id '{}'", id);
+        log.trace("GraphViewBuilder: created {} stub for external id '{}'",
+                stubKind, id);
         return stubView;
     }
 
