@@ -195,6 +195,22 @@ public class GraphViewBuilder {
                 }
             }
 
+            // ── Generic type parameters ───────────────────────────────────────
+            case HAS_TYPE_PARAM -> {
+                // from = owning class, to = type parameter
+                if (from instanceof ClassNodeView cls && to instanceof TypeParamNodeView tp) {
+                    cls.addTypeParameter(tp);
+                }
+            }
+
+            // ── Annotation attributes ─────────────────────────────────────────
+            case ANNOTATION_ATTR -> {
+                // from = @interface class, to = attribute element
+                if (from instanceof ClassNodeView cls && to instanceof AnnotationAttributeView attr) {
+                    cls.addAnnotationAttribute(attr);
+                }
+            }
+
             // ── Type hierarchy ────────────────────────────────────────────────
             case EXTENDS -> {
                 if (from instanceof ClassNodeView sub && to instanceof ClassNodeView sup) {
@@ -337,7 +353,7 @@ public class GraphViewBuilder {
                 simpleNameOf(id),
                 "external",
                 0, 0,
-                sourceSnippet
+                null
         );
         ClassNodeView stubView = new ClassNodeView(stub);
         vg.put(stubView);
