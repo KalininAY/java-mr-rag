@@ -43,6 +43,20 @@ public abstract class GraphNodeView {
     private final List<GraphNodeView> declaredBy = new ArrayList<>();
 
     /**
+     * Annotation types ({@link ClassNodeView}) that annotate this node via
+     * {@code ANNOTATED_WITH} outgoing edges.
+     *
+     * <p>Example: if the method is declared as
+     * {@code @Override @Transactional public void save(...)}, this list
+     * contains the {@link ClassNodeView} entries for {@code Override} and
+     * {@code Transactional} (if present in the graph).
+     *
+     * <p>Populated from {@code ANNOTATED_WITH} outgoing edges by
+     * {@link com.example.mrrag.service.GraphViewBuilder}.
+     */
+    private final List<ClassNodeView> annotatedBy = new ArrayList<>();
+
+    /**
      * Constructs a view wrapping the given raw node.
      *
      * @param node the raw {@link GraphNode} record; must not be {@code null}
@@ -171,12 +185,36 @@ public abstract class GraphNodeView {
      */
     public List<GraphNodeView> getDeclaredBy() { return declaredBy; }
 
+    /**
+     * Returns the annotation types applied to this node via
+     * {@code ANNOTATED_WITH} outgoing edges.
+     *
+     * <p>Each entry is the {@link ClassNodeView} of the annotation type
+     * (e.g. the view for {@code @Transactional} or {@code @Override}).
+     * The list is empty when no annotations are recorded in the graph for
+     * this node.
+     *
+     * @return immutable-safe list of annotation type views; never {@code null}
+     */
+    public List<ClassNodeView> getAnnotatedBy() { return annotatedBy; }
+
     // -------------------------------------------------------------------------
     // Package-private mutators used by GraphViewBuilder
     // -------------------------------------------------------------------------
 
     /** Registers {@code owner} as a declaring node of this view. */
     public void addDeclaredBy(GraphNodeView owner) { declaredBy.add(owner); }
+
+    /**
+     * Registers {@code annotation} as an annotation type applied to this node.
+     *
+     * <p>Called by {@link com.example.mrrag.service.GraphViewBuilder} when
+     * wiring {@code ANNOTATED_WITH} edges.
+     *
+     * @param annotation the {@link ClassNodeView} of the annotation type;
+     *                   must not be {@code null}
+     */
+    public void addAnnotatedBy(ClassNodeView annotation) { annotatedBy.add(annotation); }
 
     @Override
     public String toString() {
