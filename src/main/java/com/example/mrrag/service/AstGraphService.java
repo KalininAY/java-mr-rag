@@ -598,7 +598,7 @@ public class AstGraphService {
                 String file = relPath(root, sourceFile(lambda));
                 int[] ln = lines(lambda);
                 String id = "lambda@" + file + ":" + ln[0];
-                graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "λ",
+                graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb",
                         file, ln[0], ln[1], snippet(lambda)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
@@ -644,6 +644,17 @@ public class AstGraphService {
                                 callerId, kind, typeId,
                                 relPath(root, sourceFile(cc)), posLine(cc)
                         ));
+                    // Also emit an INVOKES edge so the constructor node gets a proper callee entry.
+                    // The key produced by execRefId(cc.getExecutable()) is identical to
+                    // typeMemberExecId(c) used when the CONSTRUCTOR node was registered in Pass 1,
+                    // so GraphViewBuilder.wireEdge routes it through addCallerCallee() and
+                    // populates both caller.callees and constructor.callers symmetrically.
+                    if (edgeConfig.isEnabled(EdgeKind.INVOKES)) {
+                        graph.addEdge(new GraphEdge(
+                                callerId, EdgeKind.INVOKES, execRefId(cc.getExecutable()),
+                                relPath(root, sourceFile(cc)), posLine(cc)
+                        ));
+                    }
                 });
             }
 
