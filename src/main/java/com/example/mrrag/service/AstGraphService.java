@@ -427,7 +427,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 3. TYPE_PARAM nodes (classes) ────────────────────────────────
+            // ── 3. TYPE_PARAM nodes ──────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.HAS_TYPE_PARAM)) {
                 model.getElements(new TypeFilter<>(CtFormalTypeDeclarer.class)).forEach(declarer -> {
                     String ownerId = formalDeclarerId(declarer);
@@ -446,11 +446,18 @@ public class AstGraphService {
                         ));
 
                         if (edgeConfig.isEnabled(EdgeKind.HAS_BOUND)) {
-                            tp.getSuperclass();
-                            tp.getBounds().forEach(bound ->
-                                    graph.addEdge(new GraphEdge(tpId,
-                                            bound.getQualifiedName(),
-                                            EdgeKind.HAS_BOUND, file, tpLn[0])));
+                            // Upper class bound (e.g. T extends SomeClass)
+                            CtTypeReference<?> superCls = tp.getSuperclass();
+                            if (superCls != null && !superCls.getQualifiedName().equals("java.lang.Object")) {
+                                graph.addEdge(new GraphEdge(
+                                        tpId, EdgeKind.HAS_BOUND,
+                                        superCls.getQualifiedName(), file, tpLn[0]));
+                            }
+                            // Interface bounds (e.g. T extends Comparable<T> & Serializable)
+                            tp.getSuperInterfaces().forEach(bound ->
+                                    graph.addEdge(new GraphEdge(
+                                            tpId, EdgeKind.HAS_BOUND,
+                                            bound.getQualifiedName(), file, tpLn[0])));
                         }
                     });
                 });
@@ -545,7 +552,12 @@ public class AstGraphService {
                     if (annoId == null) return;
                     String file = relPath(root, sourceFile(ann));
 
-                    ann.getMethods().forEach(m -> {
+                    // getMethods() on CtAnnotationType returns Collection<CtMethod<?>>
+                    // but raw-type erasure causes javac to infer Object — explicit cast fixes it
+                    @SuppressWarnings("unchecked")
+                    Collection<CtMethod<?>> methods =
+                            (Collection<CtMethod<?>>) (Collection<?>) ann.getMethods();
+                    methods.forEach(m -> {
                         String attrId = annoId + "#" + m.getSimpleName();
                         int[] ln = lines(m);
                         graph.addNode(new GraphNode(attrId, NodeKind.ANNOTATION_ATTRIBUTE,

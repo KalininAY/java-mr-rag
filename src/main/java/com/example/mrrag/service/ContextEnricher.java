@@ -135,7 +135,7 @@ public class ContextEnricher {
                                 emitMethodDeclaration(target, repoDir, snippets);
                         case READS_FIELD, WRITES_FIELD ->
                                 emitFieldDeclaration(target, repoDir, snippets);
-                        case READS_VAR, WRITES_VAR ->
+                        case READS_LOCAL_VAR, WRITES_LOCAL_VAR ->
                                 emitVariableDeclaration(target, repoDir, snippets);
                         default -> {}
                     }
@@ -177,8 +177,10 @@ public class ContextEnricher {
                     default        -> EnrichmentSnippet.SnippetType.VARIABLE_USAGES;
                 };
 
+                // Filter out DECLARES edges (structural parent→child) —
+                // only real usage edges (INVOKES, READS_FIELD, etc.) are interesting
                 List<String> usageLines = usageEdges.stream()
-                        .filter(e -> e.kind() != AstGraphService.EdgeKind.CONTAINS)
+                        .filter(e -> e.kind() != AstGraphService.EdgeKind.DECLARES)
                         .limit(10)
                         .map(e -> e.filePath() + ":" + e.line())
                         .distinct()
