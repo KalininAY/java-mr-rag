@@ -3,7 +3,9 @@ package com.example.mrrag.view;
 import com.example.mrrag.service.AstGraphService.GraphNode;
 import com.example.mrrag.service.AstGraphService.NodeKind;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -102,7 +104,7 @@ public abstract class GraphNodeView {
      *
      * <p>Examples: {@code "Foo"} for a class, {@code "doWork"} for a method,
      * {@code "count"} for a field, {@code "T"} for a type parameter,
-     * {@code "λ"} for a lambda.
+     * {@code "\u03bb"} for a lambda.
      *
      * @return simple name; never {@code null}
      */
@@ -216,8 +218,118 @@ public abstract class GraphNodeView {
      */
     public void addAnnotatedBy(ClassNodeView annotation) { annotatedBy.add(annotation); }
 
+    // -------------------------------------------------------------------------
+    // toString: markdown dump used for LLM context and debugging
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns a markdown representation of this view suitable for embedding
+     * in an LLM prompt or reading in a debugger.
+     *
+     * <p>Format:
+     * <pre>
+     * # Content
+     * 1|&lt;line 1 of sourceSnippet&gt;
+     * 2|&lt;line 2 of sourceSnippet&gt;
+     * ...
+     *
+     * # Fields
+     * ## fieldName
+     * 0|&lt;content-or-id of element 0&gt;
+     * 1|&lt;content-or-id of element 1&gt;
+     * ...
+     * </pre>
+     *
+     * <p>Fields are collected from the concrete class and all its superclasses
+     * up to (but not including) {@link Object}. Each field value is rendered as:
+     * <ul>
+     *   <li>{@link Collection} — one numbered row per element;
+     *       each element is shown as its {@link #getContent()} when it is a
+     *       {@link GraphNodeView}, otherwise as {@code toString()}</li>
+     *   <li>Scalar {@link GraphNodeView} — a single {@code 0|content-or-id} row</li>
+     *   <li>Any other scalar — a single {@code 0|toString()} row</li>
+     *   <li>{@code null} — a single {@code 0|(null)} row</li>
+     * </ul>
+     *
+     * <p>The {@code node} field (the backing {@link GraphNode} record) is
+     * excluded to avoid redundancy with the {@code # Content} section.
+     */
     @Override
     public String toString() {
-        return getClass().getSimpleName() + "(" + getId() + ")";
+        StringBuilder sb = new StringBuilder();
+
+        // ── # Content ────────────────────────────────────────────────────────
+        sb.append("# Content\n");
+        String content = getContent();
+        if (content == null || content.isBlank()) {
+            sb.append("(empty)\n");
+        } else {
+            String[] lines = content.split("\n", -1);
+            for (int i = 0; i < lines.length; i++) {
+                sb.append(i + 1).append('|').append(lines[i]).append('\n');
+            }
+        }
+
+        // ── # Fields ─────────────────────────────────────────────────────────
+        sb.append("\n# Fields\n");
+        for (Field field : collectFields(getClass())) {
+            field.setAccessible(true);
+            Object value;
+            try {
+                value = field.get(this);
+            } catch (IllegalAccessException e) {
+                value = "<inaccessible>";
+            }
+
+            sb.append("## ").append(field.getName()).append('\n');
+
+            if (value == null) {
+                sb.append("0|(null)\n");
+            } else if (value instanceof Collection<?> col) {
+                int idx = 0;
+                for (Object element : col) {
+                    sb.append(idx++).append('|').append(renderElement(element)).append('\n');
+                }
+                // empty collection produces no rows (intentional — signals "none")
+            } else {
+                sb.append("0|").append(renderElement(value)).append('\n');
+            }
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * Collects all declared fields from {@code clazz} up to (but not including)
+     * {@link Object}, skipping the {@code node} backing field to avoid
+     * duplication with the {@code # Content} section.
+     */
+    private static List<Field> collectFields(Class<?> clazz) {
+        List<Field> result = new ArrayList<>();
+        for (Class<?> c = clazz; c != null && c != Object.class; c = c.getSuperclass()) {
+            for (Field f : c.getDeclaredFields()) {
+                if (!f.getName().equals("node")) {
+                    result.add(f);
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Renders a single field element to a string.
+     *
+     * <ul>
+     *   <li>{@link GraphNodeView} — uses {@link #getContent()} when non-blank,
+     *       otherwise falls back to {@link #getId()}</li>
+     *   <li>Anything else — {@code toString()}</li>
+     * </ul>
+     */
+    private static String renderElement(Object element) {
+        if (element instanceof GraphNodeView view) {
+            String c = view.getContent();
+            return (c != null && !c.isBlank()) ? c : view.getId();
+        }
+        return String.valueOf(element);
     }
 }
