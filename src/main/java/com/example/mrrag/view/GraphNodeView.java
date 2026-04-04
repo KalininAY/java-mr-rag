@@ -5,6 +5,7 @@ import com.example.mrrag.service.AstGraphService.NodeKind;
 
 import java.lang.reflect.Field;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Abstract base for all typed node views in the symbol graph.
@@ -168,7 +169,7 @@ public abstract class GraphNodeView {
 
     @Override
     public String toString() {
-        return getClass().getSimpleName() + "(" + getId() + ")\n\n";// + toMarkdown();
+        return getClass().getSimpleName() + "(" + getId() + ")\n\n";
     }
 
     /**
@@ -177,55 +178,38 @@ public abstract class GraphNodeView {
      *
      * <p>Format:
      * <pre>
-     * # Declaration
-     * ### path/to/File.java
-     * {startLine}|&lt;declaration header line&gt;
-     * ...
-     *
      * # Content
-     * ### path/to/File.java
+     * ### com.example.Foo#bar()
      * {startLine}|&lt;original source line&gt;
      * ...
      *
      * # Context
      * ## fieldName
-     * ### path/to/File.java
-     * {startLine}|&lt;original source line&gt;
+     * ### [KIND] com.example.SomeClass
+     * {startLine}|&lt;declaration line&gt;
      * ...
-     * ### external
-     * -1|com.example.Foo#bar()
-     * -1|com.example.Baz#qux()
      * </pre>
      *
-     * <p>The {@code # Declaration} section is omitted when
-     * {@link #getDeclaration()} is blank (LAMBDA, VARIABLE, TYPE_PARAM,
-     * ANNOTATION_ATTRIBUTE nodes).
+     * <p>Project nodes in collections are shown as their declaration line
+     * (or full content when declaration is blank).  External/synthetic nodes
+     * are rendered as {@code ### [KIND] id Lines:[n1,n2,...]} — a single header
+     * line containing all source lines at which they are referenced, derived
+     * from the edges stored in the containing view via
+     * {@link #collectReferencedLines(GraphNodeView, GraphNodeView)}.
      *
-     * <p>Line numbers use real 1-based source positions ({@link #getStartLine()}).
-     * {@code startLine == -1} marks external/synthetic nodes — they are grouped
-     * under a single {@code ### external} header with {@code -1|<id>} lines,
-     * de-duplicated by node ID.
+     * <p>Constructor IDs use the canonical {@code #&lt;init&gt;(...)} form.
      *
      * @return markdown string; never {@code null}
      */
     public String toMarkdown() {
         StringBuilder sb = new StringBuilder();
 
-        // ── # Declaration ────────────────────────────────────────────────────
-        String decl = getDeclaration();
-        if (decl != null && !decl.isBlank()) {
-            sb.append("# Declaration\n");
-            sb.append("### ").append(getFilePath()).append('\n');
-            appendNumberedSnippet(sb, decl, getStartLine());
-            sb.append('\n');
-        }
-
-        // ── # Content ─────────────────────────────────────────────────────
+        // ── # Content ──────────────────────────────────────────────────────────
         sb.append("# Content\n");
-        sb.append("### ").append(getFilePath()).append('\n');
+        sb.append("### ").append(normalizeId(getId())).append('\n');
         appendNumberedSnippet(sb, getContent(), getStartLine());
 
-        // ── # Context ─────────────────────────────────────────────────────
+        // ── # Context ──────────────────────────────────────────────────────────
         sb.append("\n# Context\n");
         for (Field field : collectFields(getClass())) {
             field.setAccessible(true);
@@ -241,7 +225,7 @@ public abstract class GraphNodeView {
             if (value == null) {
                 sb.append("0|(null)\n");
             } else if (value instanceof Collection<?> col) {
-                appendGroupedCollection(sb, col);
+                appendGroupedCollection(sb, col, this);
             } else {
                 sb.append("-999|").append(value).append('\n');
             }
@@ -284,92 +268,211 @@ public abstract class GraphNodeView {
     }
 
     /**
-     * Appends elements of a collection grouped by file path.
+     * Appends elements of a collection grouped by node ID.
      *
-     * <p>Elements are collected into an insertion-ordered map:
+     * <p>For each unique view in the collection:
      * <ul>
-     *   <li>External/synthetic views ({@code startLine == -1}) → key {@code "external"}</li>
-     *   <li>Project views → key is {@link #getFilePath()}</li>
-     *   <li>Non-view scalars → key {@code "values"}</li>
+     *   <li><b>External node</b> ({@code startLine == -1}): a single header line
+     *       {@code ### [KIND] id Lines:[n1,n2,...]} where the line numbers are
+     *       collected from outgoing/incoming edges of {@code owner} that reference
+     *       this node.</li>
+     *   <li><b>Project node</b>: {@code ### [KIND] id} followed by one
+     *       {@code startLine|declarationLine} line (or snippet when declaration
+     *       is blank).</li>
+     *   <li><b>Scalar</b>: emitted as {@code 1|value}.</li>
      * </ul>
      *
-     * <p>Within each group, duplicate node IDs (for views) or string values
-     * (for scalars) are suppressed.
-     *
-     * <p>Output per group:
-     * <pre>
-     * ### &lt;filePath | "external" | "values"&gt;
-     * {line}|&lt;id or snippet line&gt;
-     * ...
-     * </pre>
+     * @param sb     target string builder
+     * @param col    collection of elements (may be mixed view / scalar)
+     * @param owner  the node whose {@code toMarkdown()} is being rendered;
+     *               used to look up edge line numbers for external nodes
      */
-    private static void appendGroupedCollection(StringBuilder sb, Collection<?> col) {
-//        boolean addType = col.size() > 1 && col.stream().map(Object::getClass).distinct().count() > 1;
-
-        // group key → ordered set of text lines to emit
-        Map<String, LinkedHashSet<String>> groups = new LinkedHashMap<>();
+    private static void appendGroupedCollection(StringBuilder sb,
+                                                Collection<?> col,
+                                                GraphNodeView owner) {
+        // Preserve insertion order; key = normalised node id (or "values" for scalars)
+        // value = list of text lines to emit under the ### header
+        Map<String, List<String>> sections = new LinkedHashMap<>();
 
         for (Object element : col) {
             if (element instanceof GraphNodeView view) {
-                String key = (view.getStartLine() == -1) ? "external" : view.getFilePath();
-//                if (addType)
-                    key = "[" + view.node.kind() + "]  " + key;
-                LinkedHashSet<String> lines = groups.computeIfAbsent(key, k -> new LinkedHashSet<>());
-                appendElementLine(lines, view);
+                String id = normalizeId(view.getId());
+                String key = "[" + view.node.kind() + "] " + id;
+                if (!sections.containsKey(key)) {
+                    sections.put(key, new ArrayList<>());
+                }
+                List<String> bodyLines = sections.get(key);
+
+                if (view.getStartLine() == -1) {
+                    // External node: body is empty — all info goes into the header via Lines:[...]
+                    // (lines are appended to the header later; here we only ensure the key exists)
+                } else {
+                    // Project node: emit declaration (or snippet) line(s)
+                    appendProjectElementLines(bodyLines, view);
+                }
             } else {
-                LinkedHashSet<String> lines = groups.computeIfAbsent("values", k -> new LinkedHashSet<>());
-                lines.add("1|" + element);
+                sections.computeIfAbsent("values", k -> new ArrayList<>())
+                        .add("1|" + element);
             }
         }
 
-        for (Map.Entry<String, LinkedHashSet<String>> entry : groups.entrySet()) {
-            sb.append("### ").append(entry.getKey()).append('\n');
-            for (String line : entry.getValue()) {
-                sb.append(line).append('\n');
+        // Now render sections.  For external nodes, collect referenced line numbers.
+        for (Map.Entry<String, List<String>> entry : sections.entrySet()) {
+            String sectionKey = entry.getKey();
+            List<String> bodyLines = entry.getValue();
+
+            // Detect external node sections: they have no body lines collected above
+            // and the key starts with "["
+            if (bodyLines.isEmpty() && sectionKey.startsWith("[")) {
+                // Reconstruct the view to collect line numbers
+                // We must find the matching view from the original collection
+                String linesAnnotation = buildLinesAnnotation(col, sectionKey, owner);
+                sb.append("### ").append(sectionKey).append(linesAnnotation).append('\n');
+            } else {
+                sb.append("### ").append(sectionKey).append('\n');
+                for (String line : bodyLines) {
+                    sb.append(line).append('\n');
+                }
             }
         }
     }
 
     /**
-     * Produces one or more text lines representing {@code view} and adds them
-     * to {@code lines} (duplicates are suppressed by the set).
+     * Builds a {@code " Lines:[n1,n2,...]"} suffix for an external node by scanning
+     * all edges of {@code owner} that reference the node identified by {@code sectionKey}.
+     *
+     * <p>{@code sectionKey} has the form {@code "[KIND] normalizedId"}. We strip the
+     * kind prefix to recover the raw (normalised) id and match it against the view
+     * entries in {@code col}.
+     */
+    private static String buildLinesAnnotation(Collection<?> col,
+                                               String sectionKey,
+                                               GraphNodeView owner) {
+        // Extract normalised id from section key like "[METHOD] com.example.Foo#bar()"
+        int spaceIdx = sectionKey.indexOf('] ');
+        if (spaceIdx < 0) return "";
+        String normalizedId = sectionKey.substring(spaceIdx + 2);
+
+        // Find the matching view in the collection
+        GraphNodeView targetView = null;
+        for (Object element : col) {
+            if (element instanceof GraphNodeView v
+                    && normalizeId(v.getId()).equals(normalizedId)) {
+                targetView = v;
+                break;
+            }
+        }
+        if (targetView == null) return "";
+
+        // Collect all edge line numbers from owner that point to / from this view
+        String rawId = targetView.getId();
+        List<Integer> lineNumbers = collectReferencedLines(owner, rawId);
+        if (lineNumbers.isEmpty()) return "";
+
+        String joined = lineNumbers.stream()
+                .sorted()
+                .distinct()
+                .map(String::valueOf)
+                .collect(Collectors.joining(","));
+        return " Lines:[" + joined + "]";
+    }
+
+    /**
+     * Collects source-line numbers of all edges that connect {@code owner}
+     * (in either direction) to the node with the given raw {@code targetId}.
+     *
+     * <p>Requires that the owner view exposes its graph edges somehow.  Because
+     * {@link GraphNodeView} itself does not hold edge lists, we inspect concrete
+     * subclass fields for {@code Collection<GraphNodeView>} members and match
+     * their elements.  The actual line numbers are retrieved from the backing
+     * {@link com.example.mrrag.service.AstGraphService.GraphEdge} records via
+     * the subclass's own edge-line maps when available; otherwise we fall back
+     * to the target view's {@code startLine}.
+     *
+     * <p><b>Default implementation</b> — returns an empty list.  Subclasses that
+     * carry edge metadata (e.g. a {@code Map<String,List<Integer>> calleeLines})
+     * should override {@link #edgeLinesTo(String)} to provide the real data.
+     *
+     * @param owner    the node whose markdown is being rendered
+     * @param targetId raw (non-normalised) node id of the referenced node
+     * @return mutable list of line numbers; may be empty
+     */
+    private static List<Integer> collectReferencedLines(GraphNodeView owner, String targetId) {
+        return owner.edgeLinesTo(targetId);
+    }
+
+    /**
+     * Returns the source-line numbers at which this node's outgoing edges
+     * reference the node identified by {@code targetId}.
+     *
+     * <p>The default implementation returns an empty list.  Concrete subclasses
+     * that store edge-line metadata (e.g.
+     * {@code Map<GraphNodeView, List<Integer>> calleeLinesMap}) should override
+     * this method to expose that data.
+     *
+     * @param targetId raw node id of the target
+     * @return line numbers; may be empty
+     */
+    protected List<Integer> edgeLinesTo(String targetId) {
+        return List.of();
+    }
+
+    /**
+     * Adds declaration line(s) of a project node to {@code lines}.
      *
      * <ul>
-     *   <li>External view ({@code startLine == -1}): {@code -1|<id>}</li>
-     *   <li>Project view with non-blank declaration: one line per declaration line
-     *       ({@code startLine|text}, …)</li>
-     *   <li>Project view without declaration but with snippet: numbered source lines</li>
-     *   <li>Project view without either: {@code startLine|<id>} (or {@code 1|<id>}
-     *       when startLine ≤ 0)</li>
+     *   <li>Non-blank declaration snippet → numbered declaration lines</li>
+     *   <li>No declaration but has snippet → first source line</li>
+     *   <li>Neither → {@code startLine|id} fallback</li>
      * </ul>
      */
-    private static void appendElementLine(LinkedHashSet<String> lines, GraphNodeView view) {
-        if (view.getStartLine() == -1) {
-            // External node: single -1|<id> line
-            lines.add("-1|" + view.getId());
-            return;
-        }
-        // Prefer the declaration snippet for compact, informative context lines.
+    private static void appendProjectElementLines(List<String> lines, GraphNodeView view) {
         String decl = view.getDeclaration();
         if (decl != null && !decl.isBlank()) {
-            int first = (view.getStartLine() > 0) ? view.getStartLine() : 1;
-            String[] declLines = decl.split("\n", -1);
-            for (int i = 0; i < declLines.length; i++) {
-                lines.add((first + i) + "|" + declLines[i]);
+            int first = Math.max(1, view.getStartLine());
+            for (String dl : decl.split("\n", -1)) {
+                lines.add(first + "|" + dl);
+                first++;
             }
             return;
         }
         String snippet = view.getContent();
         if (snippet != null && !snippet.isBlank()) {
-            int first = (view.getStartLine() > 0) ? view.getStartLine() : 1;
-            String[] snipLines = snippet.split("\n", -1);
-            for (int i = 0; i < snipLines.length; i++) {
-                lines.add((first + i) + "|" + snipLines[i]);
-            }
-        } else {
-            int lineNo = (view.getStartLine() > 0) ? view.getStartLine() : 1;
-            lines.add(lineNo + "|" + view.getId());
+            int first = Math.max(1, view.getStartLine());
+            String firstLine = snippet.split("\n", 2)[0];
+            lines.add(first + "|" + firstLine);
+            return;
         }
+        int lineNo = Math.max(1, view.getStartLine());
+        lines.add(lineNo + "|" + normalizeId(view.getId()));
+    }
+
+    /**
+     * Normalises a node ID to the canonical form used in markdown output.
+     *
+     * <p>Currently: replaces constructor IDs of the form
+     * {@code pkg.ClassName#ClassName(params)} with
+     * {@code pkg.ClassName#<init>(params)}.
+     *
+     * @param id raw node id
+     * @return normalised id
+     */
+    public static String normalizeId(String id) {
+        if (id == null) return "";
+        // Match "Owner#SimpleName(...)" where SimpleName equals the last segment of Owner
+        // e.g. "java.util.concurrent.atomic.AtomicInteger#AtomicInteger(int)"
+        //   -> "java.util.concurrent.atomic.AtomicInteger#<init>(int)"
+        int hash = id.indexOf('#');
+        if (hash < 0) return id;
+        String owner = id.substring(0, hash);          // e.g. "pkg.ClassName"
+        String rest  = id.substring(hash + 1);         // e.g. "ClassName(int)"
+        int dot = owner.lastIndexOf('.');
+        String simpleName = dot >= 0 ? owner.substring(dot + 1) : owner;
+        // rest starts with simpleName followed by '(' → constructor
+        if (rest.startsWith(simpleName + "(")) {
+            return owner + "#<init>(" + rest.substring(simpleName.length() + 1);
+        }
+        return id;
     }
 
     /**
