@@ -1,12 +1,13 @@
 package com.example.mrrag.view;
 
-import com.example.mrrag.service.AstGraphService.GraphNode;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.GraphNode;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#CONSTRUCTOR} node.
+ * View for a {@link NodeKind#CONSTRUCTOR} node.
  *
  * <p>Mirrors {@link MethodNodeView} in structure, but without
  * overrides / return-type concepts and without method-level type parameters

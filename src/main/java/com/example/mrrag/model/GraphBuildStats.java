@@ -1,7 +1,7 @@
 package com.example.mrrag.model;
 
-import com.example.mrrag.service.AstGraphService.NodeKind;
-import com.example.mrrag.service.AstGraphService.EdgeKind;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.EdgeKind;
 
 import java.util.Map;
 

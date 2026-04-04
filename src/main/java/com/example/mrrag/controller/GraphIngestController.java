@@ -1,24 +1,20 @@
 package com.example.mrrag.controller;
 
 import com.example.mrrag.model.GraphBuildStats;
+import com.example.mrrag.service.AstGraphProvider;
 import com.example.mrrag.service.AstGraphService;
-import com.example.mrrag.service.AstGraphService.EdgeKind;
-import com.example.mrrag.service.AstGraphService.NodeKind;
-import com.example.mrrag.service.AstGraphService.ProjectGraph;
+import com.example.mrrag.model.graph.EdgeKind;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.ProjectGraph;
+import com.example.mrrag.service.SourceProvider;
 import lombok.extern.slf4j.Slf4j;
-import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.lib.TextProgressMonitor;
-import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
-import org.springframework.util.FileSystemUtils;
 import org.springframework.web.bind.annotation.*;
 
-import java.io.*;
-import java.nio.file.*;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -50,17 +46,16 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/graph")
 public class GraphIngestController {
 
-    private final AstGraphService graphService;
-
-    @Value("${app.workspace.dir:/tmp/mr-rag-workspace}")
-    private String workspaceDir;
+    private final AstGraphProvider graphService;
+    private final SourceProvider sourceProvider;
 
     /** Fallback token from .env / application.yml (app.gitlab.token). */
     @Value("${app.gitlab.token:}")
     private String defaultGitlabToken;
 
-    public GraphIngestController(AstGraphService graphService) {
+    public GraphIngestController(AstGraphProvider graphService, SourceProvider sourceProvider) {
         this.graphService = graphService;
+        this.sourceProvider = sourceProvider;
     }
 
     // -----------------------------------------------------------------------
@@ -91,51 +86,22 @@ public class GraphIngestController {
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public GraphBuildStats ingest(@RequestBody IngestRequest request) throws Exception {
+    public GraphBuildStats ingest(@RequestBody IngestRequest request) {
 
         long wallStart = System.currentTimeMillis();
 
-        String repoUrl = request.repoUrl();
-        if (repoUrl == null || repoUrl.isBlank()) {
-            throw new IllegalArgumentException("repoUrl must not be blank");
-        }
-
-        boolean forceReclone = Boolean.TRUE.equals(request.force());
-
         // ── 1. Resolve clone directory ────────────────────────────────────
-        String branch  = (request.branch() != null && !request.branch().isBlank())
-                         ? request.branch() : "default";
-        Path cloneDir  = resolveCloneDir(repoUrl, branch);
-        boolean exists = Files.isDirectory(cloneDir);
+        String repoUrl = request.repoUrl();
+        String branch = (request.branch != null && !request.branch.isBlank()) ? request.branch : "default";
+        String gitToken = resolveToken(request.gitToken);
+        boolean forceReClone = Boolean.TRUE.equals(request.force());
 
-        if (forceReclone && exists) {
-            log.info("force=true — deleting existing clone dir: {}", cloneDir);
-            FileSystemUtils.deleteRecursively(cloneDir);
-            graphService.invalidate(cloneDir);
-            exists = false;
-        }
+        List<String> sources = sourceProvider.sourceProvide(repoUrl, branch, gitToken, forceReClone);
 
-        // ── 2. Clone via JGit (skip if already present) ───────────────────
-        long cloneMs = 0;
-        if (!exists) {
-            Files.createDirectories(cloneDir);
-            long cloneStart = System.currentTimeMillis();
-            try {
-                cloneWithJGit(repoUrl, request.branch(), cloneDir,
-                              resolveToken(request.gitToken()));
-            } catch (Exception e) {
-                FileSystemUtils.deleteRecursively(cloneDir);
-                throw e;
-            }
-            cloneMs = System.currentTimeMillis() - cloneStart;
-            log.info("Cloned {} (branch={}) in {} ms → {}", repoUrl, branch, cloneMs, cloneDir);
-        } else {
-            log.info("Reusing existing clone: {}", cloneDir);
-        }
 
         // ── 3. Build (or reuse cached) graph ─────────────────────────────
         long buildStart = System.currentTimeMillis();
-        ProjectGraph graph = graphService.buildGraph(cloneDir);
+        ProjectGraph graph = graphService.buildGraph(repoUrl + "_" + branch, sources);
         long buildMs  = System.currentTimeMillis() - buildStart;
         long totalMs  = System.currentTimeMillis() - wallStart;
 
@@ -159,8 +125,8 @@ public class GraphIngestController {
                 .mapToLong(java.util.List::size).sum();
 
         GraphBuildStats graphBuildStats = new GraphBuildStats(
-                repoUrl, cloneDir.toString(),
-                cloneMs, buildMs, totalMs,
+                repoUrl, "cloneDir.toString()",
+                10, buildMs, totalMs,
                 graph.nodes.size(), totalEdges,
                 nodesByKind, edgesByKind,
                 graph.byFile.size()
@@ -168,55 +134,6 @@ public class GraphIngestController {
         return graphBuildStats;
     }
 
-    // -----------------------------------------------------------------------
-    // JGit clone
-    // -----------------------------------------------------------------------
-
-    /**
-     * Clones a repository using JGit in-process — no external {@code git}
-     * binary required, no {@code /dev/tty} access needed.
-     *
-     * <p>Authentication: GitLab accepts {@code oauth2} as the username with
-     * a personal access token (PAT) as the password for HTTPS clones.
-     * GitHub accepts {@code oauth2} or any non-empty username with the PAT.
-     */
-    private void cloneWithJGit(String repoUrl, String branch, Path targetDir, String token)
-            throws GitAPIException, IOException {
-
-        var cmd = Git.cloneRepository()
-                .setURI(repoUrl)
-                .setDirectory(targetDir.toFile())
-                .setDepth(1)
-
-                .setCloneAllBranches(false);
-
-        if (branch != null && !branch.isBlank()) {
-            // JGit expects full ref name for branch
-            cmd.setBranch("refs/heads/" + branch);
-        }
-
-        if (token != null && !token.isBlank()) {
-            // GitLab: username="oauth2", password=<PAT>
-            // GitLab also accepts username=<anything>, password=<PAT> for HTTP Basic
-            cmd.setCredentialsProvider(
-                    new UsernamePasswordCredentialsProvider("oauth2", token));
-        }
-
-        // Forward JGit progress to application log
-        cmd.setProgressMonitor(new Slf4jProgressMonitor());
-
-        log.info("JGit clone: {} branch={} → {}", repoUrl,
-                 branch != null ? branch : "<default>", targetDir);
-
-        try (Git git = cmd.call()) {
-            log.debug("JGit clone complete, HEAD={}",
-                      git.getRepository().resolve("HEAD"));
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------------
 
     /** Returns request token if present, otherwise falls back to app.gitlab.token. */
     private String resolveToken(String requestToken) {
@@ -225,44 +142,4 @@ public class GraphIngestController {
         return null;
     }
 
-    private Path resolveCloneDir(String repoUrl, String branch) {
-        String repoSlug = repoUrl
-                .replaceAll(".*/", "")
-                .replaceAll("\\.git$", "")
-                .replaceAll("[^a-zA-Z0-9_.-]", "_");
-        String branchSlug = branch.replaceAll("[^a-zA-Z0-9_.-]", "_");
-        return Path.of(workspaceDir, "repos", repoSlug, branchSlug);
-    }
-
-    // -----------------------------------------------------------------------
-    // JGit progress → SLF4J bridge
-    // -----------------------------------------------------------------------
-
-    /**
-     * Bridges JGit {@link org.eclipse.jgit.lib.ProgressMonitor} to SLF4J
-     * so clone progress appears in the application log.
-     */
-    private static final class Slf4jProgressMonitor
-            extends org.eclipse.jgit.lib.BatchingProgressMonitor {
-
-        @Override
-        protected void onUpdate(String taskName, int workCurr, Duration d) {
-            log.debug("[jgit] {} {}", taskName, workCurr);
-        }
-
-        @Override
-        protected void onEndTask(String taskName, int workCurr, Duration d) {
-            log.info("[jgit] {} done ({})", taskName, workCurr);
-        }
-
-        @Override
-        protected void onUpdate(String taskName, int workCurr, int workTotal, int percentDone, Duration d) {
-            log.debug("[jgit] {} {}/{} ({}%)", taskName, workCurr, workTotal, percentDone);
-        }
-
-        @Override
-        protected void onEndTask(String taskName, int workCurr, int workTotal, int percentDone, Duration d) {
-            log.info("[jgit] {} done {}/{}", taskName, workCurr, workTotal);
-        }
-    }
 }

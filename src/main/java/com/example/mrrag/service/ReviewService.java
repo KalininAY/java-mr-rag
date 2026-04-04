@@ -98,7 +98,7 @@ public class ReviewService {
             );
 
         } finally {
-            javaIndexService.invalidate(sourceRepoDir);
+            javaIndexService.invalidate(sourceRepoDir.getFileName().toString());
             javaIndexService.invalidate(targetRepoDir);
             gitLabService.cleanup(sourceRepoDir);
             gitLabService.cleanup(targetRepoDir);

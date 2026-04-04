@@ -1,12 +1,13 @@
 package com.example.mrrag.view;
 
-import com.example.mrrag.service.AstGraphService.GraphNode;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.GraphNode;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#INTERFACE} node.
+ * View for a {@link NodeKind#INTERFACE} node.
  *
  * <p>Represents a Java {@code interface} declaration.
  * Differs from {@link ClassNodeView} in that interfaces:

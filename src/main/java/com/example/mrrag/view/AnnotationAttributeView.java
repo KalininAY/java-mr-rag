@@ -1,9 +1,10 @@
 package com.example.mrrag.view;
 
-import com.example.mrrag.service.AstGraphService.GraphNode;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.GraphNode;
 
 /**
- * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#ANNOTATION_ATTRIBUTE}
+ * View for a {@link NodeKind#ANNOTATION_ATTRIBUTE}
  * node.
  *
  * <p>Represents a single element declared inside an {@code @interface} body.

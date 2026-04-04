@@ -1,7 +1,8 @@
 package com.example.mrrag.view;
 
-import com.example.mrrag.service.AstGraphService.GraphNode;
-import com.example.mrrag.service.AstGraphService.NodeKind;
+import com.example.mrrag.model.graph.GraphNode;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.ProjectGraph;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
@@ -72,7 +73,7 @@ public abstract class GraphNodeView {
 
     /**
      * Returns the unique node identifier as stored in
-     * {@link com.example.mrrag.service.AstGraphService.ProjectGraph}.
+     * {@link ProjectGraph}.
      *
      * @return unique node id; never {@code null}
      */

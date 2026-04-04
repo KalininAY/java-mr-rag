@@ -1,5 +1,9 @@
 package com.example.mrrag.service;
 
+import com.example.mrrag.model.graph.EdgeKind;
+import com.example.mrrag.model.graph.GraphEdge;
+import com.example.mrrag.model.graph.GraphNode;
+import com.example.mrrag.model.graph.ProjectGraph;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -13,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Backward-compatible index API used by {@link ContextEnricher}.
  * <p>
  * Delegates AST graph construction to {@link AstGraphService} and projects the
- * rich {@link AstGraphService.ProjectGraph} into the flat maps that the rest of
+ * rich {@link ProjectGraph} into the flat maps that the rest of
  * the application expects.
  */
 @Slf4j
@@ -30,7 +34,7 @@ public class JavaIndexService {
 
     public ProjectIndex buildIndex(Path projectRoot) throws IOException {
         return indexCache.computeIfAbsent(projectRoot, root -> {
-            AstGraphService.ProjectGraph g = graphService.buildGraph(root);
+            ProjectGraph g = graphService.buildGraph(root);
             return project(g, root);
         });
     }
@@ -43,7 +47,7 @@ public class JavaIndexService {
     /**
      * Returns the raw Spoon graph for callers that need more than the flat index.
      */
-    public AstGraphService.ProjectGraph getGraph(Path projectRoot) {
+    public ProjectGraph getGraph(Path projectRoot) {
         return graphService.buildGraph(projectRoot);
     }
 
@@ -51,10 +55,10 @@ public class JavaIndexService {
     // Projection: ProjectGraph → ProjectIndex
     // ------------------------------------------------------------------
 
-    private ProjectIndex project(AstGraphService.ProjectGraph g, Path root) {
+    private ProjectIndex project(ProjectGraph g, Path root) {
         ProjectIndex idx = new ProjectIndex();
 
-        for (AstGraphService.GraphNode node : g.nodes.values()) {
+        for (GraphNode node : g.nodes.values()) {
             switch (node.kind()) {
                 case METHOD -> {
                     // Reconstruct a MethodInfo from graph node + incoming CONTAINS edge
@@ -94,9 +98,9 @@ public class JavaIndexService {
         }
 
         // Rebuild call sites from INVOKES edges
-        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
-            for (AstGraphService.GraphEdge e : edges) {
-                if (e.kind() == AstGraphService.EdgeKind.INVOKES) {
+        for (List<GraphEdge> edges : g.edgesFrom.values()) {
+            for (GraphEdge e : edges) {
+                if (e.kind() == EdgeKind.INVOKES) {
                     CallSite cs = new CallSite(
                             simpleNameFromId(e.callee()), e.filePath(), e.line(),
                             e.callee(), List.of());
@@ -107,10 +111,10 @@ public class JavaIndexService {
         }
 
         // Rebuild field accesses from READS_FIELD / WRITES_FIELD edges
-        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
-            for (AstGraphService.GraphEdge e : edges) {
-                if (e.kind() == AstGraphService.EdgeKind.READS_FIELD
-                        || e.kind() == AstGraphService.EdgeKind.WRITES_FIELD) {
+        for (List<GraphEdge> edges : g.edgesFrom.values()) {
+            for (GraphEdge e : edges) {
+                if (e.kind() == EdgeKind.READS_FIELD
+                        || e.kind() == EdgeKind.WRITES_FIELD) {
                     FieldAccess fa = new FieldAccess(
                             simpleNameFromFieldId(e.callee()), e.filePath(), e.line(), e.callee());
                     idx.fieldAccesses
@@ -122,10 +126,10 @@ public class JavaIndexService {
         }
 
         // Rebuild name usages from READS_VAR / WRITES_VAR edges
-        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
-            for (AstGraphService.GraphEdge e : edges) {
-                if (e.kind() == AstGraphService.EdgeKind.READS_LOCAL_VAR
-                        || e.kind() == AstGraphService.EdgeKind.WRITES_LOCAL_VAR) {
+        for (List<GraphEdge> edges : g.edgesFrom.values()) {
+            for (GraphEdge e : edges) {
+                if (e.kind() == EdgeKind.READS_LOCAL_VAR
+                        || e.kind() == EdgeKind.WRITES_LOCAL_VAR) {
                     String name = simpleNameFromVarId(e.callee());
                     NameUsage nu = new NameUsage(name, e.filePath(), e.line());
                     idx.nameUsages

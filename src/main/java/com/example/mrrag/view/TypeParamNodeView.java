@@ -1,12 +1,13 @@
 package com.example.mrrag.view;
 
-import com.example.mrrag.service.AstGraphService.GraphNode;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.GraphNode;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#TYPE_PARAM} node.
+ * View for a {@link NodeKind#TYPE_PARAM} node.
  *
  * <p>Represents a generic type parameter declaration.  Examples:
  * <ul>

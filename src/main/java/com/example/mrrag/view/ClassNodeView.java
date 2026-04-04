@@ -1,12 +1,13 @@
 package com.example.mrrag.view;
 
-import com.example.mrrag.service.AstGraphService.GraphNode;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.GraphNode;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#CLASS} node.
+ * View for a {@link NodeKind#CLASS} node.
  *
  * <p>Covers Java classes, interfaces, enums, record types, and annotation types
  * ({@code @interface}).  All list fields are pre-populated by

@@ -1,6 +1,7 @@
 package com.example.mrrag.service;
 
 import com.example.mrrag.config.EdgeKindConfig;
+import com.example.mrrag.model.graph.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import spoon.Launcher;
@@ -30,243 +31,33 @@ import java.util.stream.Stream;
  */
 @Slf4j
 @Service
-public class AstGraphService {
-
-    // ------------------------------------------------------------------
-    // Public model
-    // ------------------------------------------------------------------
-
-    /** Kinds of graph nodes. */
-    public enum NodeKind {
-        /** A concrete class, enum, or record type. */
-        CLASS,
-        /** A Java {@code interface} declaration. */
-        INTERFACE,
-        /** A constructor ({@code <init>}). */
-        CONSTRUCTOR,
-        /** An instance or static method. */
-        METHOD,
-        /** A class field. */
-        FIELD,
-        /** A local variable or method parameter ({@code CtVariable} that is not a field). */
-        VARIABLE,
-        /** A lambda expression. */
-        LAMBDA,
-        /** An annotation type (target of {@code ANNOTATED_WITH} edges). */
-        ANNOTATION,
-        /**
-         * A generic type parameter declaration.
-         * Examples: {@code T} in {@code class Foo<T>},
-         * {@code K extends Comparable<K>} in a method signature.
-         */
-        TYPE_PARAM,
-        /**
-         * An element declared inside an {@code @interface} body.
-         * Example: {@code String value() default "";}
-         */
-        ANNOTATION_ATTRIBUTE
-    }
-
-    /**
-     * Kinds of directed graph edges.
-     * Each value can be toggled via {@code graph.edge.<name>.enabled=true/false}.
-     */
-    public enum EdgeKind {
-
-        // ── Structural (declaration) ────────────────────────────────────────────────
-
-        /**
-         * Owner declares a child member.
-         * Examples: CLASS→METHOD, CLASS→FIELD, CLASS→CONSTRUCTOR, METHOD→LAMBDA.
-         */
-        DECLARES,
-
-        // ── Type hierarchy ─────────────────────────────────────────────────────
-
-        /** {@code class A extends B} → A –EXTENDS→ B */
-        EXTENDS,
-
-        /** {@code class A implements I} → A –IMPLEMENTS→ I */
-        IMPLEMENTS,
-
-        // ── Invocations ───────────────────────────────────────────────────────
-
-        /** {@code foo.bar()} → caller –INVOKES→ callee */
-        INVOKES,
-
-        /** {@code new Foo(arg)} → caller –INSTANTIATES→ Foo */
-        INSTANTIATES,
-
-        /** {@code new Runnable() { ... }} → caller –INSTANTIATES_ANONYMOUS→ anon-type */
-        INSTANTIATES_ANONYMOUS,
-
-        /** {@code Foo::bar}, {@code Foo::new} → caller –REFERENCES_METHOD→ target */
-        REFERENCES_METHOD,
-
-        // ── Field access ────────────────────────────────────────────────────
-
-        /** {@code this.value}, {@code obj.field} */
-        READS_FIELD,
-
-        /** {@code this.value = x} */
-        WRITES_FIELD,
-
-        // ── Local variable access ──────────────────────────────────────────────────
-
-        /** Caller reads a local variable or method parameter. */
-        READS_LOCAL_VAR,
-
-        /** Caller writes a local variable or method parameter. */
-        WRITES_LOCAL_VAR,
-
-        // ── Exceptions ────────────────────────────────────────────────────────
-
-        /** Method/constructor contains {@code throw new FooException(...)}. */
-        THROWS,
-
-        // ── Annotations ──────────────────────────────────────────────────────
-
-        /** CLASS/INTERFACE/METHOD/FIELD → ANNOTATION type. */
-        ANNOTATED_WITH,
-
-        // ── Type references ─────────────────────────────────────────────────────
-
-        /** {@code Foo.class}, {@code instanceof Foo}, cast to {@code Foo}. */
-        REFERENCES_TYPE,
-
-        // ── Inheritance ──────────────────────────────────────────────────────
-
-        /** child –OVERRIDES→ parent method */
-        OVERRIDES,
-
-        // ── Generics ──────────────────────────────────────────────────────
-
-        /**
-         * A type or executable has a generic type parameter.
-         * {@code class Foo<T>} → Foo –HAS_TYPE_PARAM→ T
-         * {@code <R> R map(...)} → map –HAS_TYPE_PARAM→ R
-         */
-        HAS_TYPE_PARAM,
-
-        /**
-         * A type parameter has an upper bound.
-         * {@code T extends Comparable<T>} → T –HAS_BOUND→ Comparable
-         */
-        HAS_BOUND,
-
-        // ── Annotation attributes ───────────────────────────────────────────────────────
-
-        /**
-         * An annotation type declares an attribute element.
-         * {@code @interface Foo { String value(); }} → Foo –ANNOTATION_ATTR→ value
-         */
-        ANNOTATION_ATTR
-    }
-
-    /**
-     * A node in the symbol graph.
-     *
-     * @param id            unique node identifier
-     * @param kind          {@link NodeKind} of this node
-     * @param simpleName    unqualified name
-     * @param filePath      source-relative file path ({@code "unknown"} for external nodes)
-     * @param startLine     first source line (1-based); {@code -1} for external/synthetic nodes
-     *                      that have no source file in this project
-     * @param endLine       last source line (1-based); {@code -1} for external/synthetic nodes
-     * @param sourceSnippet verbatim original source lines for project nodes;
-     *                      Spoon pretty-printed text for external/synthetic nodes
-     *                      (no source file available); empty string when unavailable
-     */
-    public record GraphNode(
-            String id,
-            NodeKind kind,
-            String simpleName,
-            String filePath,
-            int startLine,
-            int endLine,
-            String sourceSnippet
-    ) {}
-
-    /** A directed, typed edge between two graph nodes. */
-    public record GraphEdge(
-            String caller,
-            EdgeKind kind,
-            String callee,
-            String filePath,
-            int line
-    ) {}
-
-    /** The full symbol graph of a project. */
-    public static class ProjectGraph {
-        public final Map<String, GraphNode>       nodes        = new LinkedHashMap<>();
-        public final Map<String, List<GraphEdge>> edgesFrom    = new LinkedHashMap<>();
-        public final Map<String, List<GraphEdge>> edgesTo      = new LinkedHashMap<>();
-        public final Map<String, List<GraphNode>> bySimpleName = new LinkedHashMap<>();
-        public final Map<String, List<GraphNode>> byLine       = new LinkedHashMap<>();
-        public final Map<String, List<GraphNode>> byFile       = new LinkedHashMap<>();
-
-        /**
-         * All file paths stored in the graph (relative to the project root that
-         * was passed to {@link AstGraphService#buildGraph}).
-         * Used by {@link AstGraphService#normalizeFilePath} for suffix matching.
-         */
-        public Set<String> allFilePaths() {
-            return byFile.keySet();
-        }
-
-        void addNode(GraphNode n) {
-            nodes.put(n.id(), n);
-            bySimpleName.computeIfAbsent(n.simpleName(), k -> new ArrayList<>()).add(n);
-            byLine.computeIfAbsent(n.filePath() + "#" + n.startLine(), k -> new ArrayList<>()).add(n);
-            byFile.computeIfAbsent(n.filePath(), k -> new ArrayList<>()).add(n);
-        }
-
-        void addEdge(GraphEdge e) {
-            edgesFrom.computeIfAbsent(e.caller(), k -> new ArrayList<>()).add(e);
-            edgesTo.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(e);
-        }
-
-        public List<GraphEdge> outgoing(String nodeId) {
-            return edgesFrom.getOrDefault(nodeId, List.of());
-        }
-
-        public List<GraphEdge> incoming(String nodeId) {
-            return edgesTo.getOrDefault(nodeId, List.of());
-        }
-
-        public List<GraphEdge> outgoing(String nodeId, EdgeKind kind) {
-            return outgoing(nodeId).stream().filter(e -> e.kind() == kind).toList();
-        }
-
-        public List<GraphEdge> incoming(String nodeId, EdgeKind kind) {
-            return incoming(nodeId).stream().filter(e -> e.kind() == kind).toList();
-        }
-
-        /** All nodes whose line-range covers the given line in a file. */
-        public List<GraphNode> nodesAtLine(String relPath, int line) {
-            return byFile.getOrDefault(relPath, List.of()).stream()
-                    .filter(n -> n.startLine() <= line && n.endLine() >= line)
-                    .toList();
-        }
-    }
+public class AstGraphService implements AstGraphProvider{
 
     // ------------------------------------------------------------------
     // Dependencies & cache
     // ------------------------------------------------------------------
 
     private final EdgeKindConfig edgeConfig;
-    private final Map<Path, ProjectGraph> cache = new ConcurrentHashMap<>();
+    private final Map<String, ProjectGraph> cache = new ConcurrentHashMap<>();
 
     public AstGraphService(EdgeKindConfig edgeConfig) {
         this.edgeConfig = edgeConfig;
     }
 
+
+    @Override
+    public ProjectGraph buildGraph(String projectId, List<String> source) {
+        return cache.computeIfAbsent(projectId, v -> doBuildGraph(projectId, source));
+    }
+
+
     public ProjectGraph buildGraph(Path projectRoot) {
         return cache.computeIfAbsent(projectRoot, this::doBuildGraph);
     }
 
-    public void invalidate(Path projectRoot) {
-        cache.remove(projectRoot);
+    @Override
+    public void invalidate(String projectId) {
+        cache.remove(projectId);
     }
 
     // ------------------------------------------------------------------
@@ -311,54 +102,16 @@ public class AstGraphService {
     // Graph construction
     // ------------------------------------------------------------------
 
-    /** Directory segments that should never be fed to Spoon as source roots. */
-    private static final Set<String> EXCLUDED_DIRS = Set.of(
-            "build", "target", "out", ".gradle", ".git",
-            "generated", "generated-sources", "generated-test-sources"
-    );
+    private ProjectGraph doBuildGraph(Path projectRoot) {
 
-    /**
-     * Collects only real source directories (src/main/java, src/test/java,
-     * or the project root itself), explicitly skipping build/target output
-     * directories that contain duplicate .java files and trigger
-     * "type already defined" errors in JDT.
-     */
-    private List<String> collectSourceRoots(Path projectRoot) throws IOException {
-        List<Path> candidates = List.of(
-                projectRoot.resolve("src/main/java"),
-                projectRoot.resolve("src/test/java")
-        );
-        List<String> roots = candidates.stream()
-                .filter(Files::isDirectory)
-                .map(Path::toString)
-                .toList();
-        if (!roots.isEmpty()) {
-            log.debug("Using standard source roots: {}", roots);
-            return roots;
-        }
-
-        List<String> fallback = new ArrayList<>();
-        try (Stream<Path> top = Files.list(projectRoot)) {
-            top.filter(Files::isDirectory)
-               .filter(p -> !EXCLUDED_DIRS.contains(p.getFileName().toString()))
-               .filter(p -> !p.getFileName().toString().startsWith("."))
-               .forEach(p -> fallback.add(p.toString()));
-        }
-        if (!fallback.isEmpty()) {
-            log.debug("Fallback source roots: {}", fallback);
-            return fallback;
-        }
-
-        return List.of(projectRoot.toString());
     }
 
-    @SuppressWarnings("unchecked")
-    private ProjectGraph doBuildGraph(Path projectRoot) {
-        log.info("Building Spoon AST graph for {}", projectRoot);
-        try {
-            List<String> sourceRoots = collectSourceRoots(projectRoot);
-            log.info("Source roots for Spoon: {}", sourceRoots);
 
+    @SuppressWarnings("unchecked")
+    private ProjectGraph doBuildGraph(String projectId, List<String> sourceRoots) {
+        log.info("Building Spoon AST graph for {}", projectId);
+        try {
+            log.info("Source roots for Spoon: {}", sourceRoots);
             Launcher launcher = new Launcher();
             sourceRoots.forEach(launcher::addInputResource);
             launcher.getEnvironment().setNoClasspath(true);
@@ -373,7 +126,7 @@ public class AstGraphService {
                 model = launcher.buildModel();
             } catch (ModelBuildingException mbe) {
                 log.warn("Spoon ModelBuildingException for {} — using partial model. Cause: {}",
-                        projectRoot, mbe.getMessage());
+                        projectId, mbe.getMessage());
                 model = launcher.getModel();
                 if (model == null) {
                     log.error("Spoon returned null model for {}, returning empty graph", projectRoot);
@@ -918,4 +671,5 @@ public class AstGraphService {
             return -1;
         }
     }
+
 }

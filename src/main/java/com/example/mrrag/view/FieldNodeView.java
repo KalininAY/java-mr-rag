@@ -1,12 +1,13 @@
 package com.example.mrrag.view;
 
-import com.example.mrrag.service.AstGraphService.GraphNode;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.GraphNode;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#FIELD} node.
+ * View for a {@link NodeKind#FIELD} node.
  *
  * <p>Represents an instance or static field declared in a class.
  * All list fields are pre-populated by

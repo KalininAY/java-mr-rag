@@ -1,12 +1,13 @@
 package com.example.mrrag.view;
 
-import com.example.mrrag.service.AstGraphService.GraphNode;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.GraphNode;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#METHOD} node.
+ * View for a {@link NodeKind#METHOD} node.
  *
  * <p>Provides pre-populated lists for every edge type a method participates in,
  * so callers can traverse the full call-graph without touching raw edge maps:

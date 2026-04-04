@@ -1,12 +1,13 @@
 package com.example.mrrag.view;
 
-import com.example.mrrag.service.AstGraphService.GraphNode;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.GraphNode;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#LAMBDA} node.
+ * View for a {@link NodeKind#LAMBDA} node.
  *
  * <p>A lambda is always declared inside a method or constructor body.  Its
  * unique id is {@code lambda@relPath:line}, e.g.

@@ -9,9 +9,11 @@ import org.gitlab4j.api.GitLabApi;
 import org.gitlab4j.api.GitLabApiException;
 import org.gitlab4j.api.models.Diff;
 import org.gitlab4j.api.models.MergeRequest;
+import org.gitlab4j.api.models.TreeItem;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -58,6 +60,18 @@ public class GitLabService {
     /** Fetches the raw diff entries for an MR (all files). */
     public List<Diff> getMrDiffs(long projectId, long mrIid) throws GitLabApiException {
         return gitLabApi.getMergeRequestApi().getDiffs(projectId, mrIid);
+    }
+
+    /**
+     * Получает дерево файлов проекта GitLab без клонирования.
+     *
+     * @param projectId ID проекта
+     * @param branch Ветка (default: HEAD)
+     * @return List<TreeItem> со всеми файлами рекурсивно
+     * @throws GitLabApiException при ошибках API
+     */
+    public List<TreeItem> fetchProjectTree(long projectId, String branch) throws GitLabApiException {
+        return gitLabApi.getRepositoryApi().getTree(projectId, "/", branch, true);
     }
 
     /**
