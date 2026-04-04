@@ -2,8 +2,7 @@ package com.example.mrrag.view;
 
 import com.example.mrrag.service.AstGraphService.GraphNode;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#LAMBDA} node.
@@ -119,6 +118,18 @@ public class LambdaNodeView extends GraphNodeView {
      */
     private final List<GraphNodeView> referencesTypes = new ArrayList<>();
 
+    // -------------------------------------------------------------------------
+    // Edge line numbers (used for Lines:[...] in external-node markdown output)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Maps target node id → list of source lines at which this lambda's outgoing
+     * edges reference that target.  Populated by
+     * {@link com.example.mrrag.service.GraphViewBuilder} when wiring edges.
+     * Excluded from {@code toMarkdown()} output (Map fields are skipped).
+     */
+    private final Map<String, List<Integer>> edgeLinesMap = new HashMap<>();
+
     public LambdaNodeView(GraphNode node) {
         super(node);
     }
@@ -127,94 +138,43 @@ public class LambdaNodeView extends GraphNodeView {
     // Accessors
     // -------------------------------------------------------------------------
 
-    /**
-     * Returns the method or constructor that contains this lambda
-     * (reverse DECLARES edge).
-     *
-     * @return enclosing executable view; never {@code null} after wiring
-     */
     public GraphNodeView getDeclaredByExecutable()    { return declaredByExecutable; }
-
-    /**
-     * Returns the callables invoked inside this lambda body
-     * (INVOKES outgoing).
-     *
-     * @return list of callee views; never {@code null}
-     */
     public List<GraphNodeView> getCallees()           { return callees; }
-
-    /**
-     * Returns the callables that directly reference this lambda.
-     * Usually empty for inline lambdas.
-     *
-     * @return list of caller views; never {@code null}
-     */
     public List<GraphNodeView> getCallers()           { return callers; }
-
-    /**
-     * Returns the classes instantiated via {@code new} inside this lambda
-     * (INSTANTIATES outgoing).
-     *
-     * @return list of instantiated class views; never {@code null}
-     */
     public List<ClassNodeView> getInstantiates()      { return instantiates; }
-
-    /**
-     * Returns the anonymous classes created inside this lambda
-     * (INSTANTIATES_ANONYMOUS outgoing).
-     *
-     * @return list of anonymous class views; never {@code null}
-     */
     public List<ClassNodeView> getInstantiatesAnon()  { return instantiatesAnon; }
-
-    /**
-     * Returns the fields read inside this lambda body (READS_FIELD outgoing).
-     *
-     * @return list of field views; never {@code null}
-     */
     public List<FieldNodeView> getReadsFields()       { return readsFields; }
-
-    /**
-     * Returns the fields written inside this lambda body (WRITES_FIELD outgoing).
-     *
-     * @return list of field views; never {@code null}
-     */
     public List<FieldNodeView> getWritesFields()      { return writesFields; }
-
-    /**
-     * Returns the local variables and parameters read inside this lambda
-     * (READS_LOCAL_VAR outgoing), including captured variables.
-     *
-     * @return list of variable views; never {@code null}
-     */
     public List<VariableNodeView> getReadsLocalVars() { return readsLocalVars; }
-
-    /**
-     * Returns the local variables and parameters written inside this lambda
-     * (WRITES_LOCAL_VAR outgoing).
-     *
-     * @return list of variable views; never {@code null}
-     */
     public List<VariableNodeView> getWritesLocalVars() { return writesLocalVars; }
-
-    /**
-     * Returns the exception types thrown inside this lambda body
-     * (THROWS outgoing).
-     *
-     * @return list of exception type views; never {@code null}
-     */
     public List<GraphNodeView> getThrowsTypes()       { return throwsTypes; }
-
-    /**
-     * Returns the types referenced as values inside this lambda body
-     * (REFERENCES_TYPE outgoing): {@code Foo.class}, instanceof, casts.
-     *
-     * @return list of referenced type views; never {@code null}
-     */
     public List<GraphNodeView> getReferencesTypes()   { return referencesTypes; }
 
     // -------------------------------------------------------------------------
-    // Package-private mutators used by GraphViewBuilder
+    // Edge line numbers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Records a source line at which this lambda references {@code targetId}.
+     * Called by {@link com.example.mrrag.service.GraphViewBuilder} when wiring
+     * each outgoing edge so that external nodes display {@code Lines:[...]}.
+     *
+     * @param targetId raw node id of the referenced target
+     * @param line     1-based source line number
+     */
+    public void addEdgeLine(String targetId, int line) {
+        if (line > 0) {
+            edgeLinesMap.computeIfAbsent(targetId, k -> new ArrayList<>()).add(line);
+        }
+    }
+
+    @Override
+    protected List<Integer> edgeLinesTo(String targetId) {
+        return edgeLinesMap.getOrDefault(targetId, List.of());
+    }
+
+    // -------------------------------------------------------------------------
+    // Mutators used by GraphViewBuilder
     // -------------------------------------------------------------------------
 
     public void setDeclaredByExecutable(GraphNodeView v) { this.declaredByExecutable = v; }
