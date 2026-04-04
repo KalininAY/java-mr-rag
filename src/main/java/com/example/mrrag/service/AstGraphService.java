@@ -166,16 +166,23 @@ public class AstGraphService {
     /**
      * A node in the symbol graph.
      *
-     * @param id            unique node identifier
-     * @param kind          {@link NodeKind} of this node
-     * @param simpleName    unqualified name
-     * @param filePath      source-relative file path ({@code "unknown"} for external nodes)
-     * @param startLine     first source line (1-based); {@code -1} for external/synthetic nodes
-     *                      that have no source file in this project
-     * @param endLine       last source line (1-based); {@code -1} for external/synthetic nodes
-     * @param sourceSnippet verbatim original source lines for project nodes;
-     *                      Spoon pretty-printed text for external/synthetic nodes
-     *                      (no source file available); empty string when unavailable
+     * @param id                  unique node identifier
+     * @param kind                {@link NodeKind} of this node
+     * @param simpleName          unqualified name
+     * @param filePath            source-relative file path ({@code "unknown"} for external nodes)
+     * @param startLine           first source line (1-based); {@code -1} for external/synthetic nodes
+     *                            that have no source file in this project
+     * @param endLine             last source line (1-based); {@code -1} for external/synthetic nodes
+     * @param sourceSnippet       verbatim original source lines for project nodes;
+     *                            Spoon pretty-printed text for external/synthetic nodes
+     *                            (no source file available); empty string when unavailable
+     * @param declarationSnippet  the declaration header of this element (annotations, modifiers,
+     *                            name, parameters, throws-clause, extends/implements) without the
+     *                            body.  For CLASS/INTERFACE nodes this is the opening line up to and
+     *                            including the first {@code {}; for METHOD/CONSTRUCTOR nodes it is the
+     *                            full signature up to and including the opening {@code {}; for FIELD
+     *                            nodes it is the field declaration line.  Empty string for LAMBDA,
+     *                            VARIABLE, TYPE_PARAM, and ANNOTATION_ATTRIBUTE nodes.
      */
     public record GraphNode(
             String id,
@@ -184,7 +191,8 @@ public class AstGraphService {
             String filePath,
             int startLine,
             int endLine,
-            String sourceSnippet
+            String sourceSnippet,
+            String declarationSnippet
     ) {}
 
     /** A directed, typed edge between two graph nodes. */
@@ -422,7 +430,8 @@ public class AstGraphService {
 
                 graph.addNode(new GraphNode(id, kind, type.getSimpleName(),
                         file, ln[0], ln[1],
-                        extractSource(sourceLines, file, ln[0], ln[1], type)));
+                        extractSource(sourceLines, file, ln[0], ln[1], type),
+                        extractDeclaration(sourceLines, file, ln[0], ln[1], type)));
 
                 if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH)) {
                     type.getAnnotations().forEach(ann ->
@@ -483,7 +492,8 @@ public class AstGraphService {
                         int[] tpLn = lines(tp);
                         graph.addNode(new GraphNode(tpId, NodeKind.TYPE_PARAM, tp.getSimpleName(),
                                 file, tpLn[0], tpLn[1],
-                                extractSource(sourceLines, file, tpLn[0], tpLn[1], tp)));
+                                extractSource(sourceLines, file, tpLn[0], tpLn[1], tp),
+                                ""));
                         graph.addEdge(new GraphEdge(
                                 ownerId, EdgeKind.HAS_TYPE_PARAM, tpId,
                                 file, ownerLn[0]
@@ -513,7 +523,8 @@ public class AstGraphService {
                 int[] ln = lines(m);
                 graph.addNode(new GraphNode(id, NodeKind.METHOD, m.getSimpleName(),
                         file, ln[0], ln[1],
-                        extractSource(sourceLines, file, ln[0], ln[1], m)));
+                        extractSource(sourceLines, file, ln[0], ln[1], m),
+                        extractDeclaration(sourceLines, file, ln[0], ln[1], m)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     String classId = qualifiedName(m.getDeclaringType());
@@ -544,7 +555,8 @@ public class AstGraphService {
                 int[] ln = lines(c);
                 graph.addNode(new GraphNode(id, NodeKind.CONSTRUCTOR, c.getSimpleName(),
                         file, ln[0], ln[1],
-                        extractSource(sourceLines, file, ln[0], ln[1], c)));
+                        extractSource(sourceLines, file, ln[0], ln[1], c),
+                        extractDeclaration(sourceLines, file, ln[0], ln[1], c)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     String classId = qualifiedName(c.getDeclaringType());
@@ -562,7 +574,8 @@ public class AstGraphService {
                 int[] ln = lines(field);
                 graph.addNode(new GraphNode(id, NodeKind.FIELD, field.getSimpleName(),
                         file, ln[0], ln[1],
-                        extractSource(sourceLines, file, ln[0], ln[1], field)));
+                        extractSource(sourceLines, file, ln[0], ln[1], field),
+                        extractDeclaration(sourceLines, file, ln[0], ln[1], field)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     String classId = qualifiedName(field.getDeclaringType());
@@ -588,7 +601,8 @@ public class AstGraphService {
                 int[] ln = lines(v);
                 graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(),
                         file, ln[0], ln[1],
-                        extractSource(sourceLines, file, ln[0], ln[1], v)));
+                        extractSource(sourceLines, file, ln[0], ln[1], v),
+                        ""));
             });
 
             // ── 8. ANNOTATION_ATTRIBUTE nodes ──────────────────────────────────────────────
@@ -606,7 +620,8 @@ public class AstGraphService {
                         int[] ln = lines(m);
                         graph.addNode(new GraphNode(attrId, NodeKind.ANNOTATION_ATTRIBUTE,
                                 m.getSimpleName(), file, ln[0], ln[1],
-                                extractSource(sourceLines, file, ln[0], ln[1], m)));
+                                extractSource(sourceLines, file, ln[0], ln[1], m),
+                                ""));
                         graph.addEdge(new GraphEdge(
                                 annoId, EdgeKind.ANNOTATION_ATTR, attrId, file, ln[0]
                         ));
@@ -621,7 +636,8 @@ public class AstGraphService {
                 String id = "lambda@" + file + ":" + ln[0];
                 graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb",
                         file, ln[0], ln[1],
-                        extractSource(sourceLines, file, ln[0], ln[1], lambda)));
+                        extractSource(sourceLines, file, ln[0], ln[1], lambda),
+                        ""));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     CtMethod<?> em = lambda.getParent(CtMethod.class);
@@ -796,6 +812,88 @@ public class AstGraphService {
         }
         // fallback: Spoon pretty-print (external dependency or missing file)
         return snippet(el);
+    }
+
+    /**
+     * Extracts the <em>declaration header</em> of a Java element from verbatim
+     * source lines — i.e. the part before the opening {@code {}.
+     *
+     * <p>Strategy:
+     * <ol>
+     *   <li>Start from {@code startLine} and collect lines until the first line
+     *       that contains an unquoted {@code {}, stopping right after it (inclusive).</li>
+     *   <li>If no {@code {} is found within the element's line range (e.g. an
+     *       abstract method, an interface method, or a field), return the full
+     *       {@code startLine..endLine} snippet — that <em>is</em> the declaration.</li>
+     *   <li>If source lines are unavailable (external/synthetic node), fall back to
+     *       Spoon's pretty-printed first line.</li>
+     * </ol>
+     *
+     * @param sourceLines map of relative file path → source lines (1-based index = array[line-1])
+     * @param filePath    relative path of the file
+     * @param startLine   first source line of the element, 1-based
+     * @param endLine     last source line of the element, 1-based
+     * @param el          Spoon element used as fallback when source is unavailable
+     * @return declaration header text; never {@code null}, may be empty
+     */
+    private static String extractDeclaration(Map<String, String[]> sourceLines,
+                                             String filePath, int startLine, int endLine,
+                                             CtElement el) {
+        if (startLine <= 0 || endLine < startLine) {
+            // External / synthetic: use first line of Spoon pretty-print as declaration
+            String s = snippet(el);
+            if (s.isBlank()) return "";
+            int nl = s.indexOf('\n');
+            return nl >= 0 ? s.substring(0, nl) : s;
+        }
+
+        String[] lines = sourceLines.get(filePath);
+        if (lines == null) {
+            String s = snippet(el);
+            if (s.isBlank()) return "";
+            int nl = s.indexOf('\n');
+            return nl >= 0 ? s.substring(0, nl) : s;
+        }
+
+        int from = Math.max(0, startLine - 1);
+        int to   = Math.min(lines.length, endLine);
+
+        // Collect lines up to and including the first opening brace.
+        // We do a very lightweight scan: ignore braces inside string literals
+        // and character literals so that e.g.
+        //   public String foo() { return "{"; }
+        // is handled correctly (the method-body brace on the same line terminates
+        // the declaration scan on that same line, which is correct).
+        List<String> declLines = new ArrayList<>();
+        boolean found = false;
+        for (int i = from; i < to && !found; i++) {
+            String line = lines[i];
+            declLines.add(line);
+            if (containsOpenBrace(line)) {
+                found = true;
+            }
+        }
+
+        if (declLines.isEmpty()) return "";
+        return String.join("\n", declLines);
+    }
+
+    /**
+     * Returns {@code true} if {@code line} contains an unquoted {@code {}.
+     * Handles single-quoted ({@code '{'}) and double-quoted ({@code "{"}) literals
+     * by skipping their content.
+     */
+    private static boolean containsOpenBrace(String line) {
+        boolean inDouble = false;
+        boolean inSingle = false;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '\\' && (inDouble || inSingle)) { i++; continue; } // skip escape
+            if (c == '"'  && !inSingle) { inDouble = !inDouble; continue; }
+            if (c == '\'' && !inDouble) { inSingle = !inSingle; continue; }
+            if (c == '{' && !inDouble && !inSingle) return true;
+        }
+        return false;
     }
 
     private static String snippet(CtElement el) {
