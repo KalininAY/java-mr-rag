@@ -2,8 +2,7 @@ package com.example.mrrag.view;
 
 import com.example.mrrag.service.AstGraphService.GraphNode;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#CONSTRUCTOR} node.
@@ -18,6 +17,9 @@ import java.util.List;
  * <p><b>Annotations</b> — use {@link #getAnnotatedBy()} inherited from
  * {@link GraphNodeView}; it is populated from {@code ANNOTATED_WITH} outgoing
  * edges by {@link com.example.mrrag.service.GraphViewBuilder}.
+ *
+ * <p><b>Edge line numbers</b> — {@link #addEdgeLine(String, int)} records the
+ * source line at which each outgoing edge is used (call site, field read, etc.).
  */
 public class ConstructorNodeView extends GraphNodeView {
 
@@ -25,101 +27,72 @@ public class ConstructorNodeView extends GraphNodeView {
     // Ownership
     // -------------------------------------------------------------------------
 
-    /**
-     * The class that declares this constructor.
-     * Populated from the reverse of the {@code DECLARES} edge
-     * ({@code CLASS → CONSTRUCTOR}).
-     */
+    /** The class that declares this constructor. Populated from the reverse DECLARES edge. */
     private ClassNodeView declaredByClass;
 
     // -------------------------------------------------------------------------
     // Call graph
     // -------------------------------------------------------------------------
 
-    /**
-     * Callables that invoke this constructor via {@code new Foo(...)},
-     * {@code this(...)}, or {@code super(...)} (reverse {@code INVOKES} /
-     * {@code INSTANTIATES} edges).
-     */
+    /** Callables that invoke this constructor (reverse INVOKES / INSTANTIATES edges). */
     private final List<GraphNodeView> callers = new ArrayList<>();
 
-    /**
-     * Methods or constructors invoked inside this constructor body
-     * ({@code INVOKES} outgoing edges).
-     */
+    /** Methods or constructors invoked inside this constructor body (INVOKES outgoing). */
     private final List<GraphNodeView> callees = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Instantiation
     // -------------------------------------------------------------------------
 
-    /**
-     * Classes instantiated via {@code new Foo(...)} inside this constructor
-     * body ({@code INSTANTIATES} outgoing edges).
-     */
+    /** Classes instantiated via {@code new} inside this constructor body (INSTANTIATES). */
     private final List<ClassNodeView> instantiates = new ArrayList<>();
 
-    /**
-     * Anonymous classes created via {@code new Foo() { ... }} inside this
-     * constructor body ({@code INSTANTIATES_ANONYMOUS} outgoing edges).
-     */
+    /** Anonymous classes created inside this constructor body (INSTANTIATES_ANONYMOUS). */
     private final List<ClassNodeView> instantiatesAnon = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Field access
     // -------------------------------------------------------------------------
 
-    /**
-     * Fields read by this constructor ({@code READS_FIELD} outgoing edges).
-     */
+    /** Fields read by this constructor (READS_FIELD outgoing edges). */
     private final List<FieldNodeView> readsFields = new ArrayList<>();
 
-    /**
-     * Fields written by this constructor ({@code WRITES_FIELD} outgoing edges).
-     * Typically includes all fields assigned in the constructor body.
-     */
+    /** Fields written by this constructor (WRITES_FIELD outgoing edges). */
     private final List<FieldNodeView> writesFields = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Local variable access
     // -------------------------------------------------------------------------
 
-    /**
-     * Local variables and parameters read by this constructor
-     * ({@code READS_LOCAL_VAR} outgoing edges).
-     */
+    /** Local variables and parameters read by this constructor (READS_LOCAL_VAR). */
     private final List<VariableNodeView> readsLocalVars = new ArrayList<>();
 
-    /**
-     * Local variables and parameters written by this constructor
-     * ({@code WRITES_LOCAL_VAR} outgoing edges).
-     */
+    /** Local variables and parameters written by this constructor (WRITES_LOCAL_VAR). */
     private final List<VariableNodeView> writesLocalVars = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Exceptions, type references, lambdas
     // -------------------------------------------------------------------------
 
-    /**
-     * Exception types thrown via {@code throw new Foo()} inside this
-     * constructor body ({@code THROWS} outgoing edges).
-     */
+    /** Exception types thrown inside this constructor body (THROWS outgoing edges). */
     private final List<GraphNodeView> throwsTypes = new ArrayList<>();
 
-    /**
-     * Types referenced as values inside this constructor body
-     * ({@code REFERENCES_TYPE} outgoing edges).
-     *
-     * <p>Covers {@code Foo.class} expressions, {@code instanceof Foo} checks,
-     * and explicit cast expressions.
-     */
+    /** Types referenced as values inside this constructor body (REFERENCES_TYPE). */
     private final List<GraphNodeView> referencesTypes = new ArrayList<>();
 
-    /**
-     * Lambda expressions declared inside this constructor body
-     * ({@code DECLARES} outgoing edges to {@code LAMBDA} nodes).
-     */
+    /** Lambda expressions declared inside this constructor body (DECLARES → LAMBDA). */
     private final List<LambdaNodeView> lambdas = new ArrayList<>();
+
+    // -------------------------------------------------------------------------
+    // Edge line numbers (used for Lines:[...] in external-node markdown output)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Maps target node id → list of source lines at which this constructor's
+     * outgoing edges reference that target.  Populated by GraphViewBuilder.
+     * Excluded from {@code toMarkdown()} output (Map fields are skipped).
+     */
+    private final Map<String, List<Integer>> edgeLinesMap = new HashMap<>();
 
     public ConstructorNodeView(GraphNode node) {
         super(node);
@@ -129,103 +102,43 @@ public class ConstructorNodeView extends GraphNodeView {
     // Accessors
     // -------------------------------------------------------------------------
 
-    /**
-     * Returns the class that declares this constructor.
-     *
-     * @return declaring class view; never {@code null} after wiring
-     */
     public ClassNodeView getDeclaredByClass()       { return declaredByClass; }
-
-    /**
-     * Returns the callables that invoke this constructor
-     * (reverse INVOKES / INSTANTIATES).
-     *
-     * @return list of caller views; never {@code null}
-     */
     public List<GraphNodeView> getCallers()         { return callers; }
-
-    /**
-     * Returns the callables invoked inside this constructor body
-     * (INVOKES outgoing).
-     *
-     * @return list of callee views; never {@code null}
-     */
     public List<GraphNodeView> getCallees()         { return callees; }
-
-    /**
-     * Returns the classes instantiated via {@code new} inside this constructor
-     * (INSTANTIATES outgoing).
-     *
-     * @return list of instantiated class views; never {@code null}
-     */
     public List<ClassNodeView> getInstantiates()    { return instantiates; }
-
-    /**
-     * Returns the anonymous classes created inside this constructor
-     * (INSTANTIATES_ANONYMOUS outgoing).
-     *
-     * @return list of anonymous class views; never {@code null}
-     */
     public List<ClassNodeView> getInstantiatesAnon() { return instantiatesAnon; }
-
-    /**
-     * Returns the fields read by this constructor (READS_FIELD outgoing).
-     *
-     * @return list of field views; never {@code null}
-     */
     public List<FieldNodeView> getReadsFields()     { return readsFields; }
-
-    /**
-     * Returns the fields written by this constructor (WRITES_FIELD outgoing).
-     *
-     * @return list of field views; never {@code null}
-     */
     public List<FieldNodeView> getWritesFields()    { return writesFields; }
-
-    /**
-     * Returns the local variables and parameters read by this constructor
-     * (READS_LOCAL_VAR outgoing).
-     *
-     * @return list of variable views; never {@code null}
-     */
     public List<VariableNodeView> getReadsLocalVars()  { return readsLocalVars; }
-
-    /**
-     * Returns the local variables and parameters written by this constructor
-     * (WRITES_LOCAL_VAR outgoing).
-     *
-     * @return list of variable views; never {@code null}
-     */
     public List<VariableNodeView> getWritesLocalVars() { return writesLocalVars; }
-
-    /**
-     * Returns the exception types thrown inside this constructor body
-     * (THROWS outgoing).
-     *
-     * @return list of exception type views; never {@code null}
-     */
     public List<GraphNodeView> getThrowsTypes()     { return throwsTypes; }
-
-    /**
-     * Returns the types referenced as values inside this constructor body
-     * (REFERENCES_TYPE outgoing): {@code Foo.class}, instanceof, casts.
-     *
-     * @return list of referenced type views; never {@code null}
-     */
     public List<GraphNodeView> getReferencesTypes() { return referencesTypes; }
-
-    /**
-     * Returns the lambda expressions declared inside this constructor body
-     * (DECLARES outgoing to LAMBDA nodes).
-     *
-     * @return list of lambda views; never {@code null}
-     */
     public List<LambdaNodeView> getLambdas()        { return lambdas; }
 
-    // Annotations are inherited from GraphNodeView.getAnnotatedBy().
+    // -------------------------------------------------------------------------
+    // Edge line numbers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Records a source line at which this constructor references {@code targetId}.
+     * Called by GraphViewBuilder when wiring each outgoing edge.
+     *
+     * @param targetId raw node id of the referenced target
+     * @param line     1-based source line number
+     */
+    public void addEdgeLine(String targetId, int line) {
+        if (line > 0) {
+            edgeLinesMap.computeIfAbsent(targetId, k -> new ArrayList<>()).add(line);
+        }
+    }
+
+    @Override
+    protected List<Integer> edgeLinesTo(String targetId) {
+        return edgeLinesMap.getOrDefault(targetId, List.of());
+    }
 
     // -------------------------------------------------------------------------
-    // Package-private mutators used by GraphViewBuilder
+    // Mutators used by GraphViewBuilder
     // -------------------------------------------------------------------------
 
     public void setDeclaredByClass(ClassNodeView v)    { this.declaredByClass = v; }

@@ -2,8 +2,7 @@ package com.example.mrrag.view;
 
 import com.example.mrrag.service.AstGraphService.GraphNode;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * View for a {@link com.example.mrrag.service.AstGraphService.NodeKind#METHOD} node.
@@ -29,6 +28,11 @@ import java.util.List;
  * <p><b>Annotations</b> — use {@link #getAnnotatedBy()} inherited from
  * {@link GraphNodeView}; it is populated from {@code ANNOTATED_WITH} outgoing
  * edges by {@link com.example.mrrag.service.GraphViewBuilder}.
+ *
+ * <p><b>Edge line numbers</b> — {@link #addEdgeLine(String, int)} records the
+ * source line at which each outgoing edge is used (call site, field read, etc.).
+ * This data is consumed by {@link GraphNodeView#edgeLinesTo(String)} to produce
+ * the {@code Lines:[...]} annotation in markdown output for external nodes.
  */
 public class MethodNodeView extends GraphNodeView {
 
@@ -36,148 +40,101 @@ public class MethodNodeView extends GraphNodeView {
     // Ownership
     // -------------------------------------------------------------------------
 
-    /**
-     * The class that declares this method.
-     * Populated from the reverse of the {@code DECLARES} edge
-     * ({@code CLASS → METHOD}).
-     */
+    /** The class that declares this method. Populated from the reverse DECLARES edge. */
     private ClassNodeView declaredByClass;
 
     // -------------------------------------------------------------------------
     // Generic type parameters
     // -------------------------------------------------------------------------
 
-    /**
-     * Formal type parameters declared on this method, in declaration order.
-     *
-     * <p>Example: {@code <R> R map(Function<T, R> f)} produces one
-     * {@link TypeParamNodeView} entry for {@code R}.
-     * Empty for non-generic methods.
-     *
-     * <p>Populated from {@code HAS_TYPE_PARAM} outgoing edges.
-     */
+    /** Formal type parameters declared on this method, in declaration order. */
     private final List<TypeParamNodeView> typeParameters = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Call graph
     // -------------------------------------------------------------------------
 
-    /**
-     * Callables (methods, constructors, lambdas) that invoke this method
-     * (reverse {@code INVOKES} edges).
-     */
+    /** Callables that invoke this method (reverse INVOKES edges). */
     private final List<GraphNodeView> callers = new ArrayList<>();
 
-    /**
-     * Methods, constructors, or lambdas invoked by this method
-     * ({@code INVOKES} outgoing edges).
-     */
+    /** Methods, constructors, or lambdas invoked by this method (INVOKES outgoing). */
     private final List<GraphNodeView> callees = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Instantiation
     // -------------------------------------------------------------------------
 
-    /**
-     * Classes instantiated via {@code new Foo(...)} inside this method body
-     * ({@code INSTANTIATES} outgoing edges).
-     */
+    /** Classes instantiated via {@code new Foo(...)} inside this method body (INSTANTIATES). */
     private final List<ClassNodeView> instantiates = new ArrayList<>();
 
-    /**
-     * Anonymous classes created via {@code new Foo() { ... }} inside this
-     * method body ({@code INSTANTIATES_ANONYMOUS} outgoing edges).
-     */
+    /** Anonymous classes created inside this method body (INSTANTIATES_ANONYMOUS). */
     private final List<ClassNodeView> instantiatesAnon = new ArrayList<>();
 
-    /**
-     * Method or constructor references used in this method
-     * ({@code REFERENCES_METHOD} outgoing edges).
-     *
-     * <p>Example: {@code list.forEach(Foo::bar)} produces one entry for
-     * {@code Foo::bar}.
-     */
+    /** Method or constructor references used in this method (REFERENCES_METHOD). */
     private final List<GraphNodeView> referencedMethods = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Field access
     // -------------------------------------------------------------------------
 
-    /**
-     * Fields read by this method ({@code READS_FIELD} outgoing edges).
-     */
+    /** Fields read by this method (READS_FIELD outgoing edges). */
     private final List<FieldNodeView> readsFields = new ArrayList<>();
 
-    /**
-     * Fields written by this method ({@code WRITES_FIELD} outgoing edges).
-     */
+    /** Fields written by this method (WRITES_FIELD outgoing edges). */
     private final List<FieldNodeView> writesFields = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Local variable access
     // -------------------------------------------------------------------------
 
-    /**
-     * Local variables and parameters read by this method
-     * ({@code READS_LOCAL_VAR} outgoing edges).
-     */
+    /** Local variables and parameters read by this method (READS_LOCAL_VAR). */
     private final List<VariableNodeView> readsLocalVars = new ArrayList<>();
 
-    /**
-     * Local variables and parameters written by this method
-     * ({@code WRITES_LOCAL_VAR} outgoing edges).
-     */
+    /** Local variables and parameters written by this method (WRITES_LOCAL_VAR). */
     private final List<VariableNodeView> writesLocalVars = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Exceptions
     // -------------------------------------------------------------------------
 
-    /**
-     * Exception types thrown via {@code throw new Foo()} inside this method
-     * body ({@code THROWS} outgoing edges).
-     */
+    /** Exception types thrown inside this method body (THROWS outgoing edges). */
     private final List<GraphNodeView> throwsTypes = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Type references
     // -------------------------------------------------------------------------
 
-    /**
-     * Types referenced as values inside this method body
-     * ({@code REFERENCES_TYPE} outgoing edges).
-     *
-     * <p>Covers {@code Foo.class} expressions, {@code instanceof Foo} checks,
-     * and explicit cast expressions.
-     */
+    /** Types referenced as values inside this method body (REFERENCES_TYPE). */
     private final List<GraphNodeView> referencesTypes = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Inheritance
     // -------------------------------------------------------------------------
 
-    /**
-     * The super-type method that this method overrides
-     * ({@code OVERRIDES} outgoing edge), or {@code null} if this method does
-     * not override anything tracked in the graph.
-     */
+    /** The super-type method that this method overrides (OVERRIDES outgoing), or null. */
     private MethodNodeView overrides;
 
-    /**
-     * Child methods in sub-classes that override this method
-     * (reverse {@code OVERRIDES} edges).
-     */
+    /** Child methods in sub-classes that override this method (reverse OVERRIDES). */
     private final List<MethodNodeView> overriddenBy = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Lambdas
     // -------------------------------------------------------------------------
 
-    /**
-     * Lambda expressions declared inside this method body
-     * ({@code DECLARES} outgoing edges to {@code LAMBDA} nodes).
-     */
+    /** Lambda expressions declared inside this method body (DECLARES → LAMBDA). */
     private final List<LambdaNodeView> lambdas = new ArrayList<>();
+
+    // -------------------------------------------------------------------------
+    // Edge line numbers (used for Lines:[...] in external-node markdown output)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Maps target node id → list of source lines at which this method's outgoing
+     * edges reference that target.  Populated by
+     * {@link com.example.mrrag.service.GraphViewBuilder} when wiring edges.
+     * Excluded from {@code toMarkdown()} output (Map fields are skipped).
+     */
+    private final Map<String, List<Integer>> edgeLinesMap = new HashMap<>();
 
     public MethodNodeView(GraphNode node) {
         super(node);
@@ -187,133 +144,48 @@ public class MethodNodeView extends GraphNodeView {
     // Accessors
     // -------------------------------------------------------------------------
 
-    /**
-     * Returns the class that declares this method.
-     *
-     * @return declaring class view; never {@code null} after wiring
-     */
     public ClassNodeView getDeclaredByClass()        { return declaredByClass; }
-
-    /**
-     * Returns the formal type parameters declared on this method.
-     * Empty for non-generic methods.
-     *
-     * @return list of type parameter views; never {@code null}
-     */
     public List<TypeParamNodeView> getTypeParameters() { return typeParameters; }
-
-    /**
-     * Returns the callables that invoke this method (reverse INVOKES).
-     *
-     * @return list of caller views; never {@code null}
-     */
     public List<GraphNodeView> getCallers()           { return callers; }
-
-    /**
-     * Returns the callables invoked by this method (INVOKES outgoing).
-     *
-     * @return list of callee views; never {@code null}
-     */
     public List<GraphNodeView> getCallees()           { return callees; }
-
-    /**
-     * Returns the classes instantiated via {@code new} inside this method
-     * (INSTANTIATES outgoing).
-     *
-     * @return list of instantiated class views; never {@code null}
-     */
     public List<ClassNodeView> getInstantiates()      { return instantiates; }
-
-    /**
-     * Returns the anonymous classes created inside this method
-     * (INSTANTIATES_ANONYMOUS outgoing).
-     *
-     * @return list of anonymous class views; never {@code null}
-     */
     public List<ClassNodeView> getInstantiatesAnon()  { return instantiatesAnon; }
-
-    /**
-     * Returns the method/constructor references used in this method
-     * (REFERENCES_METHOD outgoing), e.g. {@code Foo::bar}.
-     *
-     * @return list of referenced executable views; never {@code null}
-     */
     public List<GraphNodeView> getReferencedMethods() { return referencedMethods; }
-
-    /**
-     * Returns the fields read by this method (READS_FIELD outgoing).
-     *
-     * @return list of field views; never {@code null}
-     */
     public List<FieldNodeView> getReadsFields()       { return readsFields; }
-
-    /**
-     * Returns the fields written by this method (WRITES_FIELD outgoing).
-     *
-     * @return list of field views; never {@code null}
-     */
     public List<FieldNodeView> getWritesFields()      { return writesFields; }
-
-    /**
-     * Returns the local variables and parameters read by this method
-     * (READS_LOCAL_VAR outgoing).
-     *
-     * @return list of variable views; never {@code null}
-     */
     public List<VariableNodeView> getReadsLocalVars()  { return readsLocalVars; }
-
-    /**
-     * Returns the local variables and parameters written by this method
-     * (WRITES_LOCAL_VAR outgoing).
-     *
-     * @return list of variable views; never {@code null}
-     */
     public List<VariableNodeView> getWritesLocalVars() { return writesLocalVars; }
-
-    /**
-     * Returns the exception types thrown inside this method body
-     * (THROWS outgoing).
-     *
-     * @return list of exception type views; never {@code null}
-     */
     public List<GraphNodeView> getThrowsTypes()       { return throwsTypes; }
-
-    /**
-     * Returns the types referenced as values inside this method body
-     * (REFERENCES_TYPE outgoing): {@code Foo.class}, instanceof, casts.
-     *
-     * @return list of referenced type views; never {@code null}
-     */
     public List<GraphNodeView> getReferencesTypes()   { return referencesTypes; }
-
-    /**
-     * Returns the super-type method overridden by this method
-     * (OVERRIDES outgoing), or {@code null} if none.
-     *
-     * @return overridden method view, or {@code null}
-     */
     public MethodNodeView getOverrides()              { return overrides; }
-
-    /**
-     * Returns the child methods that override this method
-     * (reverse OVERRIDES edges).
-     *
-     * @return list of overriding method views; never {@code null}
-     */
     public List<MethodNodeView> getOverriddenBy()     { return overriddenBy; }
-
-    /**
-     * Returns the lambda expressions declared inside this method body
-     * (DECLARES outgoing to LAMBDA nodes).
-     *
-     * @return list of lambda views; never {@code null}
-     */
     public List<LambdaNodeView> getLambdas()          { return lambdas; }
 
-    // Annotations are inherited from GraphNodeView.getAnnotatedBy().
+    // -------------------------------------------------------------------------
+    // Edge line numbers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Records a source line at which this method references {@code targetId}.
+     * Called by {@link com.example.mrrag.service.GraphViewBuilder} when wiring
+     * each outgoing edge so that external nodes display {@code Lines:[...]}.
+     *
+     * @param targetId raw node id of the referenced target
+     * @param line     1-based source line number
+     */
+    public void addEdgeLine(String targetId, int line) {
+        if (line > 0) {
+            edgeLinesMap.computeIfAbsent(targetId, k -> new ArrayList<>()).add(line);
+        }
+    }
+
+    @Override
+    protected List<Integer> edgeLinesTo(String targetId) {
+        return edgeLinesMap.getOrDefault(targetId, List.of());
+    }
 
     // -------------------------------------------------------------------------
-    // Package-private mutators used by GraphViewBuilder
+    // Mutators used by GraphViewBuilder
     // -------------------------------------------------------------------------
 
     public void setDeclaredByClass(ClassNodeView v)     { this.declaredByClass = v; }
