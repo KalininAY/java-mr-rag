@@ -238,6 +238,7 @@ public abstract class GraphNodeView {
      * <p>Format:
      * <pre>
      * # Content
+     * ### path/to/File.java
      * {startLine}|&lt;line startLine of sourceSnippet&gt;
      * {startLine+1}|&lt;next line&gt;
      * ...
@@ -245,14 +246,14 @@ public abstract class GraphNodeView {
      *
      * # Fields
      * ## fieldName
+     * ### path/to/File.java
      * {startLine}|&lt;first source line of element&gt;
      * {startLine+1}|&lt;next line&gt;
      * ...
-     * {endLine}|&lt;last line&gt;
      * </pre>
      *
-     * <p>Line numbers everywhere reflect the actual source range stored in the
-     * node ({@link #getStartLine()}…{@link #getEndLine()}).
+     * <p>Line numbers reflect the actual source range stored in the node
+     * ({@link #getStartLine()}…{@link #getEndLine()}).
      * When position information is unavailable ({@code startLine == 0}),
      * lines are numbered sequentially from&nbsp;1.
      *
@@ -260,9 +261,10 @@ public abstract class GraphNodeView {
      * superclasses up to (but not including) {@link Object}. Each field value
      * is rendered as:
      * <ul>
-     *   <li>{@link Collection} — one block of line-numbered rows per element,
-     *       separated by a blank line between elements</li>
-     *   <li>Scalar {@link GraphNodeView} — line-numbered snippet (or id if empty)</li>
+     *   <li>{@link Collection} — one block per element, each preceded by
+     *       {@code ### filePath} and line-numbered with real source lines</li>
+     *   <li>Scalar {@link GraphNodeView} — {@code ### filePath} + line-numbered snippet
+     *       (or just id when snippet is empty)</li>
      *   <li>Any other scalar — single {@code 1|toString()} row</li>
      *   <li>{@code null} — single {@code 0|(null)} row</li>
      * </ul>
@@ -277,6 +279,7 @@ public abstract class GraphNodeView {
 
         // ── # Content ─────────────────────────────────────────────────────
         sb.append("# Content\n");
+        sb.append("### ").append(getFilePath()).append('\n');
         appendNumberedSnippet(sb, getContent(), getStartLine());
 
         // ── # Fields ──────────────────────────────────────────────────────
@@ -328,16 +331,21 @@ public abstract class GraphNodeView {
     }
 
     /**
-     * Appends a single element's line-numbered representation to {@code sb}.
+     * Appends a single element's representation to {@code sb}, preceded by a
+     * {@code ### filePath} header when the element is a {@link GraphNodeView}.
      *
      * <ul>
-     *   <li>{@link GraphNodeView} — line-numbered snippet using the element's
-     *       own {@code startLine}; falls back to {@code id} when snippet is empty</li>
-     *   <li>Anything else — single {@code 1|toString()} line</li>
+     *   <li>{@link GraphNodeView} with non-blank snippet —
+     *       {@code ### filePath} header + line-numbered snippet using the
+     *       element's own {@code startLine}</li>
+     *   <li>{@link GraphNodeView} with blank snippet —
+     *       {@code ### filePath} header + single {@code 1|id} row</li>
+     *   <li>Anything else — single {@code 1|toString()} line (no header)</li>
      * </ul>
      */
     private static void appendElementSnippet(StringBuilder sb, Object element) {
         if (element instanceof GraphNodeView view) {
+            sb.append("### ").append(view.getFilePath()).append('\n');
             String snippet = view.getContent();
             if (snippet != null && !snippet.isBlank()) {
                 appendNumberedSnippet(sb, snippet, view.getStartLine());
