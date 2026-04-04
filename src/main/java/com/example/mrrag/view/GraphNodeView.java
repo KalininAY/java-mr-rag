@@ -19,10 +19,9 @@ import java.util.List;
  *      .forEach(m -> m.getCallees().forEach(callee -> ...));
  * }</pre>
  *
- * <p><b>Source content</b> — {@link #getContent()} returns the pretty-printed
- * source text of the element as produced by Spoon, so every view carries its
- * own source context and can be handed directly to an LLM without further
- * file I/O.
+ * <p><b>Source content</b> — {@link #getContent()} returns the verbatim original
+ * source lines for project nodes, and the Spoon pretty-printed text for
+ * external/synthetic nodes (no source file available in the project).
  *
  * <p><b>Wiring</b> — all list fields are mutable so
  * {@link com.example.mrrag.service.GraphViewBuilder} can populate neighbours
@@ -75,25 +74,12 @@ public abstract class GraphNodeView {
      * Returns the unique node identifier as stored in
      * {@link com.example.mrrag.service.AstGraphService.ProjectGraph}.
      *
-     * <p>Format depends on node kind:
-     * <ul>
-     *   <li>CLASS — fully qualified name, e.g. {@code com.example.Foo}</li>
-     *   <li>METHOD / CONSTRUCTOR — {@code Owner#signature}, e.g.
-     *       {@code com.example.Foo#doWork(int)}</li>
-     *   <li>FIELD — {@code Owner.fieldName}, e.g. {@code com.example.Foo.count}</li>
-     *   <li>VARIABLE — {@code var@FileName.java:line:name}</li>
-     *   <li>LAMBDA — {@code lambda@relPath:line}</li>
-     *   <li>TYPE_PARAM — {@code Owner#<T>}</li>
-     *   <li>ANNOTATION_ATTRIBUTE — {@code AnnotationType#attrName}</li>
-     * </ul>
-     *
      * @return unique node id; never {@code null}
      */
     public String getId()         { return node.id(); }
 
     /**
-     * Returns the {@link NodeKind} of this node, e.g. {@code CLASS},
-     * {@code METHOD}, {@code TYPE_PARAM}.
+     * Returns the {@link NodeKind} of this node.
      *
      * @return node kind; never {@code null}
      */
@@ -102,19 +88,13 @@ public abstract class GraphNodeView {
     /**
      * Returns the simple (unqualified) name of this element.
      *
-     * <p>Examples: {@code "Foo"} for a class, {@code "doWork"} for a method,
-     * {@code "count"} for a field, {@code "T"} for a type parameter,
-     * {@code "\u03bb"} for a lambda.
-     *
      * @return simple name; never {@code null}
      */
     public String getSimpleName() { return node.simpleName(); }
 
     /**
-     * Returns the source-relative path of the file that contains this element,
-     * e.g. {@code src/main/java/com/example/Foo.java}.
-     *
-     * <p>Returns {@code "unknown"} for external / synthetic elements.
+     * Returns the source-relative path of the file that contains this element.
+     * Returns {@code "unknown"} for external / synthetic elements.
      *
      * @return relative file path; never {@code null}
      */
@@ -122,39 +102,25 @@ public abstract class GraphNodeView {
 
     /**
      * Returns the first source line of this element (1-based).
-     * Returns {@code 0} when position information is unavailable.
+     * Returns {@code -1} for external/synthetic nodes that have no source file
+     * in this project.
      *
-     * @return start line number
+     * @return start line number, or {@code -1}
      */
     public int getStartLine()     { return node.startLine(); }
 
     /**
      * Returns the last source line of this element (1-based).
-     * Returns {@code 0} when position information is unavailable.
+     * Returns {@code -1} for external/synthetic nodes.
      *
-     * @return end line number
+     * @return end line number, or {@code -1}
      */
     public int getEndLine()       { return node.endLine(); }
 
     /**
-     * Returns the pretty-printed source text of this element as produced
-     * by Spoon's pretty-printer.
-     *
-     * <p>Content by node kind:
-     * <ul>
-     *   <li>CLASS — full type declaration including body</li>
-     *   <li>METHOD / CONSTRUCTOR — signature and body</li>
-     *   <li>FIELD — single field declaration line</li>
-     *   <li>VARIABLE — variable declaration statement</li>
-     *   <li>LAMBDA — lambda expression text</li>
-     *   <li>TYPE_PARAM — parameter with bounds, e.g.
-     *       {@code "T extends Comparable<T> & Serializable"}</li>
-     *   <li>ANNOTATION_ATTRIBUTE — method declaration with default clause</li>
-     * </ul>
-     *
-     * <p>External and synthetic stub nodes return an empty string.
-     * This value is ready to embed directly in an LLM prompt without
-     * additional file I/O.
+     * Returns the source text of this element.
+     * For project nodes this is verbatim original source lines.
+     * For external/synthetic nodes this is Spoon pretty-printed text.
      *
      * @return source snippet; never {@code null}, may be empty
      */
@@ -162,8 +128,6 @@ public abstract class GraphNodeView {
 
     /**
      * Returns the raw {@link GraphNode} record that backs this view.
-     * Prefer the typed getters above; use this only when low-level access
-     * to the record is required.
      *
      * @return backing graph node; never {@code null}
      */
@@ -173,59 +137,16 @@ public abstract class GraphNodeView {
     // Structural links
     // -------------------------------------------------------------------------
 
-    /**
-     * Returns the nodes that declared this node via a {@code DECLARES} edge.
-     *
-     * <p>Typical cardinality:
-     * <ul>
-     *   <li>1 — for methods, fields, constructors, lambdas (one owning class or
-     *       executable)</li>
-     *   <li>0 — for top-level classes with no enclosing type in the graph</li>
-     * </ul>
-     *
-     * @return immutable-safe list of declaring nodes; never {@code null}
-     */
     public List<GraphNodeView> getDeclaredBy() { return declaredBy; }
-
-    /**
-     * Returns the annotation types applied to this node via
-     * {@code ANNOTATED_WITH} outgoing edges.
-     *
-     * <p>Each entry is the {@link ClassNodeView} of the annotation type
-     * (e.g. the view for {@code @Transactional} or {@code @Override}).
-     * The list is empty when no annotations are recorded in the graph for
-     * this node.
-     *
-     * @return immutable-safe list of annotation type views; never {@code null}
-     */
     public List<ClassNodeView> getAnnotatedBy() { return annotatedBy; }
 
-    // -------------------------------------------------------------------------
-    // Package-private mutators used by GraphViewBuilder
-    // -------------------------------------------------------------------------
-
-    /** Registers {@code owner} as a declaring node of this view. */
     public void addDeclaredBy(GraphNodeView owner) { declaredBy.add(owner); }
-
-    /**
-     * Registers {@code annotation} as an annotation type applied to this node.
-     *
-     * <p>Called by {@link com.example.mrrag.service.GraphViewBuilder} when
-     * wiring {@code ANNOTATED_WITH} edges.
-     *
-     * @param annotation the {@link ClassNodeView} of the annotation type;
-     *                   must not be {@code null}
-     */
     public void addAnnotatedBy(ClassNodeView annotation) { annotatedBy.add(annotation); }
 
     // -------------------------------------------------------------------------
-    // toString (original) + toMarkdown
+    // toString + toMarkdown
     // -------------------------------------------------------------------------
 
-    /**
-     * Returns a short diagnostic label: {@code ClassName(id)}.
-     * Suitable for logging, debugger display, and collection dumps.
-     */
     @Override
     public String toString() {
         return getClass().getSimpleName() + "(" + getId() + ")";
@@ -239,38 +160,19 @@ public abstract class GraphNodeView {
      * <pre>
      * # Content
      * ### path/to/File.java
-     * {startLine}|&lt;line startLine of sourceSnippet&gt;
-     * {startLine+1}|&lt;next line&gt;
+     * {startLine}|&lt;original source line&gt;
      * ...
-     * {endLine}|&lt;last line&gt;
      *
      * # Fields
      * ## fieldName
      * ### path/to/File.java
-     * {startLine}|&lt;first source line of element&gt;
-     * {startLine+1}|&lt;next line&gt;
+     * {startLine}|&lt;original source line&gt;
      * ...
      * </pre>
      *
-     * <p>Line numbers reflect the actual source range stored in the node
-     * ({@link #getStartLine()}…{@link #getEndLine()}).
-     * When position information is unavailable ({@code startLine == 0}),
-     * lines are numbered sequentially from&nbsp;1.
-     *
-     * <p>Fields are collected via Reflection from the concrete class and all
-     * superclasses up to (but not including) {@link Object}. Each field value
-     * is rendered as:
-     * <ul>
-     *   <li>{@link Collection} — one block per element, each preceded by
-     *       {@code ### filePath} and line-numbered with real source lines</li>
-     *   <li>Scalar {@link GraphNodeView} — {@code ### filePath} + line-numbered snippet
-     *       (or just id when snippet is empty)</li>
-     *   <li>Any other scalar — single {@code 1|toString()} row</li>
-     *   <li>{@code null} — single {@code 0|(null)} row</li>
-     * </ul>
-     *
-     * <p>The {@code node} backing field is excluded (its content is already
-     * shown in the {@code # Content} section).
+     * <p>Line numbers use real 1-based source positions ({@link #getStartLine()}).
+     * {@code startLine == -1} marks external/synthetic nodes: a single
+     * {@code -1|(external)} marker is emitted instead of numbered lines.
      *
      * @return markdown string; never {@code null}
      */
@@ -301,7 +203,6 @@ public abstract class GraphNodeView {
                 for (Object element : col) {
                     appendElementSnippet(sb, element);
                 }
-                // empty collection produces no rows — signals "none"
             } else {
                 appendElementSnippet(sb, value);
             }
@@ -313,12 +214,27 @@ public abstract class GraphNodeView {
     /**
      * Appends a line-numbered snippet to {@code sb}.
      *
-     * <p>Each output line has the form {@code lineNo|text}.
-     * {@code startLine > 0} uses real source line numbers; otherwise falls back
-     * to 1-based sequential numbering.
-     * An empty or null snippet appends a single {@code 0|(empty)} line.
+     * <ul>
+     *   <li>{@code startLine == -1} — external/synthetic node: emits {@code -1|(external)}</li>
+     *   <li>{@code startLine > 0}  — project node: emits real line numbers starting at startLine</li>
+     *   <li>blank/null snippet    — emits {@code 0|(empty)}</li>
+     * </ul>
      */
     private static void appendNumberedSnippet(StringBuilder sb, String snippet, int startLine) {
+        if (startLine == -1) {
+            // external/synthetic: emit Spoon pretty-print with -1 marker on first line,
+            // remaining lines numbered sequentially from -1 downward so they are
+            // visually distinct from real source lines
+            if (snippet == null || snippet.isBlank()) {
+                sb.append("-1|(external)\n");
+                return;
+            }
+            String[] lines = snippet.split("\n", -1);
+            for (int i = 0; i < lines.length; i++) {
+                sb.append(-(i + 1)).append('|').append(lines[i]).append('\n');
+            }
+            return;
+        }
         if (snippet == null || snippet.isBlank()) {
             sb.append("0|(empty)\n");
             return;
@@ -333,15 +249,6 @@ public abstract class GraphNodeView {
     /**
      * Appends a single element's representation to {@code sb}, preceded by a
      * {@code ### filePath} header when the element is a {@link GraphNodeView}.
-     *
-     * <ul>
-     *   <li>{@link GraphNodeView} with non-blank snippet —
-     *       {@code ### filePath} header + line-numbered snippet using the
-     *       element's own {@code startLine}</li>
-     *   <li>{@link GraphNodeView} with blank snippet —
-     *       {@code ### filePath} header + single {@code 1|id} row</li>
-     *   <li>Anything else — single {@code 1|toString()} line (no header)</li>
-     * </ul>
      */
     private static void appendElementSnippet(StringBuilder sb, Object element) {
         if (element instanceof GraphNodeView view) {
@@ -359,8 +266,7 @@ public abstract class GraphNodeView {
 
     /**
      * Collects all declared fields from {@code clazz} up to (but not including)
-     * {@link Object}, skipping the {@code node} backing field to avoid
-     * duplication with the {@code # Content} section.
+     * {@link Object}, skipping the {@code node} backing field.
      */
     private static List<Field> collectFields(Class<?> clazz) {
         List<Field> result = new ArrayList<>();

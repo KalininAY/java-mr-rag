@@ -12,6 +12,7 @@ import spoon.reflect.reference.*;
 import spoon.reflect.visitor.filter.TypeFilter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -72,7 +73,7 @@ public class AstGraphService {
      */
     public enum EdgeKind {
 
-        // ── Structural (declaration) ───────────────────────────────────────
+        // ── Structural (declaration) ────────────────────────────────────────────────
 
         /**
          * Owner declares a child member.
@@ -80,7 +81,7 @@ public class AstGraphService {
          */
         DECLARES,
 
-        // ── Type hierarchy ────────────────────────────────────────────────────
+        // ── Type hierarchy ─────────────────────────────────────────────────────
 
         /** {@code class A extends B} → A –EXTENDS→ B */
         EXTENDS,
@@ -88,7 +89,7 @@ public class AstGraphService {
         /** {@code class A implements I} → A –IMPLEMENTS→ I */
         IMPLEMENTS,
 
-        // ── Invocations ────────────────────────────────────────────────────
+        // ── Invocations ───────────────────────────────────────────────────────
 
         /** {@code foo.bar()} → caller –INVOKES→ callee */
         INVOKES,
@@ -102,7 +103,7 @@ public class AstGraphService {
         /** {@code Foo::bar}, {@code Foo::new} → caller –REFERENCES_METHOD→ target */
         REFERENCES_METHOD,
 
-        // ── Field access ────────────────────────────────────────────────
+        // ── Field access ────────────────────────────────────────────────────
 
         /** {@code this.value}, {@code obj.field} */
         READS_FIELD,
@@ -110,7 +111,7 @@ public class AstGraphService {
         /** {@code this.value = x} */
         WRITES_FIELD,
 
-        // ── Local variable access ─────────────────────────────────────────
+        // ── Local variable access ──────────────────────────────────────────────────
 
         /** Caller reads a local variable or method parameter. */
         READS_LOCAL_VAR,
@@ -118,27 +119,27 @@ public class AstGraphService {
         /** Caller writes a local variable or method parameter. */
         WRITES_LOCAL_VAR,
 
-        // ── Exceptions ────────────────────────────────────────────────────
+        // ── Exceptions ────────────────────────────────────────────────────────
 
         /** Method/constructor contains {@code throw new FooException(...)}. */
         THROWS,
 
-        // ── Annotations ──────────────────────────────────────────────────
+        // ── Annotations ──────────────────────────────────────────────────────
 
         /** CLASS/INTERFACE/METHOD/FIELD → ANNOTATION type. */
         ANNOTATED_WITH,
 
-        // ── Type references ───────────────────────────────────────────────
+        // ── Type references ─────────────────────────────────────────────────────
 
         /** {@code Foo.class}, {@code instanceof Foo}, cast to {@code Foo}. */
         REFERENCES_TYPE,
 
-        // ── Inheritance ────────────────────────────────────────────────────
+        // ── Inheritance ──────────────────────────────────────────────────────
 
         /** child –OVERRIDES→ parent method */
         OVERRIDES,
 
-        // ── Generics ──────────────────────────────────────────────────
+        // ── Generics ──────────────────────────────────────────────────────
 
         /**
          * A type or executable has a generic type parameter.
@@ -153,7 +154,7 @@ public class AstGraphService {
          */
         HAS_BOUND,
 
-        // ── Annotation attributes ───────────────────────────────────────────────
+        // ── Annotation attributes ───────────────────────────────────────────────────────
 
         /**
          * An annotation type declares an attribute element.
@@ -168,11 +169,13 @@ public class AstGraphService {
      * @param id            unique node identifier
      * @param kind          {@link NodeKind} of this node
      * @param simpleName    unqualified name
-     * @param filePath      source-relative file path
-     * @param startLine     first source line (1-based)
-     * @param endLine       last source line (1-based)
-     * @param sourceSnippet pretty-printed source text produced by Spoon's
-     *                      {@code toString()}; empty for external/synthetic nodes
+     * @param filePath      source-relative file path ({@code "unknown"} for external nodes)
+     * @param startLine     first source line (1-based); {@code -1} for external/synthetic nodes
+     *                      that have no source file in this project
+     * @param endLine       last source line (1-based); {@code -1} for external/synthetic nodes
+     * @param sourceSnippet verbatim original source lines for project nodes;
+     *                      Spoon pretty-printed text for external/synthetic nodes
+     *                      (no source file available); empty string when unavailable
      */
     public record GraphNode(
             String id,
@@ -288,15 +291,13 @@ public class AstGraphService {
      */
     public String normalizeFilePath(String diffPath, ProjectGraph graph) {
         if (diffPath == null || diffPath.isBlank()) return diffPath;
-        // normalise separators
         String normalised = diffPath.replace('\\', '/');
         for (String known : graph.allFilePaths()) {
             String knownNorm = known.replace('\\', '/');
-            if (normalised.equals(knownNorm)) return known;           // exact match
-            if (normalised.endsWith("/" + knownNorm)) return known;   // prefix stripped
-            if (knownNorm.endsWith("/" + normalised)) return known;   // inverse (unlikely)
+            if (normalised.equals(knownNorm)) return known;
+            if (normalised.endsWith("/" + knownNorm)) return known;
+            if (knownNorm.endsWith("/" + normalised)) return known;
         }
-        // fallback: try stripping leading path segments one by one
         String[] parts = normalised.split("/");
         for (int i = 1; i < parts.length; i++) {
             String candidate = String.join("/", Arrays.copyOfRange(parts, i, parts.length));
@@ -336,7 +337,6 @@ public class AstGraphService {
             return roots;
         }
 
-        // Fallback: walk top-level subdirectories, exclude known output dirs
         List<String> fallback = new ArrayList<>();
         try (Stream<Path> top = Files.list(projectRoot)) {
             top.filter(Files::isDirectory)
@@ -381,19 +381,36 @@ public class AstGraphService {
                 }
             }
 
-            var graph = new ProjectGraph();
+            // Read source files into memory once for verbatim snippet extraction.
+            // Key: relative path (same as stored in GraphNode.filePath).
+            Map<String, String[]> sourceLines = new ConcurrentHashMap<>();
             String root = projectRoot.toString();
+            for (String srcRoot : sourceRoots) {
+                Path srcRootPath = Path.of(srcRoot);
+                if (!Files.isDirectory(srcRootPath)) continue;
+                try (Stream<Path> walk = Files.walk(srcRootPath)) {
+                    walk.filter(p -> p.toString().endsWith(".java"))
+                        .forEach(p -> {
+                            String rel = relPath(root, p.toAbsolutePath().toString());
+                            try {
+                                String[] lines = Files.readString(p, StandardCharsets.UTF_8).split("\n", -1);
+                                sourceLines.put(rel, lines);
+                            } catch (IOException e) {
+                                log.warn("Cannot read source file {}: {}", p, e.getMessage());
+                            }
+                        });
+                }
+            }
 
-            // ── 1. Type nodes ───────────────────────────────────────────────────────
+            var graph = new ProjectGraph();
+
+            // ── 1. Type nodes ────────────────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
                 String id = qualifiedName(type);
                 if (id == null) return;
                 String file = relPath(root, sourceFile(type));
                 int[] ln = lines(type);
 
-                // Determine NodeKind: CtInterface → INTERFACE,
-                //                     CtAnnotationType → ANNOTATION,
-                //                     everything else → CLASS
                 NodeKind kind;
                 if (type instanceof CtAnnotationType) {
                     kind = NodeKind.ANNOTATION;
@@ -404,7 +421,8 @@ public class AstGraphService {
                 }
 
                 graph.addNode(new GraphNode(id, kind, type.getSimpleName(),
-                        file, ln[0], ln[1], snippet(type)));
+                        file, ln[0], ln[1],
+                        extractSource(sourceLines, file, ln[0], ln[1], type)));
 
                 if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH)) {
                     type.getAnnotations().forEach(ann ->
@@ -416,7 +434,7 @@ public class AstGraphService {
                 }
             });
 
-            // ── 2. EXTENDS / IMPLEMENTS ──────────────────────────────────────────────
+            // ── 2. EXTENDS / IMPLEMENTS ─────────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.EXTENDS) || edgeConfig.isEnabled(EdgeKind.IMPLEMENTS)) {
                 model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
                     String id = qualifiedName(type);
@@ -426,14 +444,12 @@ public class AstGraphService {
 
                     if (edgeConfig.isEnabled(EdgeKind.EXTENDS)) {
                         if (type instanceof CtClass<?> cls) {
-                            // class extends class
                             var superRef = cls.getSuperclass();
                             if (superRef != null)
                                 graph.addEdge(new GraphEdge(
                                         id, EdgeKind.EXTENDS, superRef.getQualifiedName(), file, ln[0]
                                 ));
                         } else if (type instanceof CtInterface<?> iface) {
-                            // interface extends interface(s)
                             iface.getSuperInterfaces().forEach(superRef ->
                                     graph.addEdge(new GraphEdge(
                                             id, EdgeKind.EXTENDS, superRef.getQualifiedName(), file, ln[0]
@@ -450,12 +466,11 @@ public class AstGraphService {
                                     ))
                             );
                         }
-                        // CtInterface EXTENDS (not IMPLEMENTS) handled above
                     }
                 });
             }
 
-            // ── 3. TYPE_PARAM nodes ────────────────────────────────────────────────
+            // ── 3. TYPE_PARAM nodes ──────────────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.HAS_TYPE_PARAM)) {
                 model.getElements(new TypeFilter<>(CtFormalTypeDeclarer.class)).forEach(declarer -> {
                     String ownerId = formalDeclarerId(declarer);
@@ -467,7 +482,8 @@ public class AstGraphService {
                         String tpId = typeParamId(ownerId, tp);
                         int[] tpLn = lines(tp);
                         graph.addNode(new GraphNode(tpId, NodeKind.TYPE_PARAM, tp.getSimpleName(),
-                                file, tpLn[0], tpLn[1], snippet(tp)));
+                                file, tpLn[0], tpLn[1],
+                                extractSource(sourceLines, file, tpLn[0], tpLn[1], tp)));
                         graph.addEdge(new GraphEdge(
                                 ownerId, EdgeKind.HAS_TYPE_PARAM, tpId,
                                 file, ownerLn[0]
@@ -496,7 +512,8 @@ public class AstGraphService {
                 String file = relPath(root, sourceFile(m));
                 int[] ln = lines(m);
                 graph.addNode(new GraphNode(id, NodeKind.METHOD, m.getSimpleName(),
-                        file, ln[0], ln[1], snippet(m)));
+                        file, ln[0], ln[1],
+                        extractSource(sourceLines, file, ln[0], ln[1], m)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     String classId = qualifiedName(m.getDeclaringType());
@@ -519,14 +536,15 @@ public class AstGraphService {
                 }
             });
 
-            // ── 5. Constructor nodes ───────────────────────────────────────────────────────
+            // ── 5. Constructor nodes ────────────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtConstructor.class)).forEach(c -> {
                 String id = typeMemberExecId(c);
                 if (id == null) return;
                 String file = relPath(root, sourceFile(c));
                 int[] ln = lines(c);
                 graph.addNode(new GraphNode(id, NodeKind.CONSTRUCTOR, c.getSimpleName(),
-                        file, ln[0], ln[1], snippet(c)));
+                        file, ln[0], ln[1],
+                        extractSource(sourceLines, file, ln[0], ln[1], c)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     String classId = qualifiedName(c.getDeclaringType());
@@ -535,7 +553,7 @@ public class AstGraphService {
                 }
             });
 
-            // ── 6. Field nodes ────────────────────────────────────────────────────────────
+            // ── 6. Field nodes ────────────────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtField.class)).forEach(field -> {
                 if (field.getDeclaringType() instanceof CtAnnotationType) return;
                 String id = fieldId(field);
@@ -543,7 +561,8 @@ public class AstGraphService {
                 String file = relPath(root, sourceFile(field));
                 int[] ln = lines(field);
                 graph.addNode(new GraphNode(id, NodeKind.FIELD, field.getSimpleName(),
-                        file, ln[0], ln[1], snippet(field)));
+                        file, ln[0], ln[1],
+                        extractSource(sourceLines, file, ln[0], ln[1], field)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     String classId = qualifiedName(field.getDeclaringType());
@@ -560,7 +579,7 @@ public class AstGraphService {
                 }
             });
 
-            // ── 7. Local variable + parameter nodes ─────────────────────────────────────────
+            // ── 7. Local variable + parameter nodes ───────────────────────────────────
             model.getElements(new TypeFilter<>(CtVariable.class)).forEach(v -> {
                 if (v instanceof CtField) return;
                 String id = varId(v);
@@ -568,10 +587,11 @@ public class AstGraphService {
                 String file = relPath(root, sourceFile(v));
                 int[] ln = lines(v);
                 graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(),
-                        file, ln[0], ln[1], snippet(v)));
+                        file, ln[0], ln[1],
+                        extractSource(sourceLines, file, ln[0], ln[1], v)));
             });
 
-            // ── 8. ANNOTATION_ATTRIBUTE nodes ─────────────────────────────────────────────
+            // ── 8. ANNOTATION_ATTRIBUTE nodes ──────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATION_ATTR)) {
                 model.getElements(new TypeFilter<>(CtAnnotationType.class)).forEach(ann -> {
                     String annoId = qualifiedName(ann);
@@ -585,7 +605,8 @@ public class AstGraphService {
                         String attrId = annoId + "#" + m.getSimpleName();
                         int[] ln = lines(m);
                         graph.addNode(new GraphNode(attrId, NodeKind.ANNOTATION_ATTRIBUTE,
-                                m.getSimpleName(), file, ln[0], ln[1], snippet(m)));
+                                m.getSimpleName(), file, ln[0], ln[1],
+                                extractSource(sourceLines, file, ln[0], ln[1], m)));
                         graph.addEdge(new GraphEdge(
                                 annoId, EdgeKind.ANNOTATION_ATTR, attrId, file, ln[0]
                         ));
@@ -593,13 +614,14 @@ public class AstGraphService {
                 });
             }
 
-            // ── 9. Lambda nodes ───────────────────────────────────────────────────────────
+            // ── 9. Lambda nodes ────────────────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtLambda.class)).forEach(lambda -> {
                 String file = relPath(root, sourceFile(lambda));
                 int[] ln = lines(lambda);
                 String id = "lambda@" + file + ":" + ln[0];
                 graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb",
-                        file, ln[0], ln[1], snippet(lambda)));
+                        file, ln[0], ln[1],
+                        extractSource(sourceLines, file, ln[0], ln[1], lambda)));
 
                 if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                     CtMethod<?> em = lambda.getParent(CtMethod.class);
@@ -618,7 +640,7 @@ public class AstGraphService {
                 }
             });
 
-            // ── 10. INVOKES ────────────────────────────────────────────────────────────
+            // ── 10. INVOKES ───────────────────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.INVOKES)) {
                 model.getElements(new TypeFilter<>(CtInvocation.class)).forEach(inv -> {
                     String callerId = nearestExecId(inv);
@@ -630,7 +652,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 11. INSTANTIATES / INSTANTIATES_ANONYMOUS ────────────────────────────────────
+            // ── 11. INSTANTIATES / INSTANTIATES_ANONYMOUS ───────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.INSTANTIATES) || edgeConfig.isEnabled(EdgeKind.INSTANTIATES_ANONYMOUS)) {
                 model.getElements(new TypeFilter<>(CtConstructorCall.class)).forEach(cc -> {
                     String callerId = nearestExecId(cc);
@@ -644,11 +666,6 @@ public class AstGraphService {
                                 callerId, kind, typeId,
                                 relPath(root, sourceFile(cc)), posLine(cc)
                         ));
-                    // Also emit an INVOKES edge so the constructor node gets a proper callee entry.
-                    // The key produced by execRefId(cc.getExecutable()) is identical to
-                    // typeMemberExecId(c) used when the CONSTRUCTOR node was registered in Pass 1,
-                    // so GraphViewBuilder.wireEdge routes it through addCallerCallee() and
-                    // populates both caller.callees and constructor.callers symmetrically.
                     if (edgeConfig.isEnabled(EdgeKind.INVOKES)) {
                         graph.addEdge(new GraphEdge(
                                 callerId, EdgeKind.INVOKES, execRefId(cc.getExecutable()),
@@ -670,7 +687,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 13. READS_FIELD / WRITES_FIELD ───────────────────────────────────────────────
+            // ── 13. READS_FIELD / WRITES_FIELD ────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.READS_FIELD) || edgeConfig.isEnabled(EdgeKind.WRITES_FIELD)) {
                 model.getElements(new TypeFilter<>(CtFieldAccess.class)).forEach(fa -> {
                     String execId = nearestExecId(fa);
@@ -688,7 +705,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 14. READS_LOCAL_VAR / WRITES_LOCAL_VAR ─────────────────────────────────────
+            // ── 14. READS_LOCAL_VAR / WRITES_LOCAL_VAR ─────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.READS_LOCAL_VAR) || edgeConfig.isEnabled(EdgeKind.WRITES_LOCAL_VAR)) {
                 model.getElements(new TypeFilter<>(CtVariableAccess.class)).forEach(va -> {
                     if (va instanceof CtFieldAccess) return;
@@ -704,7 +721,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 15. THROWS ───────────────────────────────────────────────────────────────
+            // ── 15. THROWS ────────────────────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.THROWS)) {
                 model.getElements(new TypeFilter<>(CtThrow.class)).forEach(thr -> {
                     String execId = nearestExecId(thr);
@@ -722,7 +739,7 @@ public class AstGraphService {
                 });
             }
 
-            // ── 16. REFERENCES_TYPE ─────────────────────────────────────────────────────────
+            // ── 16. REFERENCES_TYPE ───────────────────────────────────────────────────────
             if (edgeConfig.isEnabled(EdgeKind.REFERENCES_TYPE)) {
                 model.getElements(new TypeFilter<>(CtTypeAccess.class)).forEach(ta -> {
                     String execId = nearestExecId(ta);
@@ -745,8 +762,41 @@ public class AstGraphService {
     }
 
     // ------------------------------------------------------------------
-    // Source snippet helper
+    // Source snippet helpers
     // ------------------------------------------------------------------
+
+    /**
+     * Returns verbatim original source lines for {@code startLine..endLine} when
+     * the file is present in {@code sourceLines}; falls back to Spoon
+     * {@code toString()} otherwise (external/synthetic nodes).
+     *
+     * <p>When the fallback is used, {@code startLine} should already be {@code -1}
+     * (set by {@link #lines(CtElement)} for elements without a valid position),
+     * so callers can distinguish external snippets from project snippets.
+     *
+     * @param sourceLines map of relative file path → source lines (1-based index = array[line-1])
+     * @param filePath    relative path of the file
+     * @param startLine   first line, 1-based; {@code -1} or {@code 0} triggers fallback
+     * @param endLine     last line, 1-based
+     * @param el          Spoon element used as fallback
+     * @return non-null source text
+     */
+    private static String extractSource(Map<String, String[]> sourceLines,
+                                        String filePath, int startLine, int endLine,
+                                        CtElement el) {
+        if (startLine > 0 && endLine >= startLine) {
+            String[] lines = sourceLines.get(filePath);
+            if (lines != null) {
+                int from = Math.max(0, startLine - 1);
+                int to   = Math.min(lines.length, endLine);
+                if (from < to) {
+                    return String.join("\n", Arrays.copyOfRange(lines, from, to));
+                }
+            }
+        }
+        // fallback: Spoon pretty-print (external dependency or missing file)
+        return snippet(el);
+    }
 
     private static String snippet(CtElement el) {
         try { String s = el.toString(); return s != null ? s : ""; }
@@ -846,21 +896,26 @@ public class AstGraphService {
                 ? abs.substring(root.length()).replaceFirst("^[/\\\\]", "") : abs;
     }
 
+    /**
+     * Returns {@code [startLine, endLine]} for the element, both 1-based.
+     * Returns {@code [-1, -1]} when position information is unavailable
+     * (external or synthetic node — no source file in this project).
+     */
     private int[] lines(CtElement el) {
         try {
             var pos = el.getPosition();
             if (pos.isValidPosition())
                 return new int[]{ pos.getLine(), pos.getEndLine() };
         } catch (Exception ignored) {}
-        return new int[]{ 0, 0 };
+        return new int[]{ -1, -1 };
     }
 
     private int posLine(CtElement el) {
         try {
             var pos = el.getPosition();
-            return pos.isValidPosition() ? pos.getLine() : 0;
+            return pos.isValidPosition() ? pos.getLine() : -1;
         } catch (Exception e) {
-            return 0;
+            return -1;
         }
     }
 }
