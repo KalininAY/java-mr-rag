@@ -12,35 +12,31 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * {@link ProjectSourceProvider} that downloads {@code .java} files from a
- * GitLab repository via the GitLab4J API — <strong>no {@code git clone}</strong>.
+ * {@link ProjectSourceProvider} that downloads {@code .java} files directly
+ * from the GitLab Repository Files API — <strong>no {@code git clone}</strong> required.
  *
  * <h2>How it works</h2>
  * <ol>
- *   <li>Walk the full repository tree via
- *       {@code RepositoryApi.getTree(recursive = true)}, collecting
- *       every path that ends with {@code .java}.</li>
- *   <li>Download each file's raw bytes via
- *       {@code RepositoryFileApi.getRawFile()} and wrap the UTF-8 text
- *       in a {@link ProjectSource}.</li>
+ *   <li>Walks the repository tree via
+ *       {@code RepositoryApi.getTree(projectId, null, ref, recursive=true)} to collect
+ *       all {@code .java} paths.</li>
+ *   <li>Downloads each file's raw content via
+ *       {@code RepositoryFileApi.getRawFile(projectId, ref, path)}.</li>
+ *   <li>Returns the content as {@link VirtualSource} records — no temp files created.</li>
  * </ol>
  *
- * <h2>Ref semantics</h2>
- * <p>{@code ref} is passed verbatim to the GitLab Repository Files API,
- * which accepts a branch name, a tag name, or a full / abbreviated
- * <strong>commit SHA</strong>.  Use any of these to pin the analysis to
- * an exact repository state.
+ * <p>{@code ref} accepts a branch name, tag name, or a full / abbreviated
+ * <strong>commit SHA</strong>.  GitLab resolves any ref type transparently.
  *
  * <h2>Rate limiting</h2>
- * <p>For large projects (hundreds of Java files) the sequential download
- * loop may take several seconds.  Consider adding retries or a small
- * back-off if you observe HTTP 429 responses.
+ * GitLab API enforces per-user rate limits. For projects with many {@code .java} files
+ * consider adding a small sleep between requests or using a GitLab token with higher limits.
  *
  * <h2>Usage</h2>
  * <pre>{@code
  * ProjectSourceProvider provider =
- *     new GitLabProjectSourceProvider(gitLabApi, projectId, "a1b2c3d4");
- * ProjectGraph graph = graphBuildService.buildGraph(provider);
+ *     new GitLabProjectSourceProvider(gitLabApi, 123L, "a1b2c3d4");
+ * List<VirtualSource> sources = provider.loadSources();
  * }</pre>
  */
 @Slf4j
@@ -48,7 +44,7 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
 
     private final GitLabApi gitLabApi;
     private final long      projectId;
-    /** Branch name, tag name, or full / abbreviated commit SHA. */
+    /** Branch name, tag name, or commit SHA (full or abbreviated). */
     private final String    ref;
 
     public GitLabProjectSourceProvider(GitLabApi gitLabApi, long projectId, String ref) {
@@ -57,15 +53,26 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
         this.ref       = ref;
     }
 
-    public long getProjectId() { return projectId; }
-    public String getRef()     { return ref; }
-
+    /**
+     * Cache key: {@code "gitlab:<projectId>@<ref>"}.  Include the commit SHA
+     * (rather than a branch name) when you need a fresh graph on every call.
+     */
     @Override
-    public List<ProjectSource> getSources() throws GitLabApiException, IOException {
-        log.info("Fetching .java tree from GitLab: projectId={}, ref={}", projectId, ref);
+    public Object projectKey() {
+        return "gitlab:" + projectId + "@" + ref;
+    }
+
+    /**
+     * Downloads all {@code .java} files for the configured project + ref.
+     * Files that cannot be fetched are skipped with a {@code WARN} log entry.
+     */
+    @Override
+    public List<VirtualSource> loadSources() throws GitLabApiException, IOException {
+        log.info("[GitLabProjectSourceProvider] loading .java files: projectId={} ref={}",
+                projectId, ref);
 
         List<TreeItem> tree = gitLabApi.getRepositoryApi()
-                .getTree(projectId, null, ref, true); // recursive = true
+                .getTree(projectId, null, ref, true);
 
         List<String> javaPaths = tree.stream()
                 .filter(item -> item.getType() == TreeItem.Type.BLOB)
@@ -73,21 +80,31 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
                 .filter(p -> p.endsWith(".java"))
                 .toList();
 
-        log.info("Found {} .java files in project {} at ref={}",
-                javaPaths.size(), projectId, ref);
+        log.info("Found {} .java paths in project {} at ref={}", javaPaths.size(), projectId, ref);
 
-        List<ProjectSource> sources = new ArrayList<>(javaPaths.size());
+        List<VirtualSource> result = new ArrayList<>(javaPaths.size());
         for (String filePath : javaPaths) {
             try {
-                sources.add(new ProjectSource(filePath, fetchRaw(filePath)));
+                String content = fetchRaw(filePath);
+                result.add(new VirtualSource(filePath, content));
             } catch (Exception ex) {
-                log.warn("Skipping {} — fetch error: {}", filePath, ex.getMessage());
+                log.warn("Skip {} — fetch error: {}", filePath, ex.getMessage());
             }
         }
 
-        log.info("Loaded {}/{} .java files from GitLab (project={}, ref={})",
-                sources.size(), javaPaths.size(), projectId, ref);
-        return sources;
+        log.info("[GitLabProjectSourceProvider] loaded {}/{} files (project={} ref={})",
+                result.size(), javaPaths.size(), projectId, ref);
+        return result;
+    }
+
+    /**
+     * In GitLab API mode the paths returned by {@link #loadSources()} are already
+     * repository-relative (e.g. {@code "src/main/java/com/example/Foo.java"}),
+     * so no root-prefix stripping is needed.
+     */
+    @Override
+    public String rootHint() {
+        return "";
     }
 
     // ------------------------------------------------------------------ helpers
