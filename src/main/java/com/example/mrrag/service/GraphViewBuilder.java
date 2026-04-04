@@ -33,8 +33,9 @@ import java.util.*;
  *       signature style) → {@link ConstructorNodeView} stub</li>
  *   <li>all other ids → {@link ClassNodeView} stub</li>
  * </ul>
- * This ensures that edge lists are never {@code null}, traversal never throws
- * {@link NullPointerException}, and callee lists reflect the correct node type.
+ * Stub nodes always have {@code startLine = -1}, {@code filePath = "external"},
+ * and an empty snippet, so {@link com.example.mrrag.view.GraphNodeView#toMarkdown()}
+ * correctly emits {@code -1|<id>} lines for them.
  */
 @Slf4j
 @Service
@@ -236,15 +237,12 @@ public class GraphViewBuilder {
             // ── Type hierarchy ────────────────────────────────────────────────
             case EXTENDS -> {
                 if (from instanceof ClassNodeView sub && to instanceof ClassNodeView sup) {
-                    // class extends class
                     sub.setSuperClass(sup);
                     sup.addSubClass(sub);
                 } else if (from instanceof InterfaceNodeView sub && to instanceof InterfaceNodeView sup) {
-                    // interface extends interface
                     sub.addExtendedInterface(sup);
                     sup.addSubInterface(sub);
                 } else if (from instanceof InterfaceNodeView sub) {
-                    // interface extends external stub (ClassNodeView)
                     ClassNodeView stubSup = (ClassNodeView) to;
                     stubSup.addSubInterface(sub);
                 }
@@ -252,11 +250,9 @@ public class GraphViewBuilder {
             case IMPLEMENTS -> {
                 if (from instanceof ClassNodeView impl) {
                     if (to instanceof InterfaceNodeView iface) {
-                        // resolved interface — use typed overload
                         impl.addInterface(iface);
                         iface.addImplementation(impl);
                     } else if (to instanceof ClassNodeView iface) {
-                        // external stub
                         impl.addInterface(iface);
                         iface.addImplementation(impl);
                     }
@@ -333,7 +329,6 @@ public class GraphViewBuilder {
 
             // ── Annotations ───────────────────────────────────────────────────
             case ANNOTATED_WITH -> {
-                // from = annotated node, to = annotation type
                 if (to instanceof ClassNodeView annType) {
                     from.addAnnotatedBy(annType);
                     annType.addAnnotatedNode(from);
@@ -392,6 +387,10 @@ public class GraphViewBuilder {
      *       {@link ConstructorNodeView} stub</li>
      *   <li>Otherwise → {@link ClassNodeView} stub (external type)</li>
      * </ul>
+     *
+     * <p>Stub nodes receive {@code startLine = -1} and {@code filePath = "external"}
+     * so that {@link com.example.mrrag.view.GraphNodeView#toMarkdown()} emits
+     * {@code -1|<id>} lines for them.
      */
     private GraphNodeView resolve(ViewGraph vg, String id) {
         GraphNodeView existing = vg.byId(id);
@@ -414,7 +413,7 @@ public class GraphViewBuilder {
                 stubKind,
                 simpleNameOf(id),
                 "external",
-                0, 0,
+                -1, -1,   // -1 = external/synthetic: no source position
                 null
         );
 
