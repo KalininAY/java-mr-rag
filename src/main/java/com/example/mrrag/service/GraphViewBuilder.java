@@ -368,9 +368,10 @@ public class GraphViewBuilder {
         else if (from instanceof ConstructorNodeView c) { c.addCallee(to);   c.addEdgeLine(to.getId(), line); }
         else if (from instanceof LambdaNodeView l)      { l.addCallee(to);   l.addEdgeLine(to.getId(), line); }
 
-        if      (to instanceof MethodNodeView m)        m.addCaller(from);
-        else if (to instanceof ConstructorNodeView c)   c.addCaller(from);
-        else if (to instanceof LambdaNodeView l)        l.addCaller(from);
+        String callerId = from.getId();
+        if      (to instanceof MethodNodeView m)        { m.addCaller(from);        m.recordCallerInvocationSite(callerId, line); }
+        else if (to instanceof ConstructorNodeView c)   { c.addCaller(from);        c.recordCallerInvocationSite(callerId, line); }
+        else if (to instanceof LambdaNodeView l)        { l.addCaller(from);        l.recordCallerInvocationSite(callerId, line); }
     }
 
     /**
@@ -469,7 +470,14 @@ public class GraphViewBuilder {
         // inner class: OuterClass$Inner → simpleName is "Inner"
         int dollar = simpleName.lastIndexOf('$');
         if (dollar >= 0) simpleName = simpleName.substring(dollar + 1);
-        return afterHash.startsWith(simpleName + "(");
+        if (afterHash.startsWith(simpleName + "(")) return true;
+        int open = afterHash.indexOf('(');
+        if (open > 0 && afterHash.lastIndexOf(')') == afterHash.length() - 1) {
+            String nameBeforeParams = afterHash.substring(0, open);
+            return nameBeforeParams.equals(simpleName)
+                    || nameBeforeParams.endsWith("." + simpleName);
+        }
+        return false;
     }
 
     private static String simpleNameOf(String id) {

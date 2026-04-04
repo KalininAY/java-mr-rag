@@ -45,6 +45,7 @@ public class GraphDebugController {
 
         GraphViewBuilder.ViewGraph build = new GraphViewBuilder().build(graph);
         String s = build.byId("bugbusters.modules.extensions.allure.model.AllureStep#findPlaceFrom()").toMarkdown();
+        String s1 = build.byId("bugbusters.modules.extensions.allure.utils.Steps#step(java.lang.String,io.qameta.allure.Allure$ThrowableRunnable)").toMarkdown();
 
         Map<String, Long> byKind = graph.nodes.values().stream()
                 .collect(Collectors.groupingBy(n -> n.kind().name(), Collectors.counting()));

@@ -41,6 +41,12 @@ public abstract class GraphNodeView {
     private final GraphNode node;
 
     /**
+     * For METHOD/CONSTRUCTOR/LAMBDA nodes: maps caller id → source lines where that
+     * caller invokes <em>this</em> node (reverse of INVOKES). Used by {@link #toMarkdown()}.
+     */
+    private Map<String, List<Integer>> callerSiteLinesMap;
+
+    /**
      * Nodes that declared this node via a {@code DECLARES} edge.
      * For most nodes this list contains exactly one entry (the owner class or
      * executable).  Top-level classes with no owning type in the graph have
@@ -163,6 +169,35 @@ public abstract class GraphNodeView {
     public void addDeclaredBy(GraphNodeView owner) { declaredBy.add(owner); }
     public void addAnnotatedBy(ClassNodeView annotation) { annotatedBy.add(annotation); }
 
+    /**
+     * Records a source line at which {@code callerId} invokes this callable.
+     * Populated from reverse INVOKES wiring in {@link com.example.mrrag.service.GraphViewBuilder}.
+     */
+    public void recordCallerInvocationSite(String callerId, int line) {
+        if (callerId == null || line <= 0) return;
+        if (callerSiteLinesMap == null) {
+            callerSiteLinesMap = new HashMap<>();
+        }
+        callerSiteLinesMap.computeIfAbsent(callerId, k -> new ArrayList<>()).add(line);
+    }
+
+    /**
+     * Source lines where the given caller invokes this node; empty if unknown.
+     */
+    protected List<Integer> callerSiteLinesFrom(String callerId) {
+        if (callerSiteLinesMap == null) {
+            return List.of();
+        }
+        return callerSiteLinesMap.getOrDefault(callerId, List.of());
+    }
+
+    /**
+     * Outgoing INVOKES targets; empty unless this node maintains a call graph.
+     */
+    protected List<GraphNodeView> outgoingCallees() {
+        return List.of();
+    }
+
     // -------------------------------------------------------------------------
     // toString + toMarkdown
     // -------------------------------------------------------------------------
@@ -198,8 +233,10 @@ public abstract class GraphNodeView {
      * {@link #collectReferencedLines(GraphNodeView, String)}.
      *
      * <p>Constructor IDs use the canonical {@code #&lt;init&gt;(...)} form.
-     * Scalar fields that are themselves {@link GraphNodeView} instances are
-     * rendered the same way as single-element collections.
+     * {@code callers} lists show the invocation line inside each caller's body when known.
+     * {@code instantiates} prefers the matching {@code CONSTRUCTOR} node when an INVOKES edge
+     * shares the same source line as {@code new}. Scalar fields that are themselves
+     * {@link GraphNodeView} instances are rendered the same way as single-element collections.
      *
      * @return markdown string; never {@code null}
      */
@@ -227,10 +264,10 @@ public abstract class GraphNodeView {
             if (value == null) {
                 // null scalar field — skip silently (no output line)
             } else if (value instanceof Collection<?> col) {
-                appendGroupedCollection(sb, col, this);
+                appendGroupedCollection(sb, col, this, field.getName());
             } else if (value instanceof GraphNodeView view) {
                 // Scalar GraphNodeView field: render identically to a single-element collection
-                appendGroupedCollection(sb, List.of(view), this);
+                appendGroupedCollection(sb, List.of(view), this, field.getName());
             } else if (value instanceof Map) {
                 // Internal edge-line maps: skip from markdown output
             } else {
@@ -283,8 +320,10 @@ public abstract class GraphNodeView {
      *       {@code ### [KIND] id Lines:[n1,n2,...]} where the line numbers are
      *       collected from outgoing/incoming edges of {@code owner} that reference
      *       this node.</li>
-     *   <li><b>Project node</b>: {@code ### [KIND] id} followed by one
-     *       {@code startLine|declarationLine} line (or snippet when declaration
+     *   <li><b>Project node</b>: {@code ### [KIND] id} optionally with
+     *       {@code Lines:[n1,n2,...]} when the collection field records outgoing
+     *       edges (e.g. {@code callees}), then one or more
+     *       {@code startLine|declarationLine} lines (or snippet when declaration
      *       is blank).</li>
      *   <li><b>Scalar</b>: emitted as {@code 1|value}.</li>
      * </ul>
@@ -296,25 +335,37 @@ public abstract class GraphNodeView {
      */
     private static void appendGroupedCollection(StringBuilder sb,
                                                 Collection<?> col,
-                                                GraphNodeView owner) {
+                                                GraphNodeView owner,
+                                                String contextFieldName) {
         // Preserve insertion order; key = normalised node id (or "values" for scalars)
         // value = list of text lines to emit under the ### header
         Map<String, List<String>> sections = new LinkedHashMap<>();
 
         for (Object element : col) {
             if (element instanceof GraphNodeView view) {
-                String id = normalizeId(view.getId());
-                String key = "[" + view.node.kind() + "] " + id;
+                GraphNodeView displayView = view;
+                if ("instantiates".equals(contextFieldName) && view instanceof ClassNodeView cls) {
+                    GraphNodeView ctor = resolveInstantiationConstructor(owner, cls);
+                    if (ctor != null) {
+                        displayView = ctor;
+                    }
+                }
+
+                String id = normalizeId(displayView.getId());
+                String key = "[" + displayView.node.kind() + "] " + id;
                 if (!sections.containsKey(key)) {
                     sections.put(key, new ArrayList<>());
                 }
                 List<String> bodyLines = sections.get(key);
 
-                if (view.getStartLine() == -1) {
+                if (displayView.getStartLine() == -1) {
                     // External node: body is empty — all info goes into the header via Lines:[...]
                 } else {
-                    // Project node: emit declaration (or snippet) line(s)
-                    appendProjectElementLines(bodyLines, view);
+                    // Project node: emit declaration (or snippet) line(s). Same callee may appear
+                    // multiple times (different call sites); emit the declaration block only once.
+                    if (bodyLines.isEmpty()) {
+                        appendProjectElementLines(bodyLines, displayView, owner, contextFieldName);
+                    }
                 }
             } else {
                 sections.computeIfAbsent("values", k -> new ArrayList<>())
@@ -322,22 +373,37 @@ public abstract class GraphNodeView {
             }
         }
 
-        // Now render sections.  For external nodes, collect referenced line numbers.
+        // Now render sections. External nodes: Lines:[...] only in the header.
+        // Project nodes in outgoing-edge fields (callees, readsFields, …): Lines:[...] on the header too.
         for (Map.Entry<String, List<String>> entry : sections.entrySet()) {
             String sectionKey = entry.getKey();
             List<String> bodyLines = entry.getValue();
 
-            if (bodyLines.isEmpty() && sectionKey.startsWith("[")) {
-                // External node: append Lines:[...] annotation
-                String linesAnnotation = buildLinesAnnotation(col, sectionKey, owner);
-                sb.append("### ").append(sectionKey).append(linesAnnotation).append('\n');
-            } else {
-                sb.append("### ").append(sectionKey).append('\n');
-                for (String line : bodyLines) {
-                    sb.append(line).append('\n');
+            String linesAnnotation = "";
+            if (sectionKey.startsWith("[")) {
+                if (bodyLines.isEmpty()) {
+                    linesAnnotation = buildLinesAnnotation(col, sectionKey, owner, contextFieldName);
+                } else if (includeOutgoingLinesInHeader(contextFieldName)) {
+                    linesAnnotation = buildLinesAnnotation(col, sectionKey, owner, contextFieldName);
                 }
             }
+            sb.append("### ").append(sectionKey).append(linesAnnotation).append('\n');
+            for (String line : bodyLines) {
+                sb.append(line).append('\n');
+            }
         }
+    }
+
+    /**
+     * Context fields where {@code owner} records {@link #edgeLinesTo(String)} for each target
+     * — show {@code Lines:[...]} on the {@code ###} header even for project nodes.
+     */
+    private static boolean includeOutgoingLinesInHeader(String contextFieldName) {
+        return switch (contextFieldName) {
+            case "callees", "referencedMethods", "instantiates", "instantiatesAnon",
+                 "readsFields", "writesFields", "throwsTypes", "referencesTypes" -> true;
+            default -> false;
+        };
     }
 
     /**
@@ -346,17 +412,26 @@ public abstract class GraphNodeView {
      */
     private static String buildLinesAnnotation(Collection<?> col,
                                                String sectionKey,
-                                               GraphNodeView owner) {
+                                               GraphNodeView owner,
+                                               String contextFieldName) {
         int spaceIdx = sectionKey.indexOf("] ");
         if (spaceIdx < 0) return "";
         String normalizedId = sectionKey.substring(spaceIdx + 2);
 
         GraphNodeView targetView = null;
         for (Object element : col) {
-            if (element instanceof GraphNodeView v
-                    && normalizeId(v.getId()).equals(normalizedId)) {
-                targetView = v;
-                break;
+            if (element instanceof GraphNodeView v) {
+                GraphNodeView match = v;
+                if ("instantiates".equals(contextFieldName) && v instanceof ClassNodeView cls) {
+                    GraphNodeView ctor = resolveInstantiationConstructor(owner, cls);
+                    if (ctor != null) {
+                        match = ctor;
+                    }
+                }
+                if (normalizeId(match.getId()).equals(normalizedId)) {
+                    targetView = match;
+                    break;
+                }
             }
         }
         if (targetView == null) return "";
@@ -396,9 +471,73 @@ public abstract class GraphNodeView {
     }
 
     /**
+     * If {@code owner} instantiates {@code cls} via {@code new} on the same line as an INVOKES
+     * edge to a constructor, returns that constructor view for markdown headers/snippets.
+     */
+    private static GraphNodeView resolveInstantiationConstructor(GraphNodeView owner, ClassNodeView cls) {
+        List<Integer> classLines = owner.edgeLinesTo(cls.getId());
+        if (classLines.isEmpty()) {
+            return null;
+        }
+        Set<Integer> classLineSet = new HashSet<>(classLines);
+        String classId = cls.getId();
+        for (GraphNodeView c : owner.outgoingCallees()) {
+            if (c.getKind() != NodeKind.CONSTRUCTOR) {
+                continue;
+            }
+            String nid = normalizeId(c.getId());
+            if (!nid.startsWith(classId + "#")) {
+                continue;
+            }
+            for (int L : owner.edgeLinesTo(c.getId())) {
+                if (classLineSet.contains(L)) {
+                    return c;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String physicalLineContent(GraphNodeView view, int physicalLine) {
+        if (physicalLine <= 0 || view.getStartLine() <= 0) {
+            return null;
+        }
+        String content = view.getContent();
+        if (content == null || content.isBlank()) {
+            return null;
+        }
+        String[] ls = content.split("\n", -1);
+        int idx = physicalLine - view.getStartLine();
+        if (idx < 0 || idx >= ls.length) {
+            return null;
+        }
+        return ls[idx];
+    }
+
+    /**
      * Adds declaration line(s) of a project node to {@code lines}.
      */
-    private static void appendProjectElementLines(List<String> lines, GraphNodeView view) {
+    private static void appendProjectElementLines(List<String> lines,
+                                                  GraphNodeView view,
+                                                  GraphNodeView owner,
+                                                  String contextFieldName) {
+        if ("callers".equals(contextFieldName)) {
+            List<Integer> sites = owner.callerSiteLinesFrom(view.getId());
+            if (!sites.isEmpty()) {
+                boolean any = false;
+                for (int L : sites.stream().sorted().distinct().toList()) {
+                    String callLine = physicalLineContent(view, L);
+                    if (callLine != null) {
+                        lines.add(L + "|" + callLine);
+                        any = true;
+                    }
+                }
+                if (any) {
+                    return;
+                }
+            }
+        }
+
         String decl = view.getDeclaration();
         if (decl != null && !decl.isBlank()) {
             int first = Math.max(1, view.getStartLine());
@@ -428,6 +567,7 @@ public abstract class GraphNodeView {
      *   <li>{@code pkg.Outer$Inner#Inner(params)} — inner class (Spoon uses
      *       the simple inner-class name, not the dollar-qualified one)</li>
      *   <li>{@code pkg.ClassName#<init>(params)} — already normalised; returned as-is</li>
+     *   <li>{@code pkg.Type#fully.qualified.Type(params)} — legacy constructor form</li>
      * </ol>
      *
      * <p>Non-constructor IDs are returned unchanged.
@@ -452,6 +592,16 @@ public abstract class GraphNodeView {
 
         if (rest.startsWith(simpleName + "(")) {
             return owner + "#<init>(" + rest.substring(simpleName.length() + 1);
+        }
+
+        // Legacy ids: Spoon sometimes emitted "owner#fully.qualified.Type(params)" for constructors.
+        int openParen = rest.indexOf('(');
+        if (openParen > 0 && rest.lastIndexOf(')') == rest.length() - 1) {
+            String nameBeforeParams = rest.substring(0, openParen);
+            if (nameBeforeParams.equals(simpleName)
+                    || nameBeforeParams.endsWith("." + simpleName)) {
+                return owner + "#<init>" + rest.substring(openParen);
+            }
         }
         return id;
     }

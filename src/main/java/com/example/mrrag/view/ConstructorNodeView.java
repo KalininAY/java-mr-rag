@@ -137,6 +137,11 @@ public class ConstructorNodeView extends GraphNodeView {
         return edgeLinesMap.getOrDefault(targetId, List.of());
     }
 
+    @Override
+    protected List<GraphNodeView> outgoingCallees() {
+        return callees;
+    }
+
     // -------------------------------------------------------------------------
     // Mutators used by GraphViewBuilder
     // -------------------------------------------------------------------------

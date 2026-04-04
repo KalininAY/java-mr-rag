@@ -12,7 +12,8 @@ import java.util.*;
  * {@code lambda@src/main/java/com/example/Foo.java:42}.
  *
  * <p>{@link #getContent()} returns the Spoon pretty-printed lambda expression
- * text, e.g. {@code "x -> x * 2"} or a full block body.
+ * text, e.g. {@code "x -> x * 2"} or a full block body (used instead of the
+ * enclosing statement's verbatim source lines for clearer markdown context).
  *
  * <p>All list fields are pre-populated by
  * {@link com.example.mrrag.service.GraphViewBuilder}.
@@ -171,6 +172,11 @@ public class LambdaNodeView extends GraphNodeView {
     @Override
     protected List<Integer> edgeLinesTo(String targetId) {
         return edgeLinesMap.getOrDefault(targetId, List.of());
+    }
+
+    @Override
+    protected List<GraphNodeView> outgoingCallees() {
+        return callees;
     }
 
     // -------------------------------------------------------------------------
