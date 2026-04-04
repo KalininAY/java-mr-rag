@@ -12,6 +12,11 @@ import java.util.List;
  * unique id is {@code lambda@relPath:line}, e.g.
  * {@code lambda@src/main/java/com/example/Foo.java:42}.
  *
+ * <p>All edge-based collections ({@code callers}, {@code callees},
+ * {@code readsFields}, etc.) are {@code List<EdgeRef>}: each entry bundles
+ * the neighbouring view with the 1-based source line of the edge so that
+ * {@link GraphNodeView#toMarkdown()} can emit the exact call/access site.
+ *
  * <p>{@link #getContent()} returns the Spoon pretty-printed lambda expression
  * text, e.g. {@code "x -> x * 2"} or a full block body.
  *
@@ -39,15 +44,17 @@ public class LambdaNodeView extends GraphNodeView {
     /**
      * Methods or constructors invoked inside this lambda body
      * ({@code INVOKES} outgoing edges).
+     * Each {@link EdgeRef} carries the line in this lambda's body.
      */
-    private final List<GraphNodeView> callees = new ArrayList<>();
+    private final List<EdgeRef> callees = new ArrayList<>();
 
     /**
      * Callables that reference this lambda directly.
      * In practice this list is rarely populated, since lambdas are usually
      * used inline rather than stored and re-invoked.
+     * Each {@link EdgeRef} carries the line of the reference.
      */
-    private final List<GraphNodeView> callers = new ArrayList<>();
+    private final List<EdgeRef> callers = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Instantiation
@@ -56,14 +63,16 @@ public class LambdaNodeView extends GraphNodeView {
     /**
      * Classes instantiated via {@code new Foo(...)} inside this lambda body
      * ({@code INSTANTIATES} outgoing edges).
+     * Each {@link EdgeRef} carries the line of the {@code new} expression.
      */
-    private final List<ClassNodeView> instantiates = new ArrayList<>();
+    private final List<EdgeRef> instantiates = new ArrayList<>();
 
     /**
      * Anonymous classes created via {@code new Foo() { ... }} inside this
      * lambda body ({@code INSTANTIATES_ANONYMOUS} outgoing edges).
+     * Each {@link EdgeRef} carries the line of the {@code new} expression.
      */
-    private final List<ClassNodeView> instantiatesAnon = new ArrayList<>();
+    private final List<EdgeRef> instantiatesAnon = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Field access
@@ -71,16 +80,16 @@ public class LambdaNodeView extends GraphNodeView {
 
     /**
      * Fields read inside this lambda body ({@code READS_FIELD} outgoing edges).
-     *
-     * <p>Commonly includes captured enclosing-instance fields.
+     * Each {@link EdgeRef} carries the line of the read expression.
      */
-    private final List<FieldNodeView> readsFields = new ArrayList<>();
+    private final List<EdgeRef> readsFields = new ArrayList<>();
 
     /**
      * Fields written inside this lambda body ({@code WRITES_FIELD} outgoing
      * edges).
+     * Each {@link EdgeRef} carries the line of the write expression.
      */
-    private final List<FieldNodeView> writesFields = new ArrayList<>();
+    private final List<EdgeRef> writesFields = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Local variable access
@@ -89,16 +98,16 @@ public class LambdaNodeView extends GraphNodeView {
     /**
      * Local variables and parameters read inside this lambda body
      * ({@code READS_LOCAL_VAR} outgoing edges).
-     *
-     * <p>Includes effectively-final variables captured from the enclosing scope.
+     * Each {@link EdgeRef} carries the line of the read expression.
      */
-    private final List<VariableNodeView> readsLocalVars = new ArrayList<>();
+    private final List<EdgeRef> readsLocalVars = new ArrayList<>();
 
     /**
      * Local variables and parameters written inside this lambda body
      * ({@code WRITES_LOCAL_VAR} outgoing edges).
+     * Each {@link EdgeRef} carries the line of the write expression.
      */
-    private final List<VariableNodeView> writesLocalVars = new ArrayList<>();
+    private final List<EdgeRef> writesLocalVars = new ArrayList<>();
 
     // -------------------------------------------------------------------------
     // Exceptions and type references
@@ -107,17 +116,16 @@ public class LambdaNodeView extends GraphNodeView {
     /**
      * Exception types thrown via {@code throw new Foo()} inside this lambda
      * body ({@code THROWS} outgoing edges).
+     * Each {@link EdgeRef} carries the line of the {@code throw} statement.
      */
-    private final List<GraphNodeView> throwsTypes = new ArrayList<>();
+    private final List<EdgeRef> throwsTypes = new ArrayList<>();
 
     /**
      * Types referenced as values inside this lambda body
      * ({@code REFERENCES_TYPE} outgoing edges).
-     *
-     * <p>Covers {@code Foo.class} expressions, {@code instanceof Foo} checks,
-     * and explicit cast expressions.
+     * Each {@link EdgeRef} carries the line of the reference.
      */
-    private final List<GraphNodeView> referencesTypes = new ArrayList<>();
+    private final List<EdgeRef> referencesTypes = new ArrayList<>();
 
     public LambdaNodeView(GraphNode node) {
         super(node);
@@ -127,105 +135,31 @@ public class LambdaNodeView extends GraphNodeView {
     // Accessors
     // -------------------------------------------------------------------------
 
-    /**
-     * Returns the method or constructor that contains this lambda
-     * (reverse DECLARES edge).
-     *
-     * @return enclosing executable view; never {@code null} after wiring
-     */
-    public GraphNodeView getDeclaredByExecutable()    { return declaredByExecutable; }
-
-    /**
-     * Returns the callables invoked inside this lambda body
-     * (INVOKES outgoing).
-     *
-     * @return list of callee views; never {@code null}
-     */
-    public List<GraphNodeView> getCallees()           { return callees; }
-
-    /**
-     * Returns the callables that directly reference this lambda.
-     * Usually empty for inline lambdas.
-     *
-     * @return list of caller views; never {@code null}
-     */
-    public List<GraphNodeView> getCallers()           { return callers; }
-
-    /**
-     * Returns the classes instantiated via {@code new} inside this lambda
-     * (INSTANTIATES outgoing).
-     *
-     * @return list of instantiated class views; never {@code null}
-     */
-    public List<ClassNodeView> getInstantiates()      { return instantiates; }
-
-    /**
-     * Returns the anonymous classes created inside this lambda
-     * (INSTANTIATES_ANONYMOUS outgoing).
-     *
-     * @return list of anonymous class views; never {@code null}
-     */
-    public List<ClassNodeView> getInstantiatesAnon()  { return instantiatesAnon; }
-
-    /**
-     * Returns the fields read inside this lambda body (READS_FIELD outgoing).
-     *
-     * @return list of field views; never {@code null}
-     */
-    public List<FieldNodeView> getReadsFields()       { return readsFields; }
-
-    /**
-     * Returns the fields written inside this lambda body (WRITES_FIELD outgoing).
-     *
-     * @return list of field views; never {@code null}
-     */
-    public List<FieldNodeView> getWritesFields()      { return writesFields; }
-
-    /**
-     * Returns the local variables and parameters read inside this lambda
-     * (READS_LOCAL_VAR outgoing), including captured variables.
-     *
-     * @return list of variable views; never {@code null}
-     */
-    public List<VariableNodeView> getReadsLocalVars() { return readsLocalVars; }
-
-    /**
-     * Returns the local variables and parameters written inside this lambda
-     * (WRITES_LOCAL_VAR outgoing).
-     *
-     * @return list of variable views; never {@code null}
-     */
-    public List<VariableNodeView> getWritesLocalVars() { return writesLocalVars; }
-
-    /**
-     * Returns the exception types thrown inside this lambda body
-     * (THROWS outgoing).
-     *
-     * @return list of exception type views; never {@code null}
-     */
-    public List<GraphNodeView> getThrowsTypes()       { return throwsTypes; }
-
-    /**
-     * Returns the types referenced as values inside this lambda body
-     * (REFERENCES_TYPE outgoing): {@code Foo.class}, instanceof, casts.
-     *
-     * @return list of referenced type views; never {@code null}
-     */
-    public List<GraphNodeView> getReferencesTypes()   { return referencesTypes; }
+    public GraphNodeView getDeclaredByExecutable()     { return declaredByExecutable; }
+    public List<EdgeRef> getCallees()                  { return callees; }
+    public List<EdgeRef> getCallers()                  { return callers; }
+    public List<EdgeRef> getInstantiates()             { return instantiates; }
+    public List<EdgeRef> getInstantiatesAnon()         { return instantiatesAnon; }
+    public List<EdgeRef> getReadsFields()              { return readsFields; }
+    public List<EdgeRef> getWritesFields()             { return writesFields; }
+    public List<EdgeRef> getReadsLocalVars()           { return readsLocalVars; }
+    public List<EdgeRef> getWritesLocalVars()          { return writesLocalVars; }
+    public List<EdgeRef> getThrowsTypes()              { return throwsTypes; }
+    public List<EdgeRef> getReferencesTypes()          { return referencesTypes; }
 
     // -------------------------------------------------------------------------
     // Package-private mutators used by GraphViewBuilder
     // -------------------------------------------------------------------------
 
-    public void setDeclaredByExecutable(GraphNodeView v) { this.declaredByExecutable = v; }
-    public void addCallee(GraphNodeView v)               { callees.add(v); }
-    public void addCaller(GraphNodeView v)               { callers.add(v); }
-    public void addInstantiates(ClassNodeView v)         { instantiates.add(v); }
-    public void addInstantiatesAnon(ClassNodeView v)     { instantiatesAnon.add(v); }
-    public void addReadsField(FieldNodeView v)           { readsFields.add(v); }
-    public void addWritesField(FieldNodeView v)          { writesFields.add(v); }
-    public void addReadsLocalVar(VariableNodeView v)     { readsLocalVars.add(v); }
-    public void addWritesLocalVar(VariableNodeView v)    { writesLocalVars.add(v); }
-    public void addThrowsType(GraphNodeView v)           { throwsTypes.add(v); }
-    public void addReferencesType(GraphNodeView v)       { referencesTypes.add(v); }
+    public void setDeclaredByExecutable(GraphNodeView v)        { this.declaredByExecutable = v; }
+    public void addCallee(GraphNodeView v, int line)            { callees.add(EdgeRef.of(v, line)); }
+    public void addCaller(GraphNodeView v, int line)            { callers.add(EdgeRef.of(v, line)); }
+    public void addInstantiates(ClassNodeView v, int line)      { instantiates.add(EdgeRef.of(v, line)); }
+    public void addInstantiatesAnon(ClassNodeView v, int line)  { instantiatesAnon.add(EdgeRef.of(v, line)); }
+    public void addReadsField(FieldNodeView v, int line)        { readsFields.add(EdgeRef.of(v, line)); }
+    public void addWritesField(FieldNodeView v, int line)       { writesFields.add(EdgeRef.of(v, line)); }
+    public void addReadsLocalVar(VariableNodeView v, int line)  { readsLocalVars.add(EdgeRef.of(v, line)); }
+    public void addWritesLocalVar(VariableNodeView v, int line) { writesLocalVars.add(EdgeRef.of(v, line)); }
+    public void addThrowsType(GraphNodeView v, int line)        { throwsTypes.add(EdgeRef.of(v, line)); }
+    public void addReferencesType(GraphNodeView v, int line)    { referencesTypes.add(EdgeRef.of(v, line)); }
 }

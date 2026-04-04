@@ -14,7 +14,7 @@ import java.util.*;
  * <pre>{@code
  *   ClassNodeView cls = viewBuilder.classView("com.example.Foo");
  *   cls.getMethods()
- *      .forEach(m -> m.getCallees().forEach(callee -> ...));
+ *      .forEach(m -> m.getCallees().forEach(ref -> ...));
  * }</pre>
  *
  * <p><b>Source content</b> — {@link #getContent()} returns the verbatim original
@@ -26,6 +26,11 @@ import java.util.*;
  * extends/implements, up to and including the opening {@code {}), without the body.
  * For FIELD nodes the full field line is the declaration. Empty for LAMBDA,
  * VARIABLE, TYPE_PARAM, and ANNOTATION_ATTRIBUTE nodes.
+ *
+ * <p><b>Edge collections</b> — fields typed as {@code List<EdgeRef>} (callers,
+ * callees, readsFields, etc.) store both the neighbouring view and the
+ * source line of the edge so that {@link #toMarkdown()} can emit a single
+ * contextual line instead of a full declaration block.
  *
  * <p><b>Wiring</b> — all list fields are mutable so
  * {@link com.example.mrrag.service.GraphViewBuilder} can populate neighbours
@@ -168,7 +173,7 @@ public abstract class GraphNodeView {
 
     @Override
     public String toString() {
-        return getClass().getSimpleName() + "(" + getId() + ")\n\n";// + toMarkdown();
+        return getClass().getSimpleName() + "(" + getId() + ")\n\n";
     }
 
     /**
@@ -178,33 +183,37 @@ public abstract class GraphNodeView {
      * <p>Format:
      * <pre>
      * # Declaration
-     * ### path/to/File.java
+     * ### &lt;nodeId&gt;
      * {startLine}|&lt;declaration header line&gt;
      * ...
      *
      * # Content
-     * ### path/to/File.java
+     * ### &lt;nodeId&gt;
      * {startLine}|&lt;original source line&gt;
      * ...
      *
      * # Context
      * ## fieldName
-     * ### path/to/File.java
-     * {startLine}|&lt;original source line&gt;
+     * ### [KIND] &lt;nodeId&gt;
+     * {line}|&lt;source line at edge site, or id for plain view refs&gt;
      * ...
-     * ### external
-     * -1|com.example.Foo#bar()
-     * -1|com.example.Baz#qux()
      * </pre>
      *
      * <p>The {@code # Declaration} section is omitted when
      * {@link #getDeclaration()} is blank (LAMBDA, VARIABLE, TYPE_PARAM,
      * ANNOTATION_ATTRIBUTE nodes).
      *
-     * <p>Line numbers use real 1-based source positions ({@link #getStartLine()}).
-     * {@code startLine == -1} marks external/synthetic nodes — they are grouped
-     * under a single {@code ### external} header with {@code -1|<id>} lines,
-     * de-duplicated by node ID.
+     * <p>Context rendering rules:
+     * <ul>
+     *   <li>{@link EdgeRef} entries — header is {@code [KIND] <nodeId>};
+     *       body is the single source line at the edge's recorded line number
+     *       extracted from the view's content snippet, or {@code line|id} when
+     *       the line cannot be resolved.</li>
+     *   <li>Plain {@link GraphNodeView} entries (e.g. {@code declaredBy},
+     *       {@code annotatedBy}) — header is {@code [KIND] <nodeId>};
+     *       no body lines (the id in the header is sufficient).</li>
+     *   <li>Scalar values — rendered as {@code 1|value}.</li>
+     * </ul>
      *
      * @return markdown string; never {@code null}
      */
@@ -215,14 +224,14 @@ public abstract class GraphNodeView {
         String decl = getDeclaration();
         if (decl != null && !decl.isBlank()) {
             sb.append("# Declaration\n");
-            sb.append("### ").append(getFilePath()).append('\n');
+            sb.append("### ").append(getId()).append('\n');
             appendNumberedSnippet(sb, decl, getStartLine());
             sb.append('\n');
         }
 
         // ── # Content ─────────────────────────────────────────────────────
         sb.append("# Content\n");
-        sb.append("### ").append(getFilePath()).append('\n');
+        sb.append("### ").append(getId()).append('\n');
         appendNumberedSnippet(sb, getContent(), getStartLine());
 
         // ── # Context ─────────────────────────────────────────────────────
@@ -243,7 +252,13 @@ public abstract class GraphNodeView {
             } else if (value instanceof Collection<?> col) {
                 appendGroupedCollection(sb, col);
             } else {
-                sb.append("-999|").append(value).append('\n');
+                // Single view reference (e.g. declaredByClass, overrides)
+                if (value instanceof GraphNodeView view) {
+                    sb.append("### [").append(view.getKind()).append("] ")
+                      .append(view.getId()).append('\n');
+                } else {
+                    sb.append("-999|").append(value).append('\n');
+                }
             }
         }
 
@@ -284,45 +299,45 @@ public abstract class GraphNodeView {
     }
 
     /**
-     * Appends elements of a collection grouped by file path.
+     * Appends elements of a collection grouped by node id.
      *
-     * <p>Elements are collected into an insertion-ordered map:
+     * <p>Three element types are handled:
      * <ul>
-     *   <li>External/synthetic views ({@code startLine == -1}) → key {@code "external"}</li>
-     *   <li>Project views → key is {@link #getFilePath()}</li>
-     *   <li>Non-view scalars → key {@code "values"}</li>
+     *   <li>{@link EdgeRef} — grouped under {@code [KIND] <nodeId>}; each group
+     *       body contains the single source line at the recorded edge line
+     *       extracted from the view's snippet.  Multiple refs to the same node
+     *       emit one entry per distinct call-site line.</li>
+     *   <li>{@link GraphNodeView} — grouped under {@code [KIND] <nodeId>};
+     *       no body lines emitted (the header is the full information).
+     *       Duplicate node ids are suppressed.</li>
+     *   <li>Scalar — rendered under key {@code "values"} as {@code 1|value}.</li>
      * </ul>
-     *
-     * <p>Within each group, duplicate node IDs (for views) or string values
-     * (for scalars) are suppressed.
-     *
-     * <p>Output per group:
-     * <pre>
-     * ### &lt;filePath | "external" | "values"&gt;
-     * {line}|&lt;id or snippet line&gt;
-     * ...
-     * </pre>
      */
     private static void appendGroupedCollection(StringBuilder sb, Collection<?> col) {
-//        boolean addType = col.size() > 1 && col.stream().map(Object::getClass).distinct().count() > 1;
-
-        // group key → ordered set of text lines to emit
-        Map<String, LinkedHashSet<String>> groups = new LinkedHashMap<>();
+        // group key → ordered list of body lines (may be empty for plain views)
+        Map<String, List<String>> groups = new LinkedHashMap<>();
 
         for (Object element : col) {
-            if (element instanceof GraphNodeView view) {
-                String key = (view.getStartLine() == -1) ? "external" : view.getFilePath();
-//                if (addType)
-                    key = "[" + view.node.kind() + "]  " + key;
-                LinkedHashSet<String> lines = groups.computeIfAbsent(key, k -> new LinkedHashSet<>());
-                appendElementLine(lines, view);
+            if (element instanceof EdgeRef ref) {
+                GraphNodeView view = ref.view();
+                String key = "[" + view.getKind() + "] " + view.getId();
+                List<String> lines = groups.computeIfAbsent(key, k -> new ArrayList<>());
+                String bodyLine = extractLineFromView(view, ref.line());
+                if (!lines.contains(bodyLine)) {
+                    lines.add(bodyLine);
+                }
+            } else if (element instanceof GraphNodeView view) {
+                String key = "[" + view.getKind() + "] " + view.getId();
+                // Plain view: no body — just register the group key once
+                groups.computeIfAbsent(key, k -> new ArrayList<>());
             } else {
-                LinkedHashSet<String> lines = groups.computeIfAbsent("values", k -> new LinkedHashSet<>());
-                lines.add("1|" + element);
+                List<String> lines = groups.computeIfAbsent("values", k -> new ArrayList<>());
+                String entry = "1|" + element;
+                if (!lines.contains(entry)) lines.add(entry);
             }
         }
 
-        for (Map.Entry<String, LinkedHashSet<String>> entry : groups.entrySet()) {
+        for (Map.Entry<String, List<String>> entry : groups.entrySet()) {
             sb.append("### ").append(entry.getKey()).append('\n');
             for (String line : entry.getValue()) {
                 sb.append(line).append('\n');
@@ -331,45 +346,39 @@ public abstract class GraphNodeView {
     }
 
     /**
-     * Produces one or more text lines representing {@code view} and adds them
-     * to {@code lines} (duplicates are suppressed by the set).
+     * Extracts the single source line at {@code edgeLine} from the view's
+     * content snippet.
      *
+     * <p>The snippet is stored with lines from {@code view.getStartLine()} to
+     * {@code view.getEndLine()}, so the offset into the array is
+     * {@code edgeLine - view.getStartLine()}.
+     *
+     * <p>Falls back to {@code edgeLine|<id>} when:
      * <ul>
-     *   <li>External view ({@code startLine == -1}): {@code -1|<id>}</li>
-     *   <li>Project view with non-blank declaration: one line per declaration line
-     *       ({@code startLine|text}, …)</li>
-     *   <li>Project view without declaration but with snippet: numbered source lines</li>
-     *   <li>Project view without either: {@code startLine|<id>} (or {@code 1|<id>}
-     *       when startLine ≤ 0)</li>
+     *   <li>{@code edgeLine} is {@code -1} (external/synthetic edge)</li>
+     *   <li>the computed offset is out of bounds</li>
+     *   <li>the snippet is blank</li>
      * </ul>
+     *
+     * @param view     the neighbouring node whose snippet is searched
+     * @param edgeLine 1-based source line of the edge; {@code -1} if unknown
+     * @return a single formatted line, e.g. {@code "72|        placeFrom = findPlaceFrom();"}
      */
-    private static void appendElementLine(LinkedHashSet<String> lines, GraphNodeView view) {
-        if (view.getStartLine() == -1) {
-            // External node: single -1|<id> line
-            lines.add("-1|" + view.getId());
-            return;
-        }
-        // Prefer the declaration snippet for compact, informative context lines.
-        String decl = view.getDeclaration();
-        if (decl != null && !decl.isBlank()) {
-            int first = (view.getStartLine() > 0) ? view.getStartLine() : 1;
-            String[] declLines = decl.split("\n", -1);
-            for (int i = 0; i < declLines.length; i++) {
-                lines.add((first + i) + "|" + declLines[i]);
-            }
-            return;
+    private static String extractLineFromView(GraphNodeView view, int edgeLine) {
+        if (edgeLine == -1) {
+            return "-1|" + view.getId();
         }
         String snippet = view.getContent();
-        if (snippet != null && !snippet.isBlank()) {
-            int first = (view.getStartLine() > 0) ? view.getStartLine() : 1;
-            String[] snipLines = snippet.split("\n", -1);
-            for (int i = 0; i < snipLines.length; i++) {
-                lines.add((first + i) + "|" + snipLines[i]);
+        int startLine  = view.getStartLine();
+        if (snippet != null && !snippet.isBlank() && startLine > 0) {
+            String[] lines = snippet.split("\n", -1);
+            int offset = edgeLine - startLine;
+            if (offset >= 0 && offset < lines.length) {
+                return edgeLine + "|" + lines[offset];
             }
-        } else {
-            int lineNo = (view.getStartLine() > 0) ? view.getStartLine() : 1;
-            lines.add(lineNo + "|" + view.getId());
         }
+        // Fallback: line number + id
+        return edgeLine + "|" + view.getId();
     }
 
     /**

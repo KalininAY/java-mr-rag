@@ -16,7 +16,11 @@ import java.util.*;
  *       graph one typed view ({@link ClassNodeView}, {@link InterfaceNodeView},
  *       {@link MethodNodeView}, …) is created and stored in an id→view map.</li>
  *   <li><b>Pass 2 – wire edges.</b>  Every {@link GraphEdge} is translated into
- *       a direct Java reference on both the source and the target view.</li>
+ *       a direct Java reference on both the source and the target view.
+ *       The edge's {@code line} field is forwarded to every {@code addXxx}
+ *       mutator so that {@link com.example.mrrag.view.EdgeRef} carries the
+ *       exact call/access-site line for rendering in
+ *       {@link com.example.mrrag.view.GraphNodeView#toMarkdown()}.</li>
  * </ol>
  *
  * <p>After {@link #build(ProjectGraph)} returns, any view can be used as the
@@ -162,7 +166,7 @@ public class GraphViewBuilder {
                 case FIELD             -> new FieldNodeView(node);
                 case VARIABLE          -> new VariableNodeView(node);
                 case LAMBDA            -> new LambdaNodeView(node);
-                case ANNOTATION        -> new ClassNodeView(node);   // reuses ClassNodeView (has annotatedNodes)
+                case ANNOTATION        -> new ClassNodeView(node);
                 case TYPE_PARAM        -> new TypeParamNodeView(node);
                 case ANNOTATION_ATTRIBUTE -> new AnnotationAttributeView(node);
             };
@@ -189,12 +193,12 @@ public class GraphViewBuilder {
     private void wireEdge(ViewGraph vg, ProjectGraph graph, GraphEdge edge) {
         GraphNodeView from = resolve(vg, edge.caller());
         GraphNodeView to   = resolve(vg, edge.callee());
+        int line           = edge.line();
 
         switch (edge.kind()) {
 
             // ── Structural ────────────────────────────────────────────────────
             case DECLARES -> {
-                // from = owner (class/interface/executable), to = member
                 to.addDeclaredBy(from);
                 if (from instanceof ClassNodeView cls) {
                     if      (to instanceof MethodNodeView m)          { cls.addMethod(m);           m.setDeclaredByClass(cls); }
@@ -260,45 +264,45 @@ public class GraphViewBuilder {
             }
 
             // ── Invocations ───────────────────────────────────────────────────
-            case INVOKES -> addCallerCallee(from, to);
+            case INVOKES -> addCallerCallee(from, to, line);
 
             case INSTANTIATES -> {
                 if (to instanceof ClassNodeView cls) {
                     cls.addInstantiatedBy(from);
-                    if      (from instanceof MethodNodeView m)      m.addInstantiates(cls);
-                    else if (from instanceof ConstructorNodeView c) c.addInstantiates(cls);
-                    else if (from instanceof LambdaNodeView l)      l.addInstantiates(cls);
+                    if      (from instanceof MethodNodeView m)      m.addInstantiates(cls, line);
+                    else if (from instanceof ConstructorNodeView c) c.addInstantiates(cls, line);
+                    else if (from instanceof LambdaNodeView l)      l.addInstantiates(cls, line);
                 }
             }
             case INSTANTIATES_ANONYMOUS -> {
                 if (to instanceof ClassNodeView cls) {
                     cls.addAnonymouslyInstantiatedBy(from);
-                    if      (from instanceof MethodNodeView m)      m.addInstantiatesAnon(cls);
-                    else if (from instanceof ConstructorNodeView c) c.addInstantiatesAnon(cls);
-                    else if (from instanceof LambdaNodeView l)      l.addInstantiatesAnon(cls);
+                    if      (from instanceof MethodNodeView m)      m.addInstantiatesAnon(cls, line);
+                    else if (from instanceof ConstructorNodeView c) c.addInstantiatesAnon(cls, line);
+                    else if (from instanceof LambdaNodeView l)      l.addInstantiatesAnon(cls, line);
                 }
             }
             case REFERENCES_METHOD -> {
-                if      (from instanceof MethodNodeView m)      m.addReferencedMethod(to);
-                else if (from instanceof ConstructorNodeView c) c.addCallee(to);
-                else if (from instanceof LambdaNodeView l)      l.addCallee(to);
+                if      (from instanceof MethodNodeView m)      m.addReferencedMethod(to, line);
+                else if (from instanceof ConstructorNodeView c) c.addCallee(to, line);
+                else if (from instanceof LambdaNodeView l)      l.addCallee(to, line);
             }
 
             // ── Field access ──────────────────────────────────────────────────
             case READS_FIELD -> {
                 if (to instanceof FieldNodeView f) {
                     f.addReadBy(from);
-                    if      (from instanceof MethodNodeView m)      m.addReadsField(f);
-                    else if (from instanceof ConstructorNodeView c) c.addReadsField(f);
-                    else if (from instanceof LambdaNodeView l)      l.addReadsField(f);
+                    if      (from instanceof MethodNodeView m)      m.addReadsField(f, line);
+                    else if (from instanceof ConstructorNodeView c) c.addReadsField(f, line);
+                    else if (from instanceof LambdaNodeView l)      l.addReadsField(f, line);
                 }
             }
             case WRITES_FIELD -> {
                 if (to instanceof FieldNodeView f) {
                     f.addWrittenBy(from);
-                    if      (from instanceof MethodNodeView m)      m.addWritesField(f);
-                    else if (from instanceof ConstructorNodeView c) c.addWritesField(f);
-                    else if (from instanceof LambdaNodeView l)      l.addWritesField(f);
+                    if      (from instanceof MethodNodeView m)      m.addWritesField(f, line);
+                    else if (from instanceof ConstructorNodeView c) c.addWritesField(f, line);
+                    else if (from instanceof LambdaNodeView l)      l.addWritesField(f, line);
                 }
             }
 
@@ -306,25 +310,25 @@ public class GraphViewBuilder {
             case READS_LOCAL_VAR -> {
                 if (to instanceof VariableNodeView v) {
                     v.addReadBy(from);
-                    if      (from instanceof MethodNodeView m)      m.addReadsLocalVar(v);
-                    else if (from instanceof ConstructorNodeView c) c.addReadsLocalVar(v);
-                    else if (from instanceof LambdaNodeView l)      l.addReadsLocalVar(v);
+                    if      (from instanceof MethodNodeView m)      m.addReadsLocalVar(v, line);
+                    else if (from instanceof ConstructorNodeView c) c.addReadsLocalVar(v, line);
+                    else if (from instanceof LambdaNodeView l)      l.addReadsLocalVar(v, line);
                 }
             }
             case WRITES_LOCAL_VAR -> {
                 if (to instanceof VariableNodeView v) {
                     v.addWrittenBy(from);
-                    if      (from instanceof MethodNodeView m)      m.addWritesLocalVar(v);
-                    else if (from instanceof ConstructorNodeView c) c.addWritesLocalVar(v);
-                    else if (from instanceof LambdaNodeView l)      l.addWritesLocalVar(v);
+                    if      (from instanceof MethodNodeView m)      m.addWritesLocalVar(v, line);
+                    else if (from instanceof ConstructorNodeView c) c.addWritesLocalVar(v, line);
+                    else if (from instanceof LambdaNodeView l)      l.addWritesLocalVar(v, line);
                 }
             }
 
             // ── Exceptions ────────────────────────────────────────────────────
             case THROWS -> {
-                if      (from instanceof MethodNodeView m)      m.addThrowsType(to);
-                else if (from instanceof ConstructorNodeView c) c.addThrowsType(to);
-                else if (from instanceof LambdaNodeView l)      l.addThrowsType(to);
+                if      (from instanceof MethodNodeView m)      m.addThrowsType(to, line);
+                else if (from instanceof ConstructorNodeView c) c.addThrowsType(to, line);
+                else if (from instanceof LambdaNodeView l)      l.addThrowsType(to, line);
             }
 
             // ── Annotations ───────────────────────────────────────────────────
@@ -342,9 +346,9 @@ public class GraphViewBuilder {
             case REFERENCES_TYPE -> {
                 if (to instanceof ClassNodeView cls)            cls.addReferencedBy(from);
                 else if (to instanceof InterfaceNodeView iface) iface.addReferencedBy(from);
-                if      (from instanceof MethodNodeView m)      m.addReferencesType(to);
-                else if (from instanceof ConstructorNodeView c) c.addReferencesType(to);
-                else if (from instanceof LambdaNodeView l)      l.addReferencesType(to);
+                if      (from instanceof MethodNodeView m)      m.addReferencesType(to, line);
+                else if (from instanceof ConstructorNodeView c) c.addReferencesType(to, line);
+                else if (from instanceof LambdaNodeView l)      l.addReferencesType(to, line);
             }
 
             // ── Overrides ─────────────────────────────────────────────────────
@@ -361,37 +365,20 @@ public class GraphViewBuilder {
     // Helper: INVOKES wiring
     // ------------------------------------------------------------------
 
-    private void addCallerCallee(GraphNodeView from, GraphNodeView to) {
-        if      (from instanceof MethodNodeView m)      m.addCallee(to);
-        else if (from instanceof ConstructorNodeView c) c.addCallee(to);
-        else if (from instanceof LambdaNodeView l)      l.addCallee(to);
+    private void addCallerCallee(GraphNodeView from, GraphNodeView to, int line) {
+        if      (from instanceof MethodNodeView m)      m.addCallee(to, line);
+        else if (from instanceof ConstructorNodeView c) c.addCallee(to, line);
+        else if (from instanceof LambdaNodeView l)      l.addCallee(to, line);
 
-        if      (to instanceof MethodNodeView m)        m.addCaller(from);
-        else if (to instanceof ConstructorNodeView c)   c.addCaller(from);
-        else if (to instanceof LambdaNodeView l)        l.addCaller(from);
+        if      (to instanceof MethodNodeView m)        m.addCaller(from, line);
+        else if (to instanceof ConstructorNodeView c)   c.addCaller(from, line);
+        else if (to instanceof LambdaNodeView l)        l.addCaller(from, line);
     }
 
     // ------------------------------------------------------------------
     // Helper: typed stub creation for external / unresolved nodes
     // ------------------------------------------------------------------
 
-    /**
-     * Resolves a node id to an existing view, or creates and registers a
-     * typed stub view when the id is not present in the graph.
-     *
-     * <p>The stub type is inferred from the id format:
-     * <ul>
-     *   <li>Contains {@code #} <b>and</b> {@code (} →
-     *       {@link MethodNodeView} stub (e.g. {@code java.util.Iterator#hasNext()})</li>
-     *   <li>Contains {@code #} but <b>no</b> {@code (} →
-     *       {@link ConstructorNodeView} stub</li>
-     *   <li>Otherwise → {@link ClassNodeView} stub (external type)</li>
-     * </ul>
-     *
-     * <p>Stub nodes receive {@code startLine = -1} and {@code filePath = "external"}
-     * so that {@link com.example.mrrag.view.GraphNodeView#toMarkdown()} emits
-     * {@code -1|<id>} lines for them.
-     */
     private GraphNodeView resolve(ViewGraph vg, String id) {
         GraphNodeView existing = vg.byId(id);
         if (existing != null) return existing;
@@ -413,7 +400,8 @@ public class GraphViewBuilder {
                 stubKind,
                 simpleNameOf(id),
                 "external",
-                -1, -1,   // -1 = external/synthetic: no source position
+                -1, -1,
+                null,
                 null
         );
 
