@@ -349,7 +349,7 @@ public abstract class GraphNodeView {
                                                String sectionKey,
                                                GraphNodeView owner) {
         // Extract normalised id from section key like "[METHOD] com.example.Foo#bar()"
-        int spaceIdx = sectionKey.indexOf('] ');
+        int spaceIdx = sectionKey.indexOf("] ");
         if (spaceIdx < 0) return "";
         String normalizedId = sectionKey.substring(spaceIdx + 2);
 
