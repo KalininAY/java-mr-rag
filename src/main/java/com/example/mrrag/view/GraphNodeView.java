@@ -206,12 +206,12 @@ public abstract class GraphNodeView {
     public String toMarkdown() {
         StringBuilder sb = new StringBuilder();
 
-        // ── # Content ──────────────────────────────────────────────────────────
+        // ── # Content ───────────────────────────────────────────────────────
         sb.append("# Content\n");
         sb.append("### ").append(normalizeId(getId())).append('\n');
         appendNumberedSnippet(sb, getContent(), getStartLine());
 
-        // ── # Context ──────────────────────────────────────────────────────────
+        // ── # Context ──────────────────────────────────────────────────────
         sb.append("\n# Context\n");
         for (Field field : collectFields(getClass())) {
             field.setAccessible(true);
@@ -420,20 +420,36 @@ public abstract class GraphNodeView {
     }
 
     /**
-     * Normalises a node ID to the canonical form used in markdown output.
+     * Normalises a node ID to the canonical {@code #<init>(...)} constructor form.
      *
-     * <p>Replaces constructor IDs of the form
-     * {@code pkg.ClassName#ClassName(params)} with
-     * {@code pkg.ClassName#<init>(params)}.
+     * <p>Handles three patterns:
+     * <ol>
+     *   <li>{@code pkg.ClassName#ClassName(params)} — plain class</li>
+     *   <li>{@code pkg.Outer$Inner#Inner(params)} — inner class (Spoon uses
+     *       the simple inner-class name, not the dollar-qualified one)</li>
+     *   <li>{@code pkg.ClassName#<init>(params)} — already normalised; returned as-is</li>
+     * </ol>
+     *
+     * <p>Non-constructor IDs are returned unchanged.
      */
     public static String normalizeId(String id) {
         if (id == null) return "";
         int hash = id.indexOf('#');
         if (hash < 0) return id;
+
         String owner = id.substring(0, hash);
         String rest  = id.substring(hash + 1);
-        int dot = owner.lastIndexOf('.');
-        String simpleName = dot >= 0 ? owner.substring(dot + 1) : owner;
+
+        // Already normalised
+        if (rest.startsWith("<init>(")) return id;
+
+        // Derive the simple class name that Spoon uses in the constructor signature.
+        // For "pkg.Outer$Inner" the constructor is written "Inner(...)", not "Outer$Inner(...)".
+        int dot    = owner.lastIndexOf('.');
+        String dotPart = dot >= 0 ? owner.substring(dot + 1) : owner;  // e.g. "Outer$Inner"
+        int dollar = dotPart.lastIndexOf('$');
+        String simpleName = dollar >= 0 ? dotPart.substring(dollar + 1) : dotPart; // e.g. "Inner"
+
         if (rest.startsWith(simpleName + "(")) {
             return owner + "#<init>(" + rest.substring(simpleName.length() + 1);
         }
