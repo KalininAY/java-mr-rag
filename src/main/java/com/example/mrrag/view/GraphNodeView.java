@@ -245,26 +245,25 @@ public abstract class GraphNodeView {
      *
      * # Fields
      * ## fieldName
-     * 0|&lt;content-or-id of element 0&gt;
-     * 1|&lt;content-or-id of element 1&gt;
+     * {startLine}|&lt;first source line of element&gt;
+     * {startLine+1}|&lt;next line&gt;
      * ...
+     * {endLine}|&lt;last line&gt;
      * </pre>
      *
-     * <p>Line numbers in {@code # Content} reflect the actual source range
-     * ({@link #getStartLine()}…{@link #getEndLine()}) stored in the node.
+     * <p>Line numbers everywhere reflect the actual source range stored in the
+     * node ({@link #getStartLine()}…{@link #getEndLine()}).
      * When position information is unavailable ({@code startLine == 0}),
-     * lines are numbered sequentially from 1.
+     * lines are numbered sequentially from&nbsp;1.
      *
      * <p>Fields are collected via Reflection from the concrete class and all
      * superclasses up to (but not including) {@link Object}. Each field value
      * is rendered as:
      * <ul>
-     *   <li>{@link Collection} — one numbered row per element;
-     *       each element uses {@link #getContent()} when it is a
-     *       {@link GraphNodeView} with non-blank content, otherwise
-     *       {@link #getId()}</li>
-     *   <li>Scalar {@link GraphNodeView} — single {@code 0|content-or-id} row</li>
-     *   <li>Any other scalar — single {@code 0|toString()} row</li>
+     *   <li>{@link Collection} — one block of line-numbered rows per element,
+     *       separated by a blank line between elements</li>
+     *   <li>Scalar {@link GraphNodeView} — line-numbered snippet (or id if empty)</li>
+     *   <li>Any other scalar — single {@code 1|toString()} row</li>
      *   <li>{@code null} — single {@code 0|(null)} row</li>
      * </ul>
      *
@@ -276,21 +275,11 @@ public abstract class GraphNodeView {
     public String toMarkdown() {
         StringBuilder sb = new StringBuilder();
 
-        // ── # Content ───────────────────────────────────────────────────────
+        // ── # Content ─────────────────────────────────────────────────────
         sb.append("# Content\n");
-        String content = getContent();
-        if (content == null || content.isBlank()) {
-            sb.append("(empty)\n");
-        } else {
-            String[] lines = content.split("\n", -1);
-            // Use real source line numbers when available, otherwise fall back to 1-based
-            int firstLine = (getStartLine() > 0) ? getStartLine() : 1;
-            for (int i = 0; i < lines.length; i++) {
-                sb.append(firstLine + i).append('|').append(lines[i]).append('\n');
-            }
-        }
+        appendNumberedSnippet(sb, getContent(), getStartLine());
 
-        // ── # Fields ────────────────────────────────────────────────────────
+        // ── # Fields ──────────────────────────────────────────────────────
         sb.append("\n# Fields\n");
         for (Field field : collectFields(getClass())) {
             field.setAccessible(true);
@@ -306,17 +295,58 @@ public abstract class GraphNodeView {
             if (value == null) {
                 sb.append("0|(null)\n");
             } else if (value instanceof Collection<?> col) {
-                int idx = 0;
                 for (Object element : col) {
-                    sb.append(idx++).append('|').append(renderElement(element)).append('\n');
+                    appendElementSnippet(sb, element);
                 }
                 // empty collection produces no rows — signals "none"
             } else {
-                sb.append("0|").append(renderElement(value)).append('\n');
+                appendElementSnippet(sb, value);
             }
         }
 
         return sb.toString();
+    }
+
+    /**
+     * Appends a line-numbered snippet to {@code sb}.
+     *
+     * <p>Each output line has the form {@code lineNo|text}.
+     * {@code startLine > 0} uses real source line numbers; otherwise falls back
+     * to 1-based sequential numbering.
+     * An empty or null snippet appends a single {@code 0|(empty)} line.
+     */
+    private static void appendNumberedSnippet(StringBuilder sb, String snippet, int startLine) {
+        if (snippet == null || snippet.isBlank()) {
+            sb.append("0|(empty)\n");
+            return;
+        }
+        String[] lines = snippet.split("\n", -1);
+        int first = (startLine > 0) ? startLine : 1;
+        for (int i = 0; i < lines.length; i++) {
+            sb.append(first + i).append('|').append(lines[i]).append('\n');
+        }
+    }
+
+    /**
+     * Appends a single element's line-numbered representation to {@code sb}.
+     *
+     * <ul>
+     *   <li>{@link GraphNodeView} — line-numbered snippet using the element's
+     *       own {@code startLine}; falls back to {@code id} when snippet is empty</li>
+     *   <li>Anything else — single {@code 1|toString()} line</li>
+     * </ul>
+     */
+    private static void appendElementSnippet(StringBuilder sb, Object element) {
+        if (element instanceof GraphNodeView view) {
+            String snippet = view.getContent();
+            if (snippet != null && !snippet.isBlank()) {
+                appendNumberedSnippet(sb, snippet, view.getStartLine());
+            } else {
+                sb.append("1|").append(view.getId()).append('\n');
+            }
+        } else {
+            sb.append("1|").append(element).append('\n');
+        }
     }
 
     /**
@@ -334,22 +364,5 @@ public abstract class GraphNodeView {
             }
         }
         return result;
-    }
-
-    /**
-     * Renders a single field element to a string.
-     *
-     * <ul>
-     *   <li>{@link GraphNodeView} — uses {@link #getContent()} when non-blank,
-     *       otherwise falls back to {@link #getId()}</li>
-     *   <li>Anything else — {@code String.valueOf(element)}</li>
-     * </ul>
-     */
-    private static String renderElement(Object element) {
-        if (element instanceof GraphNodeView view) {
-            String c = view.getContent();
-            return (c != null && !c.isBlank()) ? c : view.getId();
-        }
-        return String.valueOf(element);
     }
 }
