@@ -147,7 +147,7 @@ public abstract class GraphNodeView {
 
     @Override
     public String toString() {
-        return getClass().getSimpleName() + "(" + getId() + ")";
+        return getClass().getSimpleName() + "(" + getId() + ")\n\n";// + toMarkdown();
     }
 
     /**
@@ -204,7 +204,7 @@ public abstract class GraphNodeView {
             } else if (value instanceof Collection<?> col) {
                 appendGroupedCollection(sb, col);
             } else {
-                sb.append("1|").append(value).append('\n');
+                sb.append("-999|").append(value).append('\n');
             }
         }
 
@@ -265,12 +265,16 @@ public abstract class GraphNodeView {
      * </pre>
      */
     private static void appendGroupedCollection(StringBuilder sb, Collection<?> col) {
+//        boolean addType = col.size() > 1 && col.stream().map(Object::getClass).distinct().count() > 1;
+
         // group key → ordered set of text lines to emit
         Map<String, LinkedHashSet<String>> groups = new LinkedHashMap<>();
 
         for (Object element : col) {
             if (element instanceof GraphNodeView view) {
                 String key = (view.getStartLine() == -1) ? "external" : view.getFilePath();
+//                if (addType)
+                    key = "[" + view.node.kind() + "]  " + key;
                 LinkedHashSet<String> lines = groups.computeIfAbsent(key, k -> new LinkedHashSet<>());
                 appendElementLine(lines, view);
             } else {
