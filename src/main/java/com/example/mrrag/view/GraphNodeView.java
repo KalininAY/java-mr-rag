@@ -4,9 +4,7 @@ import com.example.mrrag.service.AstGraphService.GraphNode;
 import com.example.mrrag.service.AstGraphService.NodeKind;
 
 import java.lang.reflect.Field;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
+import java.util.*;
 
 /**
  * Abstract base for all typed node views in the symbol graph.
@@ -163,16 +161,20 @@ public abstract class GraphNodeView {
      * {startLine}|&lt;original source line&gt;
      * ...
      *
-     * # Fields
+     * # Context
      * ## fieldName
      * ### path/to/File.java
      * {startLine}|&lt;original source line&gt;
      * ...
+     * ### external
+     * -1|com.example.Foo#bar()
+     * -1|com.example.Baz#qux()
      * </pre>
      *
      * <p>Line numbers use real 1-based source positions ({@link #getStartLine()}).
-     * {@code startLine == -1} marks external/synthetic nodes: a single
-     * {@code -1|(external)} marker is emitted instead of numbered lines.
+     * {@code startLine == -1} marks external/synthetic nodes — they are grouped
+     * under a single {@code ### external} header with {@code -1|<id>} lines,
+     * de-duplicated by node ID.
      *
      * @return markdown string; never {@code null}
      */
@@ -184,8 +186,8 @@ public abstract class GraphNodeView {
         sb.append("### ").append(getFilePath()).append('\n');
         appendNumberedSnippet(sb, getContent(), getStartLine());
 
-        // ── # Fields ──────────────────────────────────────────────────────
-        sb.append("\n# Fields\n");
+        // ── # Context ─────────────────────────────────────────────────────
+        sb.append("\n# Context\n");
         for (Field field : collectFields(getClass())) {
             field.setAccessible(true);
             Object value;
@@ -200,11 +202,9 @@ public abstract class GraphNodeView {
             if (value == null) {
                 sb.append("0|(null)\n");
             } else if (value instanceof Collection<?> col) {
-                for (Object element : col) {
-                    appendElementSnippet(sb, element);
-                }
+                appendGroupedCollection(sb, col);
             } else {
-                appendElementSnippet(sb, value);
+                sb.append("1|").append(value).append('\n');
             }
         }
 
@@ -215,16 +215,14 @@ public abstract class GraphNodeView {
      * Appends a line-numbered snippet to {@code sb}.
      *
      * <ul>
-     *   <li>{@code startLine == -1} — external/synthetic node: emits {@code -1|(external)}</li>
-     *   <li>{@code startLine > 0}  — project node: emits real line numbers starting at startLine</li>
+     *   <li>{@code startLine == -1} — external/synthetic node: lines numbered
+     *       {@code -1}, {@code -2}, … so they are visually distinct from real source</li>
+     *   <li>{@code startLine > 0}  — project node: real line numbers starting at startLine</li>
      *   <li>blank/null snippet    — emits {@code 0|(empty)}</li>
      * </ul>
      */
     private static void appendNumberedSnippet(StringBuilder sb, String snippet, int startLine) {
         if (startLine == -1) {
-            // external/synthetic: emit Spoon pretty-print with -1 marker on first line,
-            // remaining lines numbered sequentially from -1 downward so they are
-            // visually distinct from real source lines
             if (snippet == null || snippet.isBlank()) {
                 sb.append("-1|(external)\n");
                 return;
@@ -247,20 +245,76 @@ public abstract class GraphNodeView {
     }
 
     /**
-     * Appends a single element's representation to {@code sb}, preceded by a
-     * {@code ### filePath} header when the element is a {@link GraphNodeView}.
+     * Appends elements of a collection grouped by file path.
+     *
+     * <p>Elements are collected into an insertion-ordered map:
+     * <ul>
+     *   <li>External/synthetic views ({@code startLine == -1}) → key {@code "external"}</li>
+     *   <li>Project views → key is {@link #getFilePath()}</li>
+     *   <li>Non-view scalars → key {@code "values"}</li>
+     * </ul>
+     *
+     * <p>Within each group, duplicate node IDs (for views) or string values
+     * (for scalars) are suppressed.
+     *
+     * <p>Output per group:
+     * <pre>
+     * ### &lt;filePath | "external" | "values"&gt;
+     * {line}|&lt;id or snippet line&gt;
+     * ...
+     * </pre>
      */
-    private static void appendElementSnippet(StringBuilder sb, Object element) {
-        if (element instanceof GraphNodeView view) {
-            sb.append("### ").append(view.getFilePath()).append('\n');
-            String snippet = view.getContent();
-            if (snippet != null && !snippet.isBlank()) {
-                appendNumberedSnippet(sb, snippet, view.getStartLine());
+    private static void appendGroupedCollection(StringBuilder sb, Collection<?> col) {
+        // group key → ordered set of text lines to emit
+        Map<String, LinkedHashSet<String>> groups = new LinkedHashMap<>();
+
+        for (Object element : col) {
+            if (element instanceof GraphNodeView view) {
+                String key = (view.getStartLine() == -1) ? "external" : view.getFilePath();
+                LinkedHashSet<String> lines = groups.computeIfAbsent(key, k -> new LinkedHashSet<>());
+                appendElementLine(lines, view);
             } else {
-                sb.append("1|").append(view.getId()).append('\n');
+                LinkedHashSet<String> lines = groups.computeIfAbsent("values", k -> new LinkedHashSet<>());
+                lines.add("1|" + element);
+            }
+        }
+
+        for (Map.Entry<String, LinkedHashSet<String>> entry : groups.entrySet()) {
+            sb.append("### ").append(entry.getKey()).append('\n');
+            for (String line : entry.getValue()) {
+                sb.append(line).append('\n');
+            }
+        }
+    }
+
+    /**
+     * Produces one or more text lines representing {@code view} and adds them
+     * to {@code lines} (duplicates are suppressed by the set).
+     *
+     * <ul>
+     *   <li>External view ({@code startLine == -1}): {@code -1|<id>}</li>
+     *   <li>Project view with non-blank snippet: numbered source lines
+     *       ({@code startLine|text}, …)</li>
+     *   <li>Project view without snippet: {@code startLine|<id>} (or {@code 1|<id>}
+     *       when startLine ≤ 0)</li>
+     * </ul>
+     */
+    private static void appendElementLine(LinkedHashSet<String> lines, GraphNodeView view) {
+        if (view.getStartLine() == -1) {
+            // External node: single -1|<id> line
+            lines.add("-1|" + view.getId());
+            return;
+        }
+        String snippet = view.getContent();
+        if (snippet != null && !snippet.isBlank()) {
+            int first = (view.getStartLine() > 0) ? view.getStartLine() : 1;
+            String[] snipLines = snippet.split("\n", -1);
+            for (int i = 0; i < snipLines.length; i++) {
+                lines.add((first + i) + "|" + snipLines[i]);
             }
         } else {
-            sb.append("1|").append(element).append('\n');
+            int lineNo = (view.getStartLine() > 0) ? view.getStartLine() : 1;
+            lines.add(lineNo + "|" + view.getId());
         }
     }
 
