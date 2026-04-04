@@ -1,27 +1,27 @@
 package com.example.mrrag.service;
 
+import com.example.mrrag.service.loader.GitLabSourceLoader;
+import com.example.mrrag.service.loader.JavaSourceLoader;
+import com.example.mrrag.service.loader.LocalFileSourceLoader;
+import com.example.mrrag.service.loader.VirtualSource;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.gitlab4j.api.GitLabApiException;
+import org.gitlab4j.api.GitLabApi;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Backward-compatible index API used by {@link ContextEnricher}.
- * <p>
- * Delegates AST graph construction to {@link AstGraphService} and projects the
- * rich {@link AstGraphService.ProjectGraph} into the flat maps that the rest of
- * the application expects.
  *
- * <h2>Two build modes</h2>
+ * <h2>Build modes</h2>
  * <ul>
- *   <li>{@link #buildIndex(Path)} – original mode: build from a locally cloned repo.</li>
- *   <li>{@link #buildIndexFromRef(long, String)} – no-clone mode: fetch sources via
- *       {@link GitLabSpoonLoader} and build entirely in memory.</li>
+ *   <li>{@link #buildIndex(Path)} – local clone (original behaviour).</li>
+ *   <li>{@link #buildIndexFromRef(long, String)} – no-clone via GitLab API.</li>
+ *   <li>{@link #buildIndexFromLoader(JavaSourceLoader)} – generic: supply any
+ *       {@link JavaSourceLoader} implementation.</li>
  * </ul>
  */
 @Slf4j
@@ -30,11 +30,12 @@ import java.util.concurrent.ConcurrentHashMap;
 public class JavaIndexService {
 
     private final AstGraphService graphService;
-    private final GitLabSpoonLoader spoonLoader;
+    private final GitLabApi       gitLabApi;
+
     private final Map<Path, ProjectIndex> indexCache = new ConcurrentHashMap<>();
 
     // ------------------------------------------------------------------
-    // Public build / invalidate
+    // Build
     // ------------------------------------------------------------------
 
     /** Build from a locally cloned repo directory (original behaviour). */
@@ -48,21 +49,29 @@ public class JavaIndexService {
     /**
      * Build from GitLab API without cloning.
      *
-     * <p>Fetches all {@code .java} files at {@code ref} for the given project,
-     * builds a Spoon model in memory, then projects it into a {@link ProjectIndex}.
+     * <p>{@code ref} accepts a branch name, tag, or <strong>commit SHA</strong>.
      * This call is <em>not</em> cached — callers that need caching should wrap it.
      *
      * @param projectId numeric GitLab project id
-     * @param ref       branch name, tag, or commit SHA
-     * @return fully populated project index
+     * @param ref       branch, tag, or commit SHA
      */
-    public ProjectIndex buildIndexFromRef(long projectId, String ref)
-            throws GitLabApiException, IOException {
-        log.info("Building index for projectId={} ref={} (no-clone mode)", projectId, ref);
-        List<GitLabSpoonLoader.VirtualSource> sources =
-                spoonLoader.fetchJavaSources(projectId, ref);
-        AstGraphService.ProjectGraph graph =
-                graphService.buildGraphFromVirtualSources(sources);
+    public ProjectIndex buildIndexFromRef(long projectId, String ref) throws Exception {
+        return buildIndexFromLoader(new GitLabSourceLoader(gitLabApi, projectId, ref));
+    }
+
+    /**
+     * Generic build path: delegate source loading to any {@link JavaSourceLoader}.
+     *
+     * <p>Use this when you need a custom loader (e.g. in tests or for a different VCS):
+     * <pre>{@code
+     *   JavaSourceLoader loader = new LocalFileSourceLoader(myPath);
+     *   ProjectIndex idx = javaIndexService.buildIndexFromLoader(loader);
+     * }</pre>
+     */
+    public ProjectIndex buildIndexFromLoader(JavaSourceLoader loader) throws Exception {
+        log.info("Building index via loader: {}", loader.getClass().getSimpleName());
+        List<VirtualSource> sources = loader.loadSources();
+        AstGraphService.ProjectGraph graph = graphService.buildGraphFromVirtualSources(sources);
         return project(graph, null);
     }
 
@@ -71,33 +80,38 @@ public class JavaIndexService {
         graphService.invalidate(projectRoot);
     }
 
-    /**
-     * Returns the raw Spoon graph for callers that need more than the flat index.
-     */
+    // ------------------------------------------------------------------
+    // Graph (raw)
+    // ------------------------------------------------------------------
+
+    /** Raw graph from local clone. */
     public AstGraphService.ProjectGraph getGraph(Path projectRoot) {
         return graphService.buildGraph(projectRoot);
     }
 
     /**
-     * Returns the raw Spoon graph built from GitLab API (no-clone mode).
+     * Raw graph from GitLab API (no-clone).
      *
      * @param projectId numeric GitLab project id
-     * @param ref       branch name, tag, or commit SHA
+     * @param ref       branch, tag, or commit SHA
      */
-    public AstGraphService.ProjectGraph getGraphFromRef(long projectId, String ref)
-            throws GitLabApiException, IOException {
-        List<GitLabSpoonLoader.VirtualSource> sources =
-                spoonLoader.fetchJavaSources(projectId, ref);
-        return graphService.buildGraphFromVirtualSources(sources);
+    public AstGraphService.ProjectGraph getGraphFromRef(long projectId, String ref) throws Exception {
+        return graphService.buildGraphFromVirtualSources(
+                new GitLabSourceLoader(gitLabApi, projectId, ref).loadSources());
+    }
+
+    /**
+     * Raw graph via any loader.
+     */
+    public AstGraphService.ProjectGraph getGraphFromLoader(JavaSourceLoader loader) throws Exception {
+        return graphService.buildGraphFromVirtualSources(loader.loadSources());
     }
 
     // ------------------------------------------------------------------
     // Projection: ProjectGraph → ProjectIndex
     // ------------------------------------------------------------------
 
-    /**
-     * @param root may be {@code null} in virtual / no-clone mode
-     */
+    /** @param root may be {@code null} in virtual / no-clone mode */
     private ProjectIndex project(AstGraphService.ProjectGraph g, Path root) {
         ProjectIndex idx = new ProjectIndex();
 
@@ -106,15 +120,8 @@ public class JavaIndexService {
                 case METHOD -> {
                     String sig = extractSignatureFromId(node.id());
                     MethodInfo m = new MethodInfo(
-                            node.simpleName(),
-                            node.id(),
-                            node.filePath(),
-                            node.startLine(),
-                            node.endLine(),
-                            sig,
-                            List.of(),
-                            null
-                    );
+                            node.simpleName(), node.id(), node.filePath(),
+                            node.startLine(), node.endLine(), sig, List.of(), null);
                     idx.methods.put(node.id(), m);
                     idx.methodsByFile
                             .computeIfAbsent(node.filePath(), k -> new ArrayList<>()).add(m);
@@ -134,7 +141,7 @@ public class JavaIndexService {
                             .computeIfAbsent(node.filePath() + "#" + node.simpleName(),
                                     k -> new ArrayList<>()).add(v);
                 }
-                default -> { /* CLASS, LAMBDA, ANNOTATION — not in flat index */ }
+                default -> { /* CLASS, LAMBDA, ANNOTATION */ }
             }
         }
 
@@ -210,7 +217,7 @@ public class JavaIndexService {
     }
 
     // ------------------------------------------------------------------
-    // Public query API (unchanged surface — ContextEnricher uses these)
+    // Query API
     // ------------------------------------------------------------------
 
     public Optional<MethodInfo> findContainingMethod(ProjectIndex index, String relPath, int line) {
@@ -235,7 +242,8 @@ public class JavaIndexService {
         return Optional.ofNullable(index.methods.get(qualifiedSignature));
     }
 
-    public List<MethodInfo> findMethodsInRange(ProjectIndex index, String relPath, int fromLine, int toLine) {
+    public List<MethodInfo> findMethodsInRange(ProjectIndex index, String relPath,
+                                               int fromLine, int toLine) {
         return index.methodsByFile.getOrDefault(relPath, List.of()).stream()
                 .filter(m -> m.startLine() <= toLine && m.endLine() >= fromLine)
                 .toList();
@@ -253,7 +261,8 @@ public class JavaIndexService {
         return index.fieldAccessesByName.getOrDefault(fieldName, List.of());
     }
 
-    public List<CallSite> findCallSitesWithArgument(ProjectIndex index, String methodKey, String argName) {
+    public List<CallSite> findCallSitesWithArgument(ProjectIndex index, String methodKey,
+                                                    String argName) {
         return findCallSites(index, methodKey).stream()
                 .filter(cs -> cs.argumentTexts().stream().anyMatch(a -> a.contains(argName)))
                 .toList();
@@ -279,29 +288,22 @@ public class JavaIndexService {
     public record MethodInfo(
             String name, String qualifiedKey, String filePath,
             int startLine, int endLine, String signature,
-            List<String> parameters,
-            String bodyHash
-    ) {}
+            List<String> parameters, String bodyHash) {}
 
     public record FieldInfo(
             String name, String resolvedKey, String filePath,
-            int declarationLine, String type
-    ) {}
+            int declarationLine, String type) {}
 
     public record VariableInfo(
-            String name, String filePath, int declarationLine, String type
-    ) {}
+            String name, String filePath, int declarationLine, String type) {}
 
     public record CallSite(
             String methodName, String filePath, int line,
-            String resolvedKey, List<String> argumentTexts
-    ) {}
+            String resolvedKey, List<String> argumentTexts) {}
 
     public record FieldAccess(
-            String fieldName, String filePath, int line, String resolvedKey
-    ) {}
+            String fieldName, String filePath, int line, String resolvedKey) {}
 
     public record NameUsage(
-            String name, String filePath, int line
-    ) {}
+            String name, String filePath, int line) {}
 }
