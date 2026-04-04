@@ -414,7 +414,8 @@ public class GraphViewBuilder {
                 simpleNameOf(id),
                 "external",
                 -1, -1,   // -1 = external/synthetic: no source position
-                null
+                "",       // sourceSnippet
+                ""        // declarationSnippet
         );
 
         GraphNodeView stubView = switch (stubKind) {
