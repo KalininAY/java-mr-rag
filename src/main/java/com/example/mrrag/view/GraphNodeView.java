@@ -21,6 +21,12 @@ import java.util.*;
  * source lines for project nodes, and the Spoon pretty-printed text for
  * external/synthetic nodes (no source file available in the project).
  *
+ * <p><b>Declaration</b> — {@link #getDeclaration()} returns only the declaration
+ * header (annotations, modifiers, name, parameters, throws-clause,
+ * extends/implements, up to and including the opening {@code {}), without the body.
+ * For FIELD nodes the full field line is the declaration. Empty for LAMBDA,
+ * VARIABLE, TYPE_PARAM, and ANNOTATION_ATTRIBUTE nodes.
+ *
  * <p><b>Wiring</b> — all list fields are mutable so
  * {@link com.example.mrrag.service.GraphViewBuilder} can populate neighbours
  * in two passes: first create all views, then wire references.
@@ -125,6 +131,21 @@ public abstract class GraphNodeView {
     public String getContent()    { return node.sourceSnippet(); }
 
     /**
+     * Returns the declaration header of this element — the part before the body.
+     *
+     * <p>For CLASS/INTERFACE/METHOD/CONSTRUCTOR nodes this is the verbatim source
+     * lines from {@link #getStartLine()} up to and including the first opening
+     * {@code {} (annotations, modifiers, name, parameters, throws-clause,
+     * extends/implements).
+     * For FIELD nodes this is the full field declaration line.
+     * For LAMBDA, VARIABLE, TYPE_PARAM, and ANNOTATION_ATTRIBUTE nodes this is
+     * an empty string.
+     *
+     * @return declaration header; never {@code null}, may be empty
+     */
+    public String getDeclaration() { return node.declarationSnippet(); }
+
+    /**
      * Returns the raw {@link GraphNode} record that backs this view.
      *
      * @return backing graph node; never {@code null}
@@ -156,6 +177,11 @@ public abstract class GraphNodeView {
      *
      * <p>Format:
      * <pre>
+     * # Declaration
+     * ### path/to/File.java
+     * {startLine}|&lt;declaration header line&gt;
+     * ...
+     *
      * # Content
      * ### path/to/File.java
      * {startLine}|&lt;original source line&gt;
@@ -171,6 +197,10 @@ public abstract class GraphNodeView {
      * -1|com.example.Baz#qux()
      * </pre>
      *
+     * <p>The {@code # Declaration} section is omitted when
+     * {@link #getDeclaration()} is blank (LAMBDA, VARIABLE, TYPE_PARAM,
+     * ANNOTATION_ATTRIBUTE nodes).
+     *
      * <p>Line numbers use real 1-based source positions ({@link #getStartLine()}).
      * {@code startLine == -1} marks external/synthetic nodes — they are grouped
      * under a single {@code ### external} header with {@code -1|<id>} lines,
@@ -180,6 +210,15 @@ public abstract class GraphNodeView {
      */
     public String toMarkdown() {
         StringBuilder sb = new StringBuilder();
+
+        // ── # Declaration ────────────────────────────────────────────────────
+        String decl = getDeclaration();
+        if (decl != null && !decl.isBlank()) {
+            sb.append("# Declaration\n");
+            sb.append("### ").append(getFilePath()).append('\n');
+            appendNumberedSnippet(sb, decl, getStartLine());
+            sb.append('\n');
+        }
 
         // ── # Content ─────────────────────────────────────────────────────
         sb.append("# Content\n");
@@ -297,9 +336,10 @@ public abstract class GraphNodeView {
      *
      * <ul>
      *   <li>External view ({@code startLine == -1}): {@code -1|<id>}</li>
-     *   <li>Project view with non-blank snippet: numbered source lines
+     *   <li>Project view with non-blank declaration: one line per declaration line
      *       ({@code startLine|text}, …)</li>
-     *   <li>Project view without snippet: {@code startLine|<id>} (or {@code 1|<id>}
+     *   <li>Project view without declaration but with snippet: numbered source lines</li>
+     *   <li>Project view without either: {@code startLine|<id>} (or {@code 1|<id>}
      *       when startLine ≤ 0)</li>
      * </ul>
      */
@@ -307,6 +347,16 @@ public abstract class GraphNodeView {
         if (view.getStartLine() == -1) {
             // External node: single -1|<id> line
             lines.add("-1|" + view.getId());
+            return;
+        }
+        // Prefer the declaration snippet for compact, informative context lines.
+        String decl = view.getDeclaration();
+        if (decl != null && !decl.isBlank()) {
+            int first = (view.getStartLine() > 0) ? view.getStartLine() : 1;
+            String[] declLines = decl.split("\n", -1);
+            for (int i = 0; i < declLines.length; i++) {
+                lines.add((first + i) + "|" + declLines[i]);
+            }
             return;
         }
         String snippet = view.getContent();
