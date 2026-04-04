@@ -27,10 +27,12 @@ import java.util.*;
  * represented by lightweight "stub" views whose type is inferred from the id
  * format:
  * <ul>
- *   <li>ids containing {@code #} and {@code (} (e.g.
- *       {@code java.util.Iterator#hasNext()}) → {@link MethodNodeView} stub</li>
- *   <li>ids containing {@code #} but <em>no</em> {@code (} (constructor
- *       signature style) → {@link ConstructorNodeView} stub</li>
+ *   <li>ids of the form {@code pkg.ClassName#ClassName(params)} or
+ *       {@code pkg.ClassName#<init>(params)} → {@link ConstructorNodeView} stub</li>
+ *   <li>ids containing {@code #} and {@code (} but <em>not</em> matching the
+ *       constructor pattern → {@link MethodNodeView} stub</li>
+ *   <li>ids containing {@code #} but <em>no</em> {@code (} → {@link ConstructorNodeView} stub
+ *       (legacy / no-arg constructor reference)</li>
  *   <li>all other ids → {@link ClassNodeView} stub</li>
  * </ul>
  * Stub nodes always have {@code startLine = -1}, {@code filePath = "external"},
@@ -260,45 +262,45 @@ public class GraphViewBuilder {
             }
 
             // ── Invocations ───────────────────────────────────────────────────
-            case INVOKES -> addCallerCallee(from, to);
+            case INVOKES -> addCallerCallee(from, to, edge.line());
 
             case INSTANTIATES -> {
                 if (to instanceof ClassNodeView cls) {
                     cls.addInstantiatedBy(from);
-                    if      (from instanceof MethodNodeView m)      m.addInstantiates(cls);
-                    else if (from instanceof ConstructorNodeView c) c.addInstantiates(cls);
-                    else if (from instanceof LambdaNodeView l)      l.addInstantiates(cls);
+                    if      (from instanceof MethodNodeView m)      { m.addInstantiates(cls);      addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof ConstructorNodeView c) { c.addInstantiates(cls);      addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof LambdaNodeView l)      { l.addInstantiates(cls);      addEdgeLine(from, to.getId(), edge.line()); }
                 }
             }
             case INSTANTIATES_ANONYMOUS -> {
                 if (to instanceof ClassNodeView cls) {
                     cls.addAnonymouslyInstantiatedBy(from);
-                    if      (from instanceof MethodNodeView m)      m.addInstantiatesAnon(cls);
-                    else if (from instanceof ConstructorNodeView c) c.addInstantiatesAnon(cls);
-                    else if (from instanceof LambdaNodeView l)      l.addInstantiatesAnon(cls);
+                    if      (from instanceof MethodNodeView m)      { m.addInstantiatesAnon(cls);  addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof ConstructorNodeView c) { c.addInstantiatesAnon(cls);  addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof LambdaNodeView l)      { l.addInstantiatesAnon(cls);  addEdgeLine(from, to.getId(), edge.line()); }
                 }
             }
             case REFERENCES_METHOD -> {
-                if      (from instanceof MethodNodeView m)      m.addReferencedMethod(to);
-                else if (from instanceof ConstructorNodeView c) c.addCallee(to);
-                else if (from instanceof LambdaNodeView l)      l.addCallee(to);
+                if      (from instanceof MethodNodeView m)      { m.addReferencedMethod(to);   addEdgeLine(from, to.getId(), edge.line()); }
+                else if (from instanceof ConstructorNodeView c) { c.addCallee(to);             addEdgeLine(from, to.getId(), edge.line()); }
+                else if (from instanceof LambdaNodeView l)      { l.addCallee(to);             addEdgeLine(from, to.getId(), edge.line()); }
             }
 
             // ── Field access ──────────────────────────────────────────────────
             case READS_FIELD -> {
                 if (to instanceof FieldNodeView f) {
                     f.addReadBy(from);
-                    if      (from instanceof MethodNodeView m)      m.addReadsField(f);
-                    else if (from instanceof ConstructorNodeView c) c.addReadsField(f);
-                    else if (from instanceof LambdaNodeView l)      l.addReadsField(f);
+                    if      (from instanceof MethodNodeView m)      { m.addReadsField(f);       addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof ConstructorNodeView c) { c.addReadsField(f);       addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof LambdaNodeView l)      { l.addReadsField(f);       addEdgeLine(from, to.getId(), edge.line()); }
                 }
             }
             case WRITES_FIELD -> {
                 if (to instanceof FieldNodeView f) {
                     f.addWrittenBy(from);
-                    if      (from instanceof MethodNodeView m)      m.addWritesField(f);
-                    else if (from instanceof ConstructorNodeView c) c.addWritesField(f);
-                    else if (from instanceof LambdaNodeView l)      l.addWritesField(f);
+                    if      (from instanceof MethodNodeView m)      { m.addWritesField(f);      addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof ConstructorNodeView c) { c.addWritesField(f);      addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof LambdaNodeView l)      { l.addWritesField(f);      addEdgeLine(from, to.getId(), edge.line()); }
                 }
             }
 
@@ -322,9 +324,9 @@ public class GraphViewBuilder {
 
             // ── Exceptions ────────────────────────────────────────────────────
             case THROWS -> {
-                if      (from instanceof MethodNodeView m)      m.addThrowsType(to);
-                else if (from instanceof ConstructorNodeView c) c.addThrowsType(to);
-                else if (from instanceof LambdaNodeView l)      l.addThrowsType(to);
+                if      (from instanceof MethodNodeView m)      { m.addThrowsType(to);        addEdgeLine(from, to.getId(), edge.line()); }
+                else if (from instanceof ConstructorNodeView c) { c.addThrowsType(to);        addEdgeLine(from, to.getId(), edge.line()); }
+                else if (from instanceof LambdaNodeView l)      { l.addThrowsType(to);        addEdgeLine(from, to.getId(), edge.line()); }
             }
 
             // ── Annotations ───────────────────────────────────────────────────
@@ -342,9 +344,9 @@ public class GraphViewBuilder {
             case REFERENCES_TYPE -> {
                 if (to instanceof ClassNodeView cls)            cls.addReferencedBy(from);
                 else if (to instanceof InterfaceNodeView iface) iface.addReferencedBy(from);
-                if      (from instanceof MethodNodeView m)      m.addReferencesType(to);
-                else if (from instanceof ConstructorNodeView c) c.addReferencesType(to);
-                else if (from instanceof LambdaNodeView l)      l.addReferencesType(to);
+                if      (from instanceof MethodNodeView m)      { m.addReferencesType(to);    addEdgeLine(from, to.getId(), edge.line()); }
+                else if (from instanceof ConstructorNodeView c) { c.addReferencesType(to);    addEdgeLine(from, to.getId(), edge.line()); }
+                else if (from instanceof LambdaNodeView l)      { l.addReferencesType(to);    addEdgeLine(from, to.getId(), edge.line()); }
             }
 
             // ── Overrides ─────────────────────────────────────────────────────
@@ -361,14 +363,27 @@ public class GraphViewBuilder {
     // Helper: INVOKES wiring
     // ------------------------------------------------------------------
 
-    private void addCallerCallee(GraphNodeView from, GraphNodeView to) {
-        if      (from instanceof MethodNodeView m)      m.addCallee(to);
-        else if (from instanceof ConstructorNodeView c) c.addCallee(to);
-        else if (from instanceof LambdaNodeView l)      l.addCallee(to);
+    private void addCallerCallee(GraphNodeView from, GraphNodeView to, int line) {
+        if      (from instanceof MethodNodeView m)      { m.addCallee(to);   m.addEdgeLine(to.getId(), line); }
+        else if (from instanceof ConstructorNodeView c) { c.addCallee(to);   c.addEdgeLine(to.getId(), line); }
+        else if (from instanceof LambdaNodeView l)      { l.addCallee(to);   l.addEdgeLine(to.getId(), line); }
 
         if      (to instanceof MethodNodeView m)        m.addCaller(from);
         else if (to instanceof ConstructorNodeView c)   c.addCaller(from);
         else if (to instanceof LambdaNodeView l)        l.addCaller(from);
+    }
+
+    /**
+     * Records the source line of an outgoing edge from {@code from} to
+     * {@code targetId} on views that support {@code addEdgeLine}.
+     * Only {@link MethodNodeView}, {@link ConstructorNodeView}, and
+     * {@link LambdaNodeView} currently expose this method.
+     */
+    private static void addEdgeLine(GraphNodeView from, String targetId, int line) {
+        if (line <= 0) return;
+        if      (from instanceof MethodNodeView m)      m.addEdgeLine(targetId, line);
+        else if (from instanceof ConstructorNodeView c) c.addEdgeLine(targetId, line);
+        else if (from instanceof LambdaNodeView l)      l.addEdgeLine(targetId, line);
     }
 
     // ------------------------------------------------------------------
@@ -381,11 +396,13 @@ public class GraphViewBuilder {
      *
      * <p>The stub type is inferred from the id format:
      * <ul>
-     *   <li>Contains {@code #} <b>and</b> {@code (} →
-     *       {@link MethodNodeView} stub (e.g. {@code java.util.Iterator#hasNext()})</li>
-     *   <li>Contains {@code #} but <b>no</b> {@code (} →
+     *   <li>ids of the form {@code pkg.ClassName#ClassName(params)} or
+     *       {@code pkg.ClassName#<init>(params)} → {@link ConstructorNodeView} stub</li>
+     *   <li>other ids containing {@code #} and {@code (} →
+     *       {@link MethodNodeView} stub</li>
+     *   <li>ids containing {@code #} but <em>no</em> {@code (} →
      *       {@link ConstructorNodeView} stub</li>
-     *   <li>Otherwise → {@link ClassNodeView} stub (external type)</li>
+     *   <li>otherwise → {@link ClassNodeView} stub</li>
      * </ul>
      *
      * <p>Stub nodes receive {@code startLine = -1} and {@code filePath = "external"}
@@ -401,7 +418,9 @@ public class GraphViewBuilder {
 
         final NodeKind stubKind;
         if (hasHash && hasParen) {
-            stubKind = NodeKind.METHOD;
+            // Distinguish constructors from methods: constructor id has the form
+            // "pkg.ClassName#ClassName(...)" or "pkg.ClassName#<init>(...)"
+            stubKind = isConstructorId(id) ? NodeKind.CONSTRUCTOR : NodeKind.METHOD;
         } else if (hasHash) {
             stubKind = NodeKind.CONSTRUCTOR;
         } else {
@@ -428,6 +447,29 @@ public class GraphViewBuilder {
         log.trace("GraphViewBuilder: created {} stub for external id '{}'",
                 stubKind, id);
         return stubView;
+    }
+
+    /**
+     * Returns {@code true} when {@code id} looks like a constructor reference:
+     * <ul>
+     *   <li>{@code pkg.ClassName#ClassName(params)} — Spoon canonical form</li>
+     *   <li>{@code pkg.ClassName#<init>(params)}    — normalised form</li>
+     * </ul>
+     */
+    private static boolean isConstructorId(String id) {
+        int hash = id.indexOf('#');
+        if (hash < 0) return false;
+        String afterHash = id.substring(hash + 1);
+        // normalised form
+        if (afterHash.startsWith("<init>(")) return true;
+        // Spoon form: ClassName#ClassName(...) — simple class name before '('
+        String owner = id.substring(0, hash);
+        int dot = owner.lastIndexOf('.');
+        String simpleName = dot >= 0 ? owner.substring(dot + 1) : owner;
+        // inner class: OuterClass$Inner → simpleName is "Inner"
+        int dollar = simpleName.lastIndexOf('$');
+        if (dollar >= 0) simpleName = simpleName.substring(dollar + 1);
+        return afterHash.startsWith(simpleName + "(");
     }
 
     private static String simpleNameOf(String id) {
