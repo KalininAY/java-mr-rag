@@ -4,9 +4,9 @@ import com.example.mrrag.model.GraphBuildStats;
 import com.example.mrrag.service.AstGraphService.EdgeKind;
 import com.example.mrrag.service.AstGraphService.NodeKind;
 import com.example.mrrag.service.AstGraphService.ProjectGraph;
-import com.example.mrrag.service.JavaIndexService;
-import com.example.mrrag.service.loader.GitLabSourceLoader;
-import com.example.mrrag.service.loader.JavaSourceLoader;
+import com.example.mrrag.service.graph.GraphBuildService;
+import com.example.mrrag.service.source.GitLabProjectSourceProvider;
+import com.example.mrrag.service.source.ProjectSourceProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
@@ -26,13 +26,13 @@ import java.util.stream.Collectors;
  *
  * {
  *   "projectId" : 123,
- *   "ref"       : "main",          // branch, tag, or commit SHA
- *   "gitToken"  : "glpat-xxx"      // optional; falls back to app.gitlab.token
+ *   "ref"       : "main",        // branch, tag, or commit SHA
+ *   "gitToken"  : "glpat-xxx"   // optional; falls back to app.gitlab.token
  * }
  * </pre>
  *
- * <p>{@code ref} accepts a branch name, a tag name, or a <strong>full / short commit SHA</strong>.
- * GitLab4J passes it directly to the Repository Files API, which resolves any ref type.
+ * <p>{@code ref} accepts a branch name, a tag name, or a full / short commit SHA.
+ * GitLab4J passes it directly to the Repository Files API which resolves any ref type.
  */
 @Slf4j
 @RestController
@@ -40,17 +40,17 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class GraphApiController {
 
-    private final JavaIndexService javaIndexService;
-    private final GitLabApi        gitLabApi;
+    private final GraphBuildService graphService;
+    private final GitLabApi         gitLabApi;
 
     // -----------------------------------------------------------------------
-    // Request DTO
+    // DTO
     // -----------------------------------------------------------------------
 
     /**
      * @param projectId numeric GitLab project id (required)
      * @param ref       branch, tag, or commit SHA (required)
-     * @param gitToken  optional per-request GitLab PAT (overrides application-level token)
+     * @param gitToken  optional per-request PAT; overrides application-level token
      */
     public record IngestRefRequest(
             Long   projectId,
@@ -67,46 +67,37 @@ public class GraphApiController {
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public GraphBuildStats ingestRef(@RequestBody IngestRefRequest request) throws Exception {
+    public GraphBuildStats ingestRef(@RequestBody IngestRefRequest req) throws Exception {
 
-        if (request.projectId() == null) {
+        if (req.projectId() == null)
             throw new IllegalArgumentException("projectId must not be null");
-        }
-        if (request.ref() == null || request.ref().isBlank()) {
+        if (req.ref() == null || req.ref().isBlank())
             throw new IllegalArgumentException("ref must not be blank");
-        }
 
         long wallStart = System.currentTimeMillis();
 
-        // Use a per-request GitLabApi instance if a custom token was supplied
-        GitLabApi api = resolveApi(request.gitToken());
-
-        JavaSourceLoader loader = new GitLabSourceLoader(api, request.projectId(), request.ref());
+        GitLabApi api = resolveApi(req.gitToken());
+        ProjectSourceProvider provider =
+                new GitLabProjectSourceProvider(api, req.projectId(), req.ref());
 
         long fetchStart = System.currentTimeMillis();
-        ProjectGraph graph = javaIndexService.getGraphFromLoader(loader);
+        ProjectGraph graph = graphService.buildGraph(provider);
         long buildMs = System.currentTimeMillis() - fetchStart;
         long totalMs = System.currentTimeMillis() - wallStart;
 
         Map<NodeKind, Long> nodesByKind = Arrays.stream(NodeKind.values())
-                .collect(Collectors.toMap(
-                        k -> k,
-                        k -> graph.nodes.values().stream()
-                                .filter(n -> n.kind() == k).count()));
-
+                .collect(Collectors.toMap(k -> k,
+                        k -> graph.nodes.values().stream().filter(n -> n.kind() == k).count()));
         Map<EdgeKind, Long> edgesByKind = Arrays.stream(EdgeKind.values())
-                .collect(Collectors.toMap(
-                        k -> k,
+                .collect(Collectors.toMap(k -> k,
                         k -> graph.edgesFrom.values().stream()
                                 .flatMap(java.util.List::stream)
                                 .filter(e -> e.kind() == k).count()));
+        long totalEdges = graph.edgesFrom.values().stream().mapToLong(java.util.List::size).sum();
 
-        long totalEdges = graph.edgesFrom.values().stream()
-                .mapToLong(java.util.List::size).sum();
-
-        String pseudoUrl = "gitlab:" + request.projectId() + "@" + request.ref();
         return new GraphBuildStats(
-                pseudoUrl, "(virtual — no clone)",
+                "gitlab:" + req.projectId() + "@" + req.ref(),
+                "(virtual — no clone)",
                 0L, buildMs, totalMs,
                 graph.nodes.size(), totalEdges,
                 nodesByKind, edgesByKind,
@@ -117,16 +108,8 @@ public class GraphApiController {
     // Helpers
     // -----------------------------------------------------------------------
 
-    /**
-     * Returns a GitLabApi instance configured with the per-request token when provided,
-     * otherwise falls back to the application-level bean.
-     */
-    private GitLabApi resolveApi(String requestToken) {
-        if (requestToken == null || requestToken.isBlank()) {
-            return gitLabApi;
-        }
-        // Create a lightweight client reusing the same host URL
-        String hostUrl = gitLabApi.getGitLabServerUrl();
-        return new GitLabApi(hostUrl, requestToken);
+    private GitLabApi resolveApi(String token) {
+        if (token == null || token.isBlank()) return gitLabApi;
+        return new GitLabApi(gitLabApi.getGitLabServerUrl(), token);
     }
 }
