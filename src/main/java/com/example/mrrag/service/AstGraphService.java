@@ -178,11 +178,11 @@ public class AstGraphService {
      *                            (no source file available); empty string when unavailable
      * @param declarationSnippet  the declaration header of this element (annotations, modifiers,
      *                            name, parameters, throws-clause, extends/implements) without the
-     *                            body.  For CLASS/INTERFACE nodes this is the opening line up to and
-     *                            including the first {@code {}; for METHOD/CONSTRUCTOR nodes it is the
-     *                            full signature up to and including the opening {@code {}; for FIELD
-     *                            nodes it is the field declaration line.  Empty string for LAMBDA,
-     *                            VARIABLE, TYPE_PARAM, and ANNOTATION_ATTRIBUTE nodes.
+     *                            body.  For CLASS/INTERFACE/METHOD/CONSTRUCTOR nodes this is the
+     *                            opening line(s) up to and including the first {@code {}.
+     *                            For FIELD, VARIABLE, TYPE_PARAM, and ANNOTATION_ATTRIBUTE nodes
+     *                            (which have no body) this equals the full source snippet.
+     *                            For LAMBDA nodes the field is an empty string.
      */
     public record GraphNode(
             String id,
@@ -493,7 +493,7 @@ public class AstGraphService {
                         graph.addNode(new GraphNode(tpId, NodeKind.TYPE_PARAM, tp.getSimpleName(),
                                 file, tpLn[0], tpLn[1],
                                 extractSource(sourceLines, file, tpLn[0], tpLn[1], tp),
-                                ""));
+                                extractDeclaration(sourceLines, file, tpLn[0], tpLn[1], tp)));
                         graph.addEdge(new GraphEdge(
                                 ownerId, EdgeKind.HAS_TYPE_PARAM, tpId,
                                 file, ownerLn[0]
@@ -602,7 +602,7 @@ public class AstGraphService {
                 graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(),
                         file, ln[0], ln[1],
                         extractSource(sourceLines, file, ln[0], ln[1], v),
-                        ""));
+                        extractDeclaration(sourceLines, file, ln[0], ln[1], v)));
             });
 
             // ── 8. ANNOTATION_ATTRIBUTE nodes ──────────────────────────────────────────────
@@ -621,7 +621,7 @@ public class AstGraphService {
                         graph.addNode(new GraphNode(attrId, NodeKind.ANNOTATION_ATTRIBUTE,
                                 m.getSimpleName(), file, ln[0], ln[1],
                                 extractSource(sourceLines, file, ln[0], ln[1], m),
-                                ""));
+                                extractDeclaration(sourceLines, file, ln[0], ln[1], m)));
                         graph.addEdge(new GraphEdge(
                                 annoId, EdgeKind.ANNOTATION_ATTR, attrId, file, ln[0]
                         ));
@@ -823,8 +823,10 @@ public class AstGraphService {
      *   <li>Start from {@code startLine} and collect lines until the first line
      *       that contains an unquoted {@code {}, stopping right after it (inclusive).</li>
      *   <li>If no {@code {} is found within the element's line range (e.g. an
-     *       abstract method, an interface method, or a field), return the full
-     *       {@code startLine..endLine} snippet — that <em>is</em> the declaration.</li>
+     *       abstract method, an interface method, a field, a local variable, a
+     *       parameter, a type parameter, or an annotation attribute), return the
+     *       full {@code startLine..endLine} snippet — that <em>is</em> the
+     *       declaration.</li>
      *   <li>If source lines are unavailable (external/synthetic node), fall back to
      *       Spoon's pretty-printed first line.</li>
      * </ol>
