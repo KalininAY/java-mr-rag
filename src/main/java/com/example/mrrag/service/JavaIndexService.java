@@ -2,6 +2,7 @@ package com.example.mrrag.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.gitlab4j.api.GitLabApiException;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -15,6 +16,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * Delegates AST graph construction to {@link AstGraphService} and projects the
  * rich {@link AstGraphService.ProjectGraph} into the flat maps that the rest of
  * the application expects.
+ *
+ * <h2>Two build modes</h2>
+ * <ul>
+ *   <li>{@link #buildIndex(Path)} – original mode: build from a locally cloned repo.</li>
+ *   <li>{@link #buildIndexFromRef(long, String)} – no-clone mode: fetch sources via
+ *       {@link GitLabSpoonLoader} and build entirely in memory.</li>
+ * </ul>
  */
 @Slf4j
 @Service
@@ -22,17 +30,40 @@ import java.util.concurrent.ConcurrentHashMap;
 public class JavaIndexService {
 
     private final AstGraphService graphService;
+    private final GitLabSpoonLoader spoonLoader;
     private final Map<Path, ProjectIndex> indexCache = new ConcurrentHashMap<>();
 
     // ------------------------------------------------------------------
     // Public build / invalidate
     // ------------------------------------------------------------------
 
-    public ProjectIndex buildIndex(Path projectRoot) throws IOException {
+    /** Build from a locally cloned repo directory (original behaviour). */
+    public ProjectIndex buildIndex(Path projectRoot) {
         return indexCache.computeIfAbsent(projectRoot, root -> {
             AstGraphService.ProjectGraph g = graphService.buildGraph(root);
             return project(g, root);
         });
+    }
+
+    /**
+     * Build from GitLab API without cloning.
+     *
+     * <p>Fetches all {@code .java} files at {@code ref} for the given project,
+     * builds a Spoon model in memory, then projects it into a {@link ProjectIndex}.
+     * This call is <em>not</em> cached — callers that need caching should wrap it.
+     *
+     * @param projectId numeric GitLab project id
+     * @param ref       branch name, tag, or commit SHA
+     * @return fully populated project index
+     */
+    public ProjectIndex buildIndexFromRef(long projectId, String ref)
+            throws GitLabApiException, IOException {
+        log.info("Building index for projectId={} ref={} (no-clone mode)", projectId, ref);
+        List<GitLabSpoonLoader.VirtualSource> sources =
+                spoonLoader.fetchJavaSources(projectId, ref);
+        AstGraphService.ProjectGraph graph =
+                graphService.buildGraphFromVirtualSources(sources);
+        return project(graph, null);
     }
 
     public void invalidate(Path projectRoot) {
@@ -47,18 +78,32 @@ public class JavaIndexService {
         return graphService.buildGraph(projectRoot);
     }
 
+    /**
+     * Returns the raw Spoon graph built from GitLab API (no-clone mode).
+     *
+     * @param projectId numeric GitLab project id
+     * @param ref       branch name, tag, or commit SHA
+     */
+    public AstGraphService.ProjectGraph getGraphFromRef(long projectId, String ref)
+            throws GitLabApiException, IOException {
+        List<GitLabSpoonLoader.VirtualSource> sources =
+                spoonLoader.fetchJavaSources(projectId, ref);
+        return graphService.buildGraphFromVirtualSources(sources);
+    }
+
     // ------------------------------------------------------------------
     // Projection: ProjectGraph → ProjectIndex
     // ------------------------------------------------------------------
 
+    /**
+     * @param root may be {@code null} in virtual / no-clone mode
+     */
     private ProjectIndex project(AstGraphService.ProjectGraph g, Path root) {
         ProjectIndex idx = new ProjectIndex();
 
         for (AstGraphService.GraphNode node : g.nodes.values()) {
             switch (node.kind()) {
                 case METHOD -> {
-                    // Reconstruct a MethodInfo from graph node + incoming CONTAINS edge
-                    // (name, key, file, lines, signature derived from id)
                     String sig = extractSignatureFromId(node.id());
                     MethodInfo m = new MethodInfo(
                             node.simpleName(),
@@ -67,8 +112,8 @@ public class JavaIndexService {
                             node.startLine(),
                             node.endLine(),
                             sig,
-                            List.of(), // params: full list available from Spoon node via graph
-                            null        // bodyHash: expensive, computed on demand
+                            List.of(),
+                            null
                     );
                     idx.methods.put(node.id(), m);
                     idx.methodsByFile
@@ -77,7 +122,7 @@ public class JavaIndexService {
                 case FIELD -> {
                     FieldInfo f = new FieldInfo(
                             node.simpleName(), node.id(), node.filePath(),
-                            node.startLine(), "" /* type not stored in node */);
+                            node.startLine(), "");
                     idx.fields.put(node.id(), f);
                     idx.fieldsByName
                             .computeIfAbsent(node.simpleName(), k -> new ArrayList<>()).add(f);
@@ -93,7 +138,6 @@ public class JavaIndexService {
             }
         }
 
-        // Rebuild call sites from INVOKES edges
         for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
             for (AstGraphService.GraphEdge e : edges) {
                 if (e.kind() == AstGraphService.EdgeKind.INVOKES) {
@@ -106,7 +150,6 @@ public class JavaIndexService {
             }
         }
 
-        // Rebuild field accesses from READS_FIELD / WRITES_FIELD edges
         for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
             for (AstGraphService.GraphEdge e : edges) {
                 if (e.kind() == AstGraphService.EdgeKind.READS_FIELD
@@ -121,7 +164,6 @@ public class JavaIndexService {
             }
         }
 
-        // Rebuild name usages from READS_VAR / WRITES_VAR edges
         for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
             for (AstGraphService.GraphEdge e : edges) {
                 if (e.kind() == AstGraphService.EdgeKind.READS_LOCAL_VAR
@@ -145,13 +187,11 @@ public class JavaIndexService {
     // ID parsing helpers
     // ------------------------------------------------------------------
 
-    /** "com.example.Foo#bar(int, String)"  →  "bar(int, String)" */
     private static String extractSignatureFromId(String id) {
         int hash = id.lastIndexOf('#');
         return hash >= 0 ? id.substring(hash + 1) : id;
     }
 
-    /** "com.example.Foo#bar(int)" → "bar" */
     private static String simpleNameFromId(String id) {
         int hash = id.lastIndexOf('#');
         String sig = hash >= 0 ? id.substring(hash + 1) : id;
@@ -159,13 +199,11 @@ public class JavaIndexService {
         return paren >= 0 ? sig.substring(0, paren) : sig;
     }
 
-    /** "com.example.Foo.myField" → "myField" */
     private static String simpleNameFromFieldId(String id) {
         int dot = id.lastIndexOf('.');
         return dot >= 0 ? id.substring(dot + 1) : id;
     }
 
-    /** "var@Foo.java:42:count" → "count" */
     private static String simpleNameFromVarId(String id) {
         int colon = id.lastIndexOf(':');
         return colon >= 0 ? id.substring(colon + 1) : id;
