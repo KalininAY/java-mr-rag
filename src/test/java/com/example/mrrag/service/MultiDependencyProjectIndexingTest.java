@@ -5,6 +5,7 @@ import com.example.mrrag.config.GraphCacheProperties;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.mock.env.MockEnvironment;
 
 import java.net.URISyntaxException;
 import java.net.URL;
@@ -41,6 +42,14 @@ class MultiDependencyProjectIndexingTest {
     private static boolean gradlewPresent(Path projectRoot) {
         return projectRoot.resolve("gradlew").toFile().canExecute()
                 || projectRoot.resolve("gradlew.bat").toFile().exists();
+    }
+
+    /**
+     * Creates an {@link EdgeKindConfig} with all edge kinds enabled (no properties set).
+     * Uses Spring's {@link MockEnvironment} so no application context is needed.
+     */
+    private static EdgeKindConfig allEdgesEnabled() {
+        return new EdgeKindConfig(new MockEnvironment());
     }
 
     // ---------------------------------------------------------------
@@ -175,7 +184,7 @@ class MultiDependencyProjectIndexingTest {
 
     private static AstGraphService buildService(Path cacheDir) {
         return new AstGraphService(
-                new EdgeKindConfig(),
+                allEdgesEnabled(),
                 cacheProperties(cacheDir),
                 buildStore(cacheDir));
     }
