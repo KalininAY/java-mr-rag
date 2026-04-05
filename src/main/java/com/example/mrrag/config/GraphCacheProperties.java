@@ -23,6 +23,16 @@ public class GraphCacheProperties {
     private String dir = "";
 
     /**
+     * Global directory for shared dependency ({@code dep/...} and {@code jar/...}) segment graphs.
+     * Multiple projects that use the same library version will reuse the same file here instead
+     * of duplicating it inside every project bundle.
+     * <p>
+     * When blank (default), the directory is resolved as {@code <dir>/deps} (a sub-directory of
+     * the main cache dir).
+     */
+    private String depsDir = "";
+
+    /**
      * For each compile-scope {@code .jar} on the classpath, if a sibling {@code *-sources.jar}
      * exists, add it as a Spoon input resource so the graph includes dependency sources.
      */
