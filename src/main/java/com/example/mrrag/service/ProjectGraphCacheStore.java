@@ -1,7 +1,9 @@
 package com.example.mrrag.service;
 
 import com.example.mrrag.config.GraphCacheProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.util.FileSystemUtils;
@@ -12,8 +14,10 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -23,22 +27,27 @@ import java.util.Optional;
 import java.util.stream.Stream;
 
 /**
- * Persists {@link AstGraphService.ProjectGraph} as one JSON per segment.
+ * Persists {@link AstGraphService.ProjectGraph} as JSON files on disk.
  *
  * <h3>Storage layout</h3>
  * <pre>
  * cacheDir/
- *   &lt;sha256(root)&gt;_&lt;sha256(fingerprint)&gt;/   ← project bundle
+ *   &lt;sha256(root)&gt;_&lt;sha256(fingerprint)&gt;/    ← project bundle
  *     main.json
- *     segments.json                           ← manifest listing all segment IDs
- *   deps/                                     ← GLOBAL shared dependency graphs
- *     dep/com/example/foo/1.0.0.json          ← dep segment (Maven GAV)
- *     jar/&lt;sha256(absPath)&gt;.json             ← dep segment (unknown coordinates)
+ *     segments.json                            ← manifest: list of all segment IDs
+ *
+ *   deps/                                      ← GLOBAL shared dependency graphs
+ *     dep/com.example_foo_1.0.0/               ← one dir per dep (segmentId after prefix)
+ *       graph.json
+ *       meta.json
+ *     jar/&lt;sha256&gt;/                            ← unknown-coordinates dep
+ *       graph.json
+ *       meta.json
  * </pre>
  *
- * <p>Dependency segments ({@code segmentId} starting with {@code "dep/"} or {@code "jar/"})
- * are stored in the global {@code depsDir} so that multiple projects sharing the same library
- * version reuse a single cached graph file rather than duplicating it inside every project bundle.
+ * <p>Dependency segments (segmentId starting with {@code "dep/"} or {@code "jar/"}) are stored in
+ * the global {@code depsDir} so that multiple projects sharing the same library version reuse a
+ * single cached graph rather than duplicating it in every project bundle.
  *
  * <p>The {@code main} segment always lives inside the project bundle.
  *
@@ -48,8 +57,13 @@ import java.util.stream.Stream;
 @Component
 public class ProjectGraphCacheStore {
 
-    private static final String MANIFEST = "segments.json";
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final String MANIFEST   = "segments.json";
+    private static final String GRAPH_FILE = "graph.json";
+    private static final String META_FILE  = "meta.json";
+
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+            .setSerializationInclusion(JsonInclude.Include.NON_NULL);
 
     private final GraphCacheProperties properties;
 
@@ -70,7 +84,7 @@ public class ProjectGraphCacheStore {
     }
 
     /**
-     * Global directory for shared dependency segment files.
+     * Global directory for shared dependency segment subdirectories.
      * Defaults to {@code cacheDir/deps} when {@code app.graph.cache.depsDir} is blank.
      */
     private Path depsDir() {
@@ -81,12 +95,7 @@ public class ProjectGraphCacheStore {
         return Path.of(d);
     }
 
-    /** Returns true when a segmentId represents a shared dependency (not project sources). */
-    private static boolean isDepSegment(String segmentId) {
-        return segmentId.startsWith("dep/") || segmentId.startsWith("jar/");
-    }
-
-    /** Directory containing {@code main.json}, {@code segments.json}. */
+    /** Directory containing {@code main.json} and {@code segments.json} for a project. */
     public Path bundleDir(ProjectKey key) {
         return cacheDir().resolve(bundleDirName(key));
     }
@@ -97,42 +106,34 @@ public class ProjectGraphCacheStore {
     }
 
     /**
-     * Resolves the physical file for a segment.
-     * <ul>
-     *   <li>Dep segments  → {@code depsDir/<segmentId>.json} (e.g. {@code deps/dep/com/example/foo/1.0.0.json})
-     *   <li>Main segment  → {@code bundleDir/main.json}
-     * </ul>
+     * Directory under {@code depsDir} that holds {@code graph.json} and {@code meta.json}
+     * for a dep segment.
+     *
+     * <p>Example: segmentId {@code "dep/com.example_foo_1.0.0"} →
+     * {@code depsDir/dep/com.example_foo_1.0.0/}
      */
-    public Path segmentFile(ProjectKey key, String segmentId) {
-        if (isDepSegment(segmentId)) {
-            return depSegmentFile(segmentId);
-        }
-        return localSegmentFile(bundleDir(key), segmentId);
+    public Path depSegmentDir(String segmentId) {
+        // segmentId = "dep/<flat-name>" or "jar/<sha256>"
+        // Split on first '/' only to produce exactly two components: prefix + name
+        int slash = segmentId.indexOf('/');
+        String prefix = segmentId.substring(0, slash);   // "dep" or "jar"
+        String name   = segmentId.substring(slash + 1);  // "com.example_foo_1.0.0" or sha256
+        return depsDir().resolve(prefix).resolve(name);
     }
 
-    /** Physical path for a dep segment inside the global deps directory. */
-    Path depSegmentFile(String segmentId) {
-        // segmentId looks like "dep/com/example/foo/1.0.0" or "jar/<sha256>"
-        // We turn it into a flat path under depsDir: dep/com/example/foo/1.0.0.json
-        String[] parts = segmentId.split("/");
-        Path p = depsDir();
-        for (int i = 0; i < parts.length - 1; i++) {
-            p = p.resolve(parts[i]);
-        }
-        return p.resolve(parts[parts.length - 1] + ".json");
+    /** {@code graph.json} file inside a dep segment directory. */
+    public Path depGraphFile(String segmentId) {
+        return depSegmentDir(segmentId).resolve(GRAPH_FILE);
     }
 
-    /** Physical path for a segment inside a project bundle directory (only for non-dep segments). */
+    /** {@code meta.json} file inside a dep segment directory. */
+    public Path depMetaFile(String segmentId) {
+        return depSegmentDir(segmentId).resolve(META_FILE);
+    }
+
+    /** For non-dep segments (i.e. {@code main}) inside a project bundle. */
     static Path localSegmentFile(Path bundleDir, String segmentId) {
-        if (GraphSegmentIds.MAIN.equals(segmentId)) {
-            return bundleDir.resolve("main.json");
-        }
-        String[] parts = segmentId.split("/");
-        Path p = bundleDir;
-        for (int i = 0; i < parts.length - 1; i++) {
-            p = p.resolve(parts[i]);
-        }
-        return p.resolve(parts[parts.length - 1] + ".json");
+        return bundleDir.resolve(segmentId + ".json");
     }
 
     // ------------------------------------------------------------------
@@ -140,16 +141,16 @@ public class ProjectGraphCacheStore {
     // ------------------------------------------------------------------
 
     /**
-     * Loads all segment graphs from disk (manifest + files).
-     * Dep segments are read from the global {@link #depsDir()};
-     * main segment is read from the project bundle.
-     * Falls back to legacy single-file format if no manifest found.
+     * Loads all segment graphs listed in the project's {@code segments.json} manifest.
+     * Dep segments are resolved from the global {@link #depsDir()};
+     * main segment from the project bundle.
+     * Falls back to the legacy single-file format if no manifest exists.
      */
     public Optional<Map<String, AstGraphService.ProjectGraph>> tryLoadAllSegments(ProjectKey key) {
         if (!properties.isSerializationEnabled()) {
             return Optional.empty();
         }
-        Path bundle = bundleDir(key);
+        Path bundle   = bundleDir(key);
         Path manifest = bundle.resolve(MANIFEST);
         if (Files.isRegularFile(manifest)) {
             try {
@@ -158,20 +159,20 @@ public class ProjectGraphCacheStore {
                 for (String id : man.segments) {
                     Optional<AstGraphService.ProjectGraph> g = loadSegmentFile(key, id);
                     if (g.isEmpty()) {
-                        log.warn("Missing segment file for {}, cache incomplete", id);
+                        log.warn("Missing segment file for '{}', treating cache as incomplete", id);
                         return Optional.empty();
                     }
                     out.put(id, g.get());
                 }
-                log.debug("Loaded {} graph segments from bundle {}", out.size(), bundle);
+                log.debug("Loaded {} segment(s) from bundle {}", out.size(), bundle);
                 return Optional.of(out);
             } catch (IOException e) {
-                log.warn("Failed to load segment bundle {}: {}", bundle, e.getMessage());
+                log.warn("Failed to read segment bundle {}: {}", bundle, e.getMessage());
                 return Optional.empty();
             }
         }
-        Optional<AstGraphService.ProjectGraph> legacy = tryLoadLegacySingleFile(key);
-        return legacy.map(g -> {
+        // Legacy: single JSON file
+        return tryLoadLegacySingleFile(key).map(g -> {
             Map<String, AstGraphService.ProjectGraph> m = new LinkedHashMap<>();
             m.put(GraphSegmentIds.MAIN, g);
             return m;
@@ -179,9 +180,9 @@ public class ProjectGraphCacheStore {
     }
 
     /**
-     * Loads one segment from disk.
-     * Dep segments are looked up in the global {@link #depsDir()} first;
-     * if not found there, falls back to the project bundle (backward compatibility).
+     * Loads one named segment from disk.
+     * Dep segments are resolved from the global deps directory first;
+     * falls back to the project bundle for backward compatibility with the old layout.
      */
     public Optional<AstGraphService.ProjectGraph> tryLoadSegment(ProjectKey key, String segmentId) {
         if (!properties.isSerializationEnabled()) {
@@ -190,41 +191,39 @@ public class ProjectGraphCacheStore {
         return loadSegmentFile(key, segmentId);
     }
 
-    /** Internal: resolves file, checks existence, deserializes. */
     private Optional<AstGraphService.ProjectGraph> loadSegmentFile(ProjectKey key, String segmentId) {
-        if (isDepSegment(segmentId)) {
-            // Try global deps directory first
-            Path globalFile = depSegmentFile(segmentId);
-            if (Files.isRegularFile(globalFile)) {
-                return readSegmentFile(globalFile, segmentId);
+        if (GraphSegmentIds.isDepSegment(segmentId)) {
+            // 1. Global deps directory
+            Path globalGraph = depGraphFile(segmentId);
+            if (Files.isRegularFile(globalGraph)) {
+                return readGraphJson(globalGraph, segmentId);
             }
-            // Backward-compat: try inside project bundle (pre-global-deps-cache layout)
-            Path localFile = localSegmentFile(bundleDir(key), segmentId);
-            if (Files.isRegularFile(localFile)) {
-                log.debug("Dep segment {} found only in project bundle (legacy layout)", segmentId);
-                return readSegmentFile(localFile, segmentId);
+            // 2. Backward-compat: old flat layout inside project bundle
+            Path legacyFile = bundleDir(key).resolve(segmentId.replace('/', '_') + ".json");
+            if (Files.isRegularFile(legacyFile)) {
+                log.debug("Dep segment '{}' found in project bundle (legacy), consider re-caching", segmentId);
+                return readGraphJson(legacyFile, segmentId);
             }
             return Optional.empty();
         }
+        // Non-dep (main)
         Path f = localSegmentFile(bundleDir(key), segmentId);
         if (!Files.isRegularFile(f)) {
             return Optional.empty();
         }
-        return readSegmentFile(f, segmentId);
+        return readGraphJson(f, segmentId);
     }
 
-    private Optional<AstGraphService.ProjectGraph> readSegmentFile(Path f, String segmentId) {
+    private Optional<AstGraphService.ProjectGraph> readGraphJson(Path f, String segmentId) {
         try (InputStream in = Files.newInputStream(f)) {
             return Optional.of(ProjectGraphSerialization.read(in));
         } catch (IOException e) {
-            log.warn("Failed to read segment {} from {}: {}", segmentId, f, e.getMessage());
+            log.warn("Failed to read segment '{}' from {}: {}", segmentId, f, e.getMessage());
             return Optional.empty();
         }
     }
 
-    /**
-     * Legacy: one JSON file at cache root (pre-sharded layout).
-     */
+    /** Legacy: single JSON at cache root (pre-sharded layout). */
     public Optional<AstGraphService.ProjectGraph> tryLoadLegacySingleFile(ProjectKey key) {
         if (!properties.isSerializationEnabled()) {
             return Optional.empty();
@@ -236,7 +235,7 @@ public class ProjectGraphCacheStore {
         try (InputStream in = Files.newInputStream(file)) {
             return Optional.of(ProjectGraphSerialization.read(in));
         } catch (IOException e) {
-            log.warn("Failed to deserialize legacy graph cache {}: {}", file, e.getMessage());
+            log.warn("Failed to read legacy cache {}: {}", file, e.getMessage());
             return Optional.empty();
         }
     }
@@ -248,13 +247,11 @@ public class ProjectGraphCacheStore {
     /**
      * Saves all segments:
      * <ul>
-     *   <li>Dep segments ({@code dep/...}, {@code jar/...}) → global {@link #depsDir()} so they can
-     *       be shared across projects that depend on the same library version.
-     *       A dep segment that already exists in the global dir is <em>not</em> overwritten
-     *       (first writer wins — same GAV implies identical content).
-     *   <li>Main segment and other local segments → project bundle directory.
+     *   <li>Dep segments → {@code depsDir/<prefix>/<name>/graph.json} + {@code meta.json}.
+     *       An existing dep directory is left untouched (first writer wins).
+     *   <li>Main segment → project bundle ({@code main.json}).
      * </ul>
-     * Writes are atomic (temp file → {@code Files.move} with {@code REPLACE_EXISTING}).
+     * All writes are atomic (tmp file → move).
      */
     public void savePartitioned(ProjectKey key, Map<String, AstGraphService.ProjectGraph> segments) throws IOException {
         if (!properties.isSerializationEnabled() || segments == null || segments.isEmpty()) {
@@ -265,61 +262,65 @@ public class ProjectGraphCacheStore {
 
         List<String> ids = new ArrayList<>(segments.keySet());
         for (Map.Entry<String, AstGraphService.ProjectGraph> e : segments.entrySet()) {
-            String segId = e.getKey();
-            AstGraphService.ProjectGraph graph = e.getValue();
-            if (isDepSegment(segId)) {
-                saveDepSegmentGlobal(segId, graph);
+            if (GraphSegmentIds.isDepSegment(e.getKey())) {
+                saveDepSegmentGlobal(e.getKey(), e.getValue(), key);
             } else {
-                saveLocalSegment(bundle, segId, graph);
+                saveLocalSegment(bundle, e.getKey(), e.getValue());
             }
         }
 
-        // Write manifest in the project bundle (lists all segment IDs, incl. dep ones)
+        // Manifest in project bundle
         SegmentManifest man = new SegmentManifest();
         man.segments = ids;
-        Path manPath = bundle.resolve(MANIFEST);
-        Path manTmp = Files.createTempFile(bundle, "manifest-", ".tmp");
-        MAPPER.writeValue(manTmp.toFile(), man);
-        Files.move(manTmp, manPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        atomicWrite(bundle, MANIFEST, tmp -> MAPPER.writeValue(tmp.toFile(), man));
 
-        // Remove legacy single-file if present
-        Path legacy = cacheDir().resolve(legacyCacheFileName(key));
-        try {
-            Files.deleteIfExists(legacy);
-        } catch (IOException ignored) {
-        }
-        log.debug("Saved {} graph segments (bundle: {}, global deps: {})",
-                segments.size(), bundle, depsDir());
+        // Remove legacy single-file
+        try { Files.deleteIfExists(cacheDir().resolve(legacyCacheFileName(key))); }
+        catch (IOException ignored) {}
+
+        log.debug("Saved {} segment(s) — bundle: {}, global deps: {}", segments.size(), bundle, depsDir());
     }
 
     /**
-     * Writes a dep segment to the global deps directory.
-     * If the file already exists it is left untouched (same GAV → same content).
+     * Writes a dep segment to the global deps directory:
+     * {@code depsDir/<prefix>/<name>/graph.json} and {@code meta.json}.
+     * If the directory already exists, the segment is considered up-to-date and skipped.
+     *
+     * @param key used only to extract the original jar path for {@code meta.json}
      */
-    private void saveDepSegmentGlobal(String segId, AstGraphService.ProjectGraph graph) throws IOException {
-        Path target = depSegmentFile(segId);
-        if (Files.isRegularFile(target)) {
-            log.debug("Dep segment {} already cached globally at {}, skipping write", segId, target);
+    private void saveDepSegmentGlobal(String segId,
+                                       AstGraphService.ProjectGraph graph,
+                                       ProjectKey key) throws IOException {
+        Path dir = depSegmentDir(segId);
+        Path graphFile = dir.resolve(GRAPH_FILE);
+        if (Files.isRegularFile(graphFile)) {
+            log.debug("Dep segment '{}' already in global cache, skipping", segId);
             return;
         }
-        Files.createDirectories(target.getParent());
-        Path tmp = Files.createTempFile(target.getParent(), "dep-", ".json.tmp");
-        try (OutputStream out = Files.newOutputStream(tmp)) {
-            ProjectGraphSerialization.write(graph, out);
-        }
-        Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-        log.debug("Saved dep segment {} to global cache: {}", segId, target);
+        Files.createDirectories(dir);
+
+        // graph.json
+        atomicWrite(dir, GRAPH_FILE, tmp -> {
+            try (OutputStream out = Files.newOutputStream(tmp)) {
+                ProjectGraphSerialization.write(graph, out);
+            }
+        });
+
+        // meta.json
+        DepSegmentMeta meta = DepSegmentMeta.from(segId, key);
+        atomicWrite(dir, META_FILE, tmp -> MAPPER.writeValue(tmp.toFile(), meta));
+
+        log.debug("Saved dep segment '{}' to global cache: {}", segId, dir);
     }
 
-    /** Writes a non-dep segment (e.g. main) inside the project bundle directory. */
-    private void saveLocalSegment(Path bundle, String segId, AstGraphService.ProjectGraph graph) throws IOException {
+    private void saveLocalSegment(Path bundle, String segId,
+                                   AstGraphService.ProjectGraph graph) throws IOException {
         Path f = localSegmentFile(bundle, segId);
-        Files.createDirectories(f.getParent());
-        Path tmp = Files.createTempFile(bundle, "seg-", ".json.tmp");
-        try (OutputStream out = Files.newOutputStream(tmp)) {
-            ProjectGraphSerialization.write(graph, out);
-        }
-        Files.move(tmp, f, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        atomicWrite(bundle, f.getFileName().toString(), tmp -> {
+            try (OutputStream out = Files.newOutputStream(tmp)) {
+                ProjectGraphSerialization.write(graph, out);
+            }
+        });
     }
 
     // ------------------------------------------------------------------
@@ -327,87 +328,92 @@ public class ProjectGraphCacheStore {
     // ------------------------------------------------------------------
 
     /**
-     * Deletes the project bundle (main.json + segments.json) for the given key.
-     * Global dep-segment files are intentionally NOT deleted here so that other
-     * projects sharing the same library version continue to benefit from the cache.
-     * Use {@link #deleteDepSegment(String)} to explicitly remove a specific dep graph.
+     * Deletes the project bundle directory for the given key.
+     * Global dep directories are intentionally left intact so other projects
+     * sharing the same library continue to benefit from the cache.
+     * Use {@link #deleteDepSegment(String)} for explicit dep cache invalidation.
      */
     public void delete(ProjectKey key) {
-        if (!properties.isSerializationEnabled()) {
-            return;
-        }
+        if (!properties.isSerializationEnabled()) return;
         try {
-            Path bundle = bundleDir(key);
-            if (Files.isDirectory(bundle)) {
-                deleteRecursively(bundle);
-            }
+            deleteRecursively(bundleDir(key));
             Files.deleteIfExists(cacheDir().resolve(legacyCacheFileName(key)));
         } catch (IOException e) {
-            log.debug("Could not delete graph cache for {}: {}", key, e.getMessage());
+            log.debug("Could not delete bundle for {}: {}", key, e.getMessage());
         }
     }
 
     /**
-     * Deletes all project bundles whose root matches {@code projectRoot}.
-     * Global dep-segment files are NOT deleted.
+     * Deletes all project bundles whose root path matches {@code projectRoot}.
+     * Global dep directories are NOT touched.
      */
     public void deleteAllForRoot(Path projectRoot) {
-        if (!properties.isSerializationEnabled()) {
-            return;
-        }
+        if (!properties.isSerializationEnabled()) return;
         Path dir = cacheDir();
-        if (!Files.isDirectory(dir)) {
-            return;
-        }
+        if (!Files.isDirectory(dir)) return;
         String prefix = sha256Hex(normalizePath(projectRoot)) + "_";
         try (Stream<Path> stream = Files.list(dir)) {
             stream.filter(p -> {
-                String name = p.getFileName().toString();
-                // Skip the global deps directory
-                return !"deps".equals(name)
-                        && name.startsWith(prefix)
-                        && (name.endsWith(".json") || Files.isDirectory(p));
-            }).forEach(p -> {
-                try {
-                    if (Files.isDirectory(p)) {
-                        deleteRecursively(p);
-                    } else {
-                        Files.deleteIfExists(p);
-                    }
-                    log.debug("Deleted graph cache entry: {}", p);
-                } catch (IOException e) {
-                    log.debug("Could not delete {}: {}", p, e.getMessage());
-                }
-            });
+                        String name = p.getFileName().toString();
+                        return !"deps".equals(name)
+                                && name.startsWith(prefix)
+                                && (Files.isDirectory(p) || name.endsWith(".json"));
+                    })
+                    .forEach(p -> {
+                        try {
+                            if (Files.isDirectory(p)) deleteRecursively(p);
+                            else Files.deleteIfExists(p);
+                        } catch (IOException e) {
+                            log.debug("Could not delete {}: {}", p, e.getMessage());
+                        }
+                    });
         } catch (IOException e) {
             log.debug("Could not list cache dir {}: {}", dir, e.getMessage());
         }
     }
 
     /**
-     * Explicitly removes a specific dependency segment from the global deps cache.
-     * Use this when you know a library version has changed and its cached graph is stale.
+     * Removes the entire dep segment directory ({@code graph.json} + {@code meta.json})
+     * from the global deps cache.
      *
-     * @param segmentId the dep segment id, e.g. {@code "dep/com/example/foo/1.0.0"}
+     * @param segmentId e.g. {@code "dep/com.example_foo_1.0.0"}
      */
     public void deleteDepSegment(String segmentId) {
-        if (!isDepSegment(segmentId)) {
-            log.warn("deleteDepSegment called with non-dep segmentId: {}", segmentId);
+        if (!GraphSegmentIds.isDepSegment(segmentId)) {
+            log.warn("deleteDepSegment: '{}' is not a dep segment id", segmentId);
             return;
         }
-        Path f = depSegmentFile(segmentId);
+        Path dir = depSegmentDir(segmentId);
         try {
-            if (Files.deleteIfExists(f)) {
-                log.debug("Deleted global dep segment: {}", f);
+            if (Files.isDirectory(dir)) {
+                deleteRecursively(dir);
+                log.debug("Deleted dep segment directory: {}", dir);
             }
         } catch (IOException e) {
-            log.debug("Could not delete dep segment {}: {}", f, e.getMessage());
+            log.debug("Could not delete dep segment {}: {}", dir, e.getMessage());
         }
     }
 
     // ------------------------------------------------------------------
-    // Misc helpers
+    // Helpers
     // ------------------------------------------------------------------
+
+    @FunctionalInterface
+    interface IoWriter {
+        void write(Path tmp) throws IOException;
+    }
+
+    /** Atomic write: write to tmp, then move to target. */
+    private static void atomicWrite(Path dir, String fileName, IoWriter writer) throws IOException {
+        Path tmp = Files.createTempFile(dir, ".tmp-", null);
+        try {
+            writer.write(tmp);
+            Files.move(tmp, dir.resolve(fileName), StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            try { Files.deleteIfExists(tmp); } catch (IOException ignored) {}
+            throw e;
+        }
+    }
 
     String legacyCacheFileName(ProjectKey key) {
         return bundleDirName(key) + ".json";
@@ -430,7 +436,40 @@ public class ProjectGraphCacheStore {
         }
     }
 
+    // ------------------------------------------------------------------
+    // JSON models
+    // ------------------------------------------------------------------
+
     public static final class SegmentManifest {
         public List<String> segments;
+    }
+
+    /**
+     * Human-readable metadata stored alongside {@code graph.json} in each dep segment directory.
+     */
+    public static final class DepSegmentMeta {
+        public String  groupId;
+        public String  artifactId;
+        public String  version;
+        /** Absolute path of the {@code *-sources.jar} that was parsed to produce this graph. */
+        public String  jarPath;
+        public String  savedAt;
+
+        static DepSegmentMeta from(String segId, ProjectKey projectKey) {
+            DepSegmentMeta m = new DepSegmentMeta();
+            // segId = "dep/com.example_foo_1.0.0" or "jar/<sha256>"
+            if (segId.startsWith(GraphSegmentIds.DEP_PREFIX)) {
+                String flat = segId.substring(GraphSegmentIds.DEP_PREFIX.length());
+                int last  = flat.lastIndexOf('_');
+                int first = flat.indexOf('_');
+                if (first > 0 && last > first) {
+                    m.groupId    = flat.substring(0, first);
+                    m.artifactId = flat.substring(first + 1, last);
+                    m.version    = flat.substring(last + 1);
+                }
+            }
+            m.savedAt = Instant.now().toString();
+            return m;
+        }
     }
 }
