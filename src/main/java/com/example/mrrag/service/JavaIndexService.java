@@ -25,30 +25,33 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class JavaIndexService {
 
-    private final AstGraphService graphService;
+    private final AstGraphProvider graphService;
+    private final SourceProvider sourceProvider;
     private final Map<Path, ProjectIndex> indexCache = new ConcurrentHashMap<>();
 
     // ------------------------------------------------------------------
     // Public build / invalidate
     // ------------------------------------------------------------------
 
-    public ProjectIndex buildIndex(Path projectRoot) throws IOException {
+    public ProjectIndex buildIndex(Path projectRoot) {
         return indexCache.computeIfAbsent(projectRoot, root -> {
-            ProjectGraph g = graphService.buildGraph(root);
+            List<String> sources = sourceProvider.sourceProvider(root);
+            ProjectGraph g = graphService.buildGraph(projectRoot.toString(), sources);
             return project(g, root);
         });
     }
 
     public void invalidate(Path projectRoot) {
         indexCache.remove(projectRoot);
-        graphService.invalidate(projectRoot);
+        graphService.invalidate(projectRoot.toString());
     }
 
     /**
      * Returns the raw Spoon graph for callers that need more than the flat index.
      */
     public ProjectGraph getGraph(Path projectRoot) {
-        return graphService.buildGraph(projectRoot);
+        List<String> sources = sourceProvider.sourceProvider(projectRoot);
+        return graphService.buildGraph(projectRoot.toString(), sources);
     }
 
     // ------------------------------------------------------------------

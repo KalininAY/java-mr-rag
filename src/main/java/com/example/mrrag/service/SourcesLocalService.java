@@ -25,14 +25,13 @@ public class SourcesLocalService implements SourceProvider {
     @Value("${app.workspace.dir:/tmp/mr-rag-workspace}")
     private String workspaceDir;
 
-
     @Override
     public List<String> sourceProvide(String repoUrl, String branch, String gitToken, Boolean forceReClone) {
         if (repoUrl == null || repoUrl.isBlank()) {
             throw new IllegalArgumentException("repoUrl must not be blank");
         }
 
-        Path cloneDir  = resolveCloneDir(repoUrl, branch);
+        Path cloneDir = resolveCloneDir(repoUrl, branch);
         boolean exists = Files.isDirectory(cloneDir);
 
         // ── 2. Clone via JGit (skip if already present) ───────────────────
@@ -44,18 +43,29 @@ public class SourcesLocalService implements SourceProvider {
         try {
             Files.createDirectories(cloneDir);
             long cloneStart = System.currentTimeMillis();
-            cloneWithJGit(repoUrl, branch, cloneDir,
-                    resolveToken(gitToken));
+            cloneWithJGit(repoUrl, branch, cloneDir, gitToken);
             cloneMs = System.currentTimeMillis() - cloneStart;
         } catch (Exception e) {
-            FileSystemUtils.deleteRecursively(cloneDir);
-            throw e;
+            try {
+                FileSystemUtils.deleteRecursively(cloneDir);
+            } catch (IOException ex) {
+                log.info("Not deleted");
+            }
+            throw new RuntimeException(e);
         }
+
         log.info("Cloned {} (branch={}) in {} ms → {}", repoUrl, branch, cloneMs, cloneDir);
         return collectSourceRoots(cloneDir);
     }
 
-    /** Directory segments that should never be fed to Spoon as source roots. */
+    @Override
+    public List<String> sourceProvider(Path rootProject) {
+        return collectSourceRoots(rootProject);
+    }
+
+    /**
+     * Directory segments that should never be fed to Spoon as source roots.
+     */
     private static final Set<String> EXCLUDED_DIRS = Set.of(
             "build", "target", "out", ".gradle", ".git",
             "generated", "generated-sources", "generated-test-sources"
@@ -67,7 +77,7 @@ public class SourcesLocalService implements SourceProvider {
      * directories that contain duplicate .java files and trigger
      * "type already defined" errors in JDT.
      */
-    private List<String> collectSourceRoots(Path projectRoot) throws IOException {
+    private List<String> collectSourceRoots(Path projectRoot) {
         List<Path> candidates = List.of(
                 projectRoot.resolve("src/main/java"),
                 projectRoot.resolve("src/test/java")
@@ -87,7 +97,10 @@ public class SourcesLocalService implements SourceProvider {
                     .filter(p -> !EXCLUDED_DIRS.contains(p.getFileName().toString()))
                     .filter(p -> !p.getFileName().toString().startsWith("."))
                     .forEach(p -> fallback.add(p.toString()));
+        } catch (IOException ex) {
+            throw new RuntimeException(ex);
         }
+
         if (!fallback.isEmpty()) {
             log.debug("Fallback source roots: {}", fallback);
             return fallback;
@@ -137,6 +150,7 @@ public class SourcesLocalService implements SourceProvider {
                     git.getRepository().resolve("HEAD"));
         }
     }
+
     private Path resolveCloneDir(String repoUrl, String branch) {
         String repoSlug = repoUrl
                 .replaceAll(".*/", "")
@@ -145,8 +159,6 @@ public class SourcesLocalService implements SourceProvider {
         String branchSlug = branch.replaceAll("[^a-zA-Z0-9_.-]", "_");
         return Path.of(workspaceDir, "repos", repoSlug, branchSlug);
     }
-
-
 
 
     // -----------------------------------------------------------------------

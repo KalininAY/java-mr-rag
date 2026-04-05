@@ -47,7 +47,7 @@ public class AstGraphService implements AstGraphProvider{
 
     @Override
     public ProjectGraph buildGraph(String projectId, List<String> source) {
-        return cache.computeIfAbsent(projectId, v -> doBuildGraph(projectId, source));
+        return cache.computeIfAbsent(projectId, root -> doBuildGraph(projectId, source));
     }
 
 
@@ -102,13 +102,8 @@ public class AstGraphService implements AstGraphProvider{
     // Graph construction
     // ------------------------------------------------------------------
 
-    private ProjectGraph doBuildGraph(Path projectRoot) {
-
-    }
-
-
     @SuppressWarnings("unchecked")
-    private ProjectGraph doBuildGraph(String projectId, List<String> sourceRoots) {
+    private ProjectGraph doBuildGraph(String projectId, Map<String, String[]> sourceLines) {
         log.info("Building Spoon AST graph for {}", projectId);
         try {
             log.info("Source roots for Spoon: {}", sourceRoots);

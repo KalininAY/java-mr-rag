@@ -1,9 +1,11 @@
 package com.example.mrrag.controller;
 
+import com.example.mrrag.service.AstGraphProvider;
 import com.example.mrrag.service.AstGraphService;
 import com.example.mrrag.model.graph.ProjectGraph;
 import com.example.mrrag.model.graph.GraphNode;
 import com.example.mrrag.service.GraphViewBuilder;
+import com.example.mrrag.service.SourceProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -32,7 +34,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class GraphDebugController {
 
-    private final AstGraphService graphService;
+    private final AstGraphProvider graphService;
+    private final SourceProvider sourceProvider;
 
     // ------------------------------------------------------------------
     // GET /debug/graph/stats?repoDir=/tmp/repo-123/source
@@ -41,7 +44,8 @@ public class GraphDebugController {
     @GetMapping("/stats")
     public Map<String, Object> stats(@RequestParam String repoDir) {
         Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(root);
+        List<String> sources = sourceProvider.sourceProvider(root);
+        ProjectGraph graph = graphService.buildGraph(root.toString(), sources);
 
         GraphViewBuilder.ViewGraph build = new GraphViewBuilder().build(graph);
 
@@ -72,7 +76,8 @@ public class GraphDebugController {
             @RequestParam String diffPath
     ) {
         Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(root);
+        List<String> sources = sourceProvider.sourceProvider(root);
+        ProjectGraph graph = graphService.buildGraph(root.toString(), sources);
 
         String normalized = graphService.normalizeFilePath(diffPath, graph);
         List<GraphNode> nodes = graph.byFile.getOrDefault(normalized, List.of());
