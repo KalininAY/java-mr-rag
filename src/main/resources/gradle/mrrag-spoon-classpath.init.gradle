@@ -1,0 +1,19 @@
+// Registers mrragSpoonCompileClasspath on each project that applies the Java plugin.
+// Used by java-mr-rag for Spoon setSourceClasspath (compileClasspath).
+gradle.afterProject { p ->
+    if (!p.plugins.hasPlugin('java')) {
+        return
+    }
+    if (p.tasks.findByName('mrragSpoonCompileClasspath') != null) {
+        return
+    }
+    p.tasks.register('mrragSpoonCompileClasspath') {
+        group = 'help'
+        description = 'Prints main compileClasspath for Spoon AST (java-mr-rag)'
+        doLast {
+            println 'SPOON_CP_START'
+            println p.sourceSets.main.compileClasspath.asPath
+            println 'SPOON_CP_END'
+        }
+    }
+}

@@ -369,7 +369,27 @@ public class AstGraphService {
 
             Launcher launcher = new Launcher();
             sourceRoots.forEach(launcher::addInputResource);
-            launcher.getEnvironment().setNoClasspath(true);
+
+            Optional<String[]> compileClasspath = GradleCompileClasspathResolver.tryResolve(projectRoot);
+            String classpathSource = null;
+            if (compileClasspath.isPresent() && compileClasspath.get().length > 0) {
+                classpathSource = "Gradle";
+            } else {
+                compileClasspath = MavenCompileClasspathResolver.tryResolve(projectRoot);
+                if (compileClasspath.isPresent() && compileClasspath.get().length > 0) {
+                    classpathSource = "Maven";
+                }
+            }
+            if (classpathSource != null) {
+                launcher.getEnvironment().setNoClasspath(false);
+                launcher.getEnvironment().setSourceClasspath(compileClasspath.get());
+                log.info("Spoon using {} compileClasspath ({} entries) for {}",
+                        classpathSource, compileClasspath.get().length, projectRoot);
+            } else {
+                launcher.getEnvironment().setNoClasspath(true);
+                log.debug("Spoon noClasspath mode for {} (Gradle/Maven classpath not available)", projectRoot);
+            }
+
             launcher.getEnvironment().setCommentEnabled(false);
             launcher.getEnvironment().setAutoImports(false);
             try {
