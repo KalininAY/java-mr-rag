@@ -544,6 +544,18 @@ public class AstGraphService {
                     log.error("Spoon returned null model for {}, returning empty graph", projectRoot);
                     return new BuildGraphOutcome(new ProjectGraph(), List.copyOf(sourcesJarPaths));
                 }
+            } catch (AssertionError ae) {
+                // Spoon 11.x / JDT internal assertion failure (e.g. ReferenceBuilder.setPackageOrDeclaringType)
+                // triggered when processing *-sources.jar with unresolved types inside lambdas.
+                // Fall back to whatever partial model JDT managed to build before the failure.
+                log.warn("Spoon AssertionError for {} — using partial model (JDT internal).",
+                        projectRoot, ae);
+                model = launcher.getModel();
+                if (model == null) {
+                    log.error("Spoon returned null model after AssertionError for {}, returning empty graph",
+                            projectRoot);
+                    return new BuildGraphOutcome(new ProjectGraph(), List.copyOf(sourcesJarPaths));
+                }
             }
 
             // Read source files into memory once for verbatim snippet extraction.
