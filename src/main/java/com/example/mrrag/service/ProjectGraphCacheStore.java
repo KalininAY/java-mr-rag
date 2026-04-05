@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import lombok.extern.slf4j.Slf4j;
+import org.eclipse.jgit.api.Git;
 import org.springframework.stereotype.Component;
 import org.springframework.util.FileSystemUtils;
 
@@ -32,15 +33,16 @@ import java.util.stream.Stream;
  * <h3>Storage layout</h3>
  * <pre>
  * cacheDir/
- *   &lt;sha256(root)&gt;_&lt;sha256(fingerprint)&gt;/    ← project bundle
+ *   &lt;projectName&gt;_&lt;branch&gt;_&lt;shortHash&gt;/      ← git project (if .git present)
+ *   &lt;projectName&gt;_&lt;fp8&gt;/                       ← non-git project (8 chars of fingerprint)
  *     main.json
- *     segments.json                            ← manifest: list of all segment IDs
+ *     segments.json                             ← manifest: list of all segment IDs
  *
- *   deps/                                      ← GLOBAL shared dependency graphs
- *     dep/com.example_foo_1.0.0/               ← one dir per dep (segmentId after prefix)
+ *   deps/                                       ← GLOBAL shared dependency graphs
+ *     dep/com.example_foo_1.0.0/                ← one dir per dep (segmentId after prefix)
  *       graph.json
  *       meta.json
- *     jar/&lt;sha256&gt;/                            ← unknown-coordinates dep
+ *     jar/&lt;sha256&gt;/                             ← unknown-coordinates dep
  *       graph.json
  *       meta.json
  * </pre>
@@ -100,9 +102,60 @@ public class ProjectGraphCacheStore {
         return cacheDir().resolve(bundleDirName(key));
     }
 
+    /**
+     * Human-readable bundle directory name.
+     *
+     * <ul>
+     *   <li>Git project: {@code projectDirName_branch_shortHash}
+     *       e.g. {@code my-service_feature-login_a1b2c3d}
+     *   <li>Non-git project: {@code projectDirName_fp8}
+     *       e.g. {@code my-service_0f710a7c}
+     * </ul>
+     *
+     * Branch slashes are replaced with {@code -} and non-alphanumeric chars are stripped
+     * so the result is safe as a directory name on all OS.
+     */
     String bundleDirName(ProjectKey key) {
-        return sha256Hex(normalizePath(key.projectRoot()))
-                + "_" + sha256Hex(key.fingerprint());
+        String projectName = slugify(key.projectRoot().getFileName().toString());
+        String fp          = key.fingerprint();  // "git:<fullSHA>" or "content:<hex>" or "fallback:..."
+
+        if (fp.startsWith("git:")) {
+            String fullHash  = fp.substring(4);               // full 40-char SHA1
+            String shortHash = fullHash.substring(0, Math.min(7, fullHash.length()));
+            String branch    = readBranchName(key.projectRoot());
+            return projectName + "_" + branch + "_" + shortHash;
+        }
+
+        // Non-git: use first 8 chars of whatever comes after the prefix
+        int colon = fp.indexOf(':');
+        String raw = colon >= 0 ? fp.substring(colon + 1) : fp;
+        String fp8 = raw.substring(0, Math.min(8, raw.length()));
+        return projectName + "_" + fp8;
+    }
+
+    /**
+     * Reads the current branch name via JGit.
+     * Falls back to {@code "detached"} when HEAD is detached or repo is not readable.
+     */
+    private static String readBranchName(Path projectRoot) {
+        try (Git git = Git.open(projectRoot.toFile())) {
+            String branch = git.getRepository().getBranch();
+            if (branch != null && !branch.isBlank()) {
+                return slugify(branch);
+            }
+        } catch (IOException e) {
+            log.debug("Cannot read branch for {}: {}", projectRoot, e.getMessage());
+        }
+        return "detached";
+    }
+
+    /** Replaces path separators and non-alphanumeric chars (except {@code -}) with {@code -},
+     *  collapses consecutive dashes, trims leading/trailing dashes. */
+    static String slugify(String s) {
+        return s.replaceAll("[/\\\\]", "-")
+                .replaceAll("[^a-zA-Z0-9._-]", "-")
+                .replaceAll("-{2,}", "-")
+                .replaceAll("^-|-$", "");
     }
 
     /**
@@ -345,13 +398,15 @@ public class ProjectGraphCacheStore {
 
     /**
      * Deletes all project bundles whose root path matches {@code projectRoot}.
+     * Scans by the slugified project directory name prefix so all branches/commits
+     * for the same project root are removed together.
      * Global dep directories are NOT touched.
      */
     public void deleteAllForRoot(Path projectRoot) {
         if (!properties.isSerializationEnabled()) return;
         Path dir = cacheDir();
         if (!Files.isDirectory(dir)) return;
-        String prefix = sha256Hex(normalizePath(projectRoot)) + "_";
+        String prefix = slugify(projectRoot.toAbsolutePath().normalize().getFileName().toString()) + "_";
         try (Stream<Path> stream = Files.list(dir)) {
             stream.filter(p -> {
                         String name = p.getFileName().toString();
@@ -421,10 +476,6 @@ public class ProjectGraphCacheStore {
 
     private static void deleteRecursively(Path root) throws IOException {
         FileSystemUtils.deleteRecursively(root);
-    }
-
-    private static String normalizePath(Path path) {
-        return path.toAbsolutePath().normalize().toString();
     }
 
     private static String sha256Hex(String s) {
