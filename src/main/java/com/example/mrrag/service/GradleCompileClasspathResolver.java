@@ -201,12 +201,13 @@ public final class GradleCompileClasspathResolver {
                 return Optional.empty();
             }
             if (p.exitValue() != 0) {
-                log.debug("Gradle exited with {} for command {}\n{}", p.exitValue(), command, output);
+                log.warn("Gradle exited with {} for command {}\nOutput:\n{}",
+                        p.exitValue(), command, output);
                 return Optional.empty();
             }
             return parseClasspathBlock(output);
         } catch (IOException e) {
-            log.debug("Gradle subprocess IO error: {}", e.getMessage());
+            log.warn("Gradle subprocess IO error: {}", e.getMessage());
             return Optional.empty();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
