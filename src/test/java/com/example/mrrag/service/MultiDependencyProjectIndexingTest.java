@@ -299,7 +299,7 @@ class MultiDependencyProjectIndexingTest {
         p.setDir(cacheDir.toString());
         p.setSerializationEnabled(true);
         p.setSourcesJarsEnabled(true);
-        p.setSourcesRemoteEnabled(false);
+        p.setSourcesRemoteEnabled(true);
         return p;
     }
 }

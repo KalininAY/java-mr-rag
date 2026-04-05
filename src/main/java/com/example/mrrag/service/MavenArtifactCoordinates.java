@@ -1,15 +1,28 @@
 package com.example.mrrag.service;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Maven GAV inferred from a {@code .jar} path in the local Maven repository or Gradle cache.
+ * Maven GAV inferred from a {@code .jar} path in the local Maven repository, Gradle cache,
+ * or a Maven-layout directory tree (including downloaded {@code *-sources.jar} under a project cache).
  */
 public record MavenArtifactCoordinates(String groupId, String artifactId, String version) {
+
+    /**
+     * Typical first segment of a Maven {@code groupId} when stored as a path (used to skip
+     * machine-specific path prefixes before {@code com/foo/...}).
+     */
+    private static final Set<String> MAVEN_GROUP_FIRST_SEGMENT = Set.of(
+            "ai", "app", "at", "au", "biz", "br", "bz", "cc", "cloud", "cn", "co", "com", "de", "dev",
+            "eu", "fr", "gradle", "info", "in", "io", "jakarta", "javax", "junit", "me", "maven", "name",
+            "net", "nz", "org", "page", "pro", "sh", "software", "systems", "tech", "tools", "tv", "uk",
+            "us", "work", "ws", "xyz");
 
     private static final Pattern GRADLE_FILES = Pattern.compile(
             "[/\\\\]files-2\\.1[/\\\\]([^/\\\\]+)[/\\\\]([^/\\\\]+)[/\\\\]([^/\\\\]+)[/\\\\][^/\\\\]+[/\\\\]([^/\\\\]+\\.jar)$");
@@ -71,14 +84,51 @@ public record MavenArtifactCoordinates(String groupId, String artifactId, String
     }
 
     /**
-     * Tries Gradle cache layout first, then Maven local layout.
+     * Parses {@code .../groupIdPath/artifactId/version/artifactId-version(-sources|-javadoc)?.jar}
+     * for any absolute path (e.g. {@code .mrrag-sources-cache/...} or other Maven-layout mirrors).
+     */
+    public static Optional<MavenArtifactCoordinates> tryParseMavenRepoLayout(Path jarPath) {
+        String p = jarPath.toAbsolutePath().normalize().toString().replace('\\', '/');
+        String[] parts = p.split("/");
+        int n = parts.length;
+        if (n < 4) {
+            return Optional.empty();
+        }
+        String fileName = parts[n - 1];
+        String version = parts[n - 2];
+        String artifactId = parts[n - 3];
+        if (!fileName.equals(artifactId + "-" + version + "-sources.jar")
+                && !fileName.equals(artifactId + "-" + version + ".jar")
+                && !fileName.equals(artifactId + "-" + version + "-javadoc.jar")) {
+            return Optional.empty();
+        }
+        int start = -1;
+        for (int i = 0; i <= n - 4; i++) {
+            if (MAVEN_GROUP_FIRST_SEGMENT.contains(parts[i])) {
+                start = i;
+                break;
+            }
+        }
+        if (start < 0) {
+            return Optional.empty();
+        }
+        String groupId = String.join(".", Arrays.copyOfRange(parts, start, n - 3));
+        return Optional.of(new MavenArtifactCoordinates(groupId, artifactId, version));
+    }
+
+    /**
+     * Tries Gradle cache layout, Maven {@code ~/.m2/repository} layout, then generic Maven repo path.
      */
     public static Optional<MavenArtifactCoordinates> tryParseJarPath(Path jarPath) {
         Optional<MavenArtifactCoordinates> g = tryParseGradleCache(jarPath);
         if (g.isPresent()) {
             return g;
         }
-        return tryParseMavenLocal(jarPath);
+        g = tryParseMavenLocal(jarPath);
+        if (g.isPresent()) {
+            return g;
+        }
+        return tryParseMavenRepoLayout(jarPath);
     }
 
     public String sourcesFileName() {

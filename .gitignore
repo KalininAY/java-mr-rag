@@ -3,6 +3,8 @@ build/
 .idea/
 *.class
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
+!src/test/resources/**/gradle/wrapper/gradle-wrapper.jar
 *.war
 *.ear
 out/

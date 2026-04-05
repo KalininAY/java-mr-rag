@@ -29,4 +29,17 @@ class MavenArtifactCoordinatesTest {
         assertThat(g.get().artifactId()).isEqualTo("commons-lang3");
         assertThat(g.get().version()).isEqualTo("3.12.0");
     }
+
+    @Test
+    void parsesMavenRepoLayoutUnderProjectSourcesCache() {
+        Path p = Path.of("/work/project/.mrrag-sources-cache/com/fasterxml/jackson/core/jackson-databind"
+                + "/2.17.0/jackson-databind-2.17.0-sources.jar");
+        var g = MavenArtifactCoordinates.tryParseMavenRepoLayout(p);
+        assertThat(g).isPresent();
+        assertThat(g.get().groupId()).isEqualTo("com.fasterxml.jackson.core");
+        assertThat(g.get().artifactId()).isEqualTo("jackson-databind");
+        assertThat(g.get().version()).isEqualTo("2.17.0");
+
+        assertThat(MavenArtifactCoordinates.tryParseJarPath(p)).isEqualTo(g);
+    }
 }

@@ -499,7 +499,8 @@ public class AstGraphService {
             Launcher launcher = new Launcher();
             sourceRoots.forEach(launcher::addInputResource);
 
-            ClasspathResolver.tryResolve(projectRoot).ifPresentOrElse(
+            Optional<ClasspathResolver.Result> cpOpt = ClasspathResolver.tryResolve(projectRoot);
+            cpOpt.ifPresentOrElse(
                     r -> {
                         launcher.getEnvironment().setNoClasspath(false);
                         launcher.getEnvironment().setSourceClasspath(r.entries());
@@ -512,11 +513,8 @@ public class AstGraphService {
                                     sourcesCacheDir,
                                     graphCacheProperties.isSourcesRemoteEnabled());
                             sourcesJarPaths.addAll(sj);
-                            for (String jar : sj) {
-                                launcher.addInputResource(jar);
-                            }
                             if (!sj.isEmpty()) {
-                                log.info("Spoon input includes {} *-sources.jar from dependency classpath",
+                                log.info("Resolved {} *-sources.jar (built in separate Spoon runs to avoid JDT issues)",
                                         sj.size());
                             }
                         }
@@ -527,11 +525,7 @@ public class AstGraphService {
                                 projectRoot);
                     });
 
-            launcher.getEnvironment().setCommentEnabled(false);
-            launcher.getEnvironment().setAutoImports(false);
-            try {
-                launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
-            } catch (NoSuchMethodError ignored) {}
+            applyCommonSpoonOptions(launcher);
 
             CtModel model;
             try {
@@ -579,7 +573,42 @@ public class AstGraphService {
                 }
             }
 
-            var graph = new ProjectGraph();
+            ProjectGraph graph = buildGraphFromModel(model, projectRoot, sourceLines);
+
+            for (String sj : sourcesJarPaths) {
+                Launcher depLauncher = new Launcher();
+                depLauncher.addInputResource(sj);
+                cpOpt.ifPresentOrElse(
+                        r -> {
+                            depLauncher.getEnvironment().setNoClasspath(false);
+                            depLauncher.getEnvironment().setSourceClasspath(r.entries());
+                        },
+                        () -> depLauncher.getEnvironment().setNoClasspath(true));
+                applyCommonSpoonOptions(depLauncher);
+                try {
+                    CtModel depModel = depLauncher.buildModel();
+                    graph.mergeFrom(buildGraphFromModel(depModel, projectRoot, sourceLines));
+                } catch (ModelBuildingException mbe) {
+                    log.warn("Spoon ModelBuildingException for {} — skipping dep. {}", sj, mbe.getMessage());
+                } catch (AssertionError ae) {
+                    log.warn("Spoon AssertionError for {} — skipping dep segment", sj, ae);
+                }
+            }
+
+            log.info("Spoon graph built: {} nodes, {} edge-sources",
+                    graph.nodes.size(), graph.edgesFrom.size());
+            return new BuildGraphOutcome(graph, List.copyOf(sourcesJarPaths));
+
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to collect source roots for " + projectRoot, e);
+        }
+    }
+
+
+    private ProjectGraph buildGraphFromModel(CtModel model, Path projectRoot,
+            Map<String, String[]> sourceLines) {
+        String root = projectRoot.toString();
+        var graph = new ProjectGraph();
 
             // ── 1. Type nodes ────────────────────────────────────────────────────────
             model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
@@ -940,13 +969,18 @@ public class AstGraphService {
                 });
             }
 
-            log.info("Spoon graph built: {} nodes, {} edge-sources",
-                    graph.nodes.size(), graph.edgesFrom.size());
-            return new BuildGraphOutcome(graph, List.copyOf(sourcesJarPaths));
 
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to collect source roots for " + projectRoot, e);
-        }
+        return graph;
+    }
+
+    private void applyCommonSpoonOptions(Launcher launcher) {
+        launcher.getEnvironment().setComplianceLevel(17);
+        launcher.getEnvironment().disableConsistencyChecks();
+        launcher.getEnvironment().setCommentEnabled(false);
+        launcher.getEnvironment().setAutoImports(false);
+        try {
+            launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
+        } catch (NoSuchMethodError ignored) {}
     }
 
     // ------------------------------------------------------------------
