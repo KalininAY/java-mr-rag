@@ -11,6 +11,13 @@ app:
     token: ${GITLAB_TOKEN:}
   workspace:
     dir: ${WORKSPACE_DIR:/tmp/mr-rag-workspace}
+  graph:
+    cache:
+      serialization-enabled: true
+      sources-jars-enabled: true
+      sources-remote-enabled: true
+      sources-remote-cache-dir: ${app.workspace.dir}/mrrag-sources-cache
+      dir: ${app.workspace.dir}/graph-cache
   enrichment:
     # How many lines around a change to include as context
     surroundingLines: 3

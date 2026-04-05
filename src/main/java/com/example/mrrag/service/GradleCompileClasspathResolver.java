@@ -80,7 +80,7 @@ public final class GradleCompileClasspathResolver {
     /**
      * Nearest ancestor of {@code start} that looks like a Gradle build root.
      */
-    static Optional<Path> findGradleRoot(Path start) {
+    public static Optional<Path> findGradleRoot(Path start) {
         Path abs = start.toAbsolutePath().normalize();
         Optional<Path> withWrapper = firstAncestorMatching(abs, GradleCompileClasspathResolver::hasGradleWrapper);
         if (withWrapper.isPresent()) {

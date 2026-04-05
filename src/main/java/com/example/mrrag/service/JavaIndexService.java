@@ -22,22 +22,30 @@ import java.util.concurrent.ConcurrentHashMap;
 public class JavaIndexService {
 
     private final AstGraphService graphService;
-    private final Map<Path, ProjectIndex> indexCache = new ConcurrentHashMap<>();
+    private final Map<ProjectKey, ProjectIndex> indexCache = new ConcurrentHashMap<>();
 
     // ------------------------------------------------------------------
     // Public build / invalidate
     // ------------------------------------------------------------------
 
     public ProjectIndex buildIndex(Path projectRoot) throws IOException {
-        return indexCache.computeIfAbsent(projectRoot, root -> {
-            AstGraphService.ProjectGraph g = graphService.buildGraph(root);
-            return project(g, root);
+        ProjectKey key = graphService.projectKey(projectRoot);
+        return indexCache.computeIfAbsent(key, k -> {
+            AstGraphService.ProjectGraph g = graphService.buildGraph(k);
+            return project(g, k.projectRoot());
         });
     }
 
     public void invalidate(Path projectRoot) {
-        indexCache.remove(projectRoot);
+        Path n = projectRoot.toAbsolutePath().normalize();
+        indexCache.keySet().removeIf(k -> k.projectRoot().equals(n));
         graphService.invalidate(projectRoot);
+    }
+
+    /** Invalidates index + graph cache for a single version key only. */
+    public void invalidate(ProjectKey key) {
+        indexCache.remove(key);
+        graphService.invalidate(key);
     }
 
     /**

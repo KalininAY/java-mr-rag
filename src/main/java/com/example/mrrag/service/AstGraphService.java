@@ -1,6 +1,8 @@
 package com.example.mrrag.service;
 
 import com.example.mrrag.config.EdgeKindConfig;
+import com.example.mrrag.config.GraphCacheProperties;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import spoon.Launcher;
@@ -30,6 +32,7 @@ import java.util.stream.Stream;
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class AstGraphService {
 
     // ------------------------------------------------------------------
@@ -256,6 +259,40 @@ public class AstGraphService {
                     .filter(n -> n.startLine() <= line && n.endLine() >= line)
                     .toList();
         }
+
+        /**
+         * Rebuilds indexes from serialized node/edge lists (see {@link ProjectGraphSerialization}).
+         */
+        public static ProjectGraph reconstruct(List<GraphNode> nodes, List<GraphEdge> edges) {
+            ProjectGraph g = new ProjectGraph();
+            for (GraphNode n : nodes) {
+                g.addNode(n);
+            }
+            for (GraphEdge e : edges) {
+                g.addEdge(e);
+            }
+            return g;
+        }
+
+        /** Merges all nodes and edges from {@code other} into this graph (no deduplication). */
+        public void mergeFrom(ProjectGraph other) {
+            for (GraphNode n : other.nodes.values()) {
+                addNode(n);
+            }
+            for (List<GraphEdge> list : other.edgesFrom.values()) {
+                for (GraphEdge e : list) {
+                    addEdge(e);
+                }
+            }
+        }
+
+        public static ProjectGraph merge(Iterable<ProjectGraph> parts) {
+            ProjectGraph g = new ProjectGraph();
+            for (ProjectGraph p : parts) {
+                g.mergeFrom(p);
+            }
+            return g;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -263,18 +300,99 @@ public class AstGraphService {
     // ------------------------------------------------------------------
 
     private final EdgeKindConfig edgeConfig;
-    private final Map<Path, ProjectGraph> cache = new ConcurrentHashMap<>();
+    private final GraphCacheProperties graphCacheProperties;
+    private final ProjectGraphCacheStore graphCacheStore;
 
-    public AstGraphService(EdgeKindConfig edgeConfig) {
-        this.edgeConfig = edgeConfig;
+    /** Merged graph per project version (invalidated when any segment is evicted). */
+    private final Map<ProjectKey, ProjectGraph> mergedCache = new ConcurrentHashMap<>();
+    /** Optional per-segment graphs for selective load / memory eviction. */
+    private final Map<ProjectSegmentKey, ProjectGraph> segmentMemoryCache = new ConcurrentHashMap<>();
+
+    /**
+     * Versioned key for {@link #buildGraph(ProjectKey)} and disk cache file names.
+     */
+    public ProjectKey projectKey(Path projectRoot) {
+        Path n = projectRoot.toAbsolutePath().normalize();
+        return new ProjectKey(n, ProjectFingerprint.compute(n));
     }
 
     public ProjectGraph buildGraph(Path projectRoot) {
-        return cache.computeIfAbsent(projectRoot, this::doBuildGraph);
+        return buildGraph(projectKey(projectRoot));
+    }
+
+    /**
+     * Builds or returns a merged cached graph. Tries sharded disk cache (or legacy single JSON), then Spoon.
+     * Shards are also stored in {@link #segmentMemoryCache} for selective use.
+     */
+    public ProjectGraph buildGraph(ProjectKey key) {
+        return mergedCache.computeIfAbsent(key, this::loadOrBuildMerged);
+    }
+
+    private ProjectGraph loadOrBuildMerged(ProjectKey key) {
+        Optional<Map<String, ProjectGraph>> fromDisk = graphCacheStore.tryLoadAllSegments(key);
+        if (fromDisk.isPresent()) {
+            putSegmentsInMemory(key, fromDisk.get());
+            return ProjectGraph.merge(fromDisk.get().values());
+        }
+        BuildGraphOutcome built = doBuildGraphOutcome(key.projectRoot());
+        Map<String, ProjectGraph> parts = ProjectGraphPartitioner.partition(
+                built.graph(), key.projectRoot(), built.sourcesJarPaths());
+        if (!parts.isEmpty()) {
+            try {
+                graphCacheStore.savePartitioned(key, parts);
+            } catch (IOException e) {
+                log.warn("Failed to persist graph cache for {}: {}", key.projectRoot(), e.getMessage());
+            }
+            putSegmentsInMemory(key, parts);
+        }
+        return built.graph();
+    }
+
+    private void putSegmentsInMemory(ProjectKey key, Map<String, ProjectGraph> parts) {
+        for (Map.Entry<String, ProjectGraph> e : parts.entrySet()) {
+            segmentMemoryCache.put(new ProjectSegmentKey(key, e.getKey()), e.getValue());
+        }
+    }
+
+    /**
+     * Loads one segment from memory or disk (does not populate merged cache).
+     */
+    public Optional<ProjectGraph> getSegment(ProjectKey key, String segmentId) {
+        ProjectSegmentKey sk = new ProjectSegmentKey(key, segmentId);
+        ProjectGraph g = segmentMemoryCache.get(sk);
+        if (g != null) {
+            return Optional.of(g);
+        }
+        Optional<ProjectGraph> fromDisk = graphCacheStore.tryLoadSegment(key, segmentId);
+        fromDisk.ifPresent(gg -> segmentMemoryCache.put(sk, gg));
+        return fromDisk;
+    }
+
+    /** Removes a segment from memory; next {@link #buildGraph(ProjectKey)} will rebuild merge from remaining segments or disk. */
+    public void evictSegmentFromMemory(ProjectSegmentKey segmentKey) {
+        segmentMemoryCache.remove(segmentKey);
+        mergedCache.remove(segmentKey.projectKey());
+    }
+
+    /**
+     * Deserializes all segments from disk and merges — does not update in-memory caches.
+     */
+    public Optional<ProjectGraph> loadSerializedGraph(ProjectKey key) {
+        return graphCacheStore.tryLoadAllSegments(key).map(m -> ProjectGraph.merge(m.values()));
     }
 
     public void invalidate(Path projectRoot) {
-        cache.remove(projectRoot);
+        Path n = projectRoot.toAbsolutePath().normalize();
+        mergedCache.keySet().removeIf(k -> k.projectRoot().equals(n));
+        segmentMemoryCache.keySet().removeIf(k -> k.projectKey().projectRoot().equals(n));
+        graphCacheStore.deleteAllForRoot(n);
+    }
+
+    /** Drops memory and disk cache for exactly this root + fingerprint (other versions of the same repo stay cached). */
+    public void invalidate(ProjectKey key) {
+        mergedCache.remove(key);
+        segmentMemoryCache.keySet().removeIf(k -> k.projectKey().equals(key));
+        graphCacheStore.delete(key);
     }
 
     // ------------------------------------------------------------------
@@ -360,9 +478,20 @@ public class AstGraphService {
         return List.of(projectRoot.toString());
     }
 
+    private Path resolveSourcesRemoteCacheDir(Path projectRoot) {
+        String d = graphCacheProperties.getSourcesRemoteCacheDir();
+        if (d != null && !d.isBlank()) {
+            return Path.of(d);
+        }
+        return projectRoot.toAbsolutePath().normalize().resolve(".mrrag-sources-cache");
+    }
+
+    private record BuildGraphOutcome(ProjectGraph graph, List<String> sourcesJarPaths) {}
+
     @SuppressWarnings("unchecked")
-    private ProjectGraph doBuildGraph(Path projectRoot) {
+    private BuildGraphOutcome doBuildGraphOutcome(Path projectRoot) {
         log.info("Building Spoon AST graph for {}", projectRoot);
+        List<String> sourcesJarPaths = new ArrayList<>();
         try {
             List<String> sourceRoots = collectSourceRoots(projectRoot);
             log.info("Source roots for Spoon: {}", sourceRoots);
@@ -370,25 +499,33 @@ public class AstGraphService {
             Launcher launcher = new Launcher();
             sourceRoots.forEach(launcher::addInputResource);
 
-            Optional<String[]> compileClasspath = GradleCompileClasspathResolver.tryResolve(projectRoot);
-            String classpathSource = null;
-            if (compileClasspath.isPresent() && compileClasspath.get().length > 0) {
-                classpathSource = "Gradle";
-            } else {
-                compileClasspath = MavenCompileClasspathResolver.tryResolve(projectRoot);
-                if (compileClasspath.isPresent() && compileClasspath.get().length > 0) {
-                    classpathSource = "Maven";
-                }
-            }
-            if (classpathSource != null) {
-                launcher.getEnvironment().setNoClasspath(false);
-                launcher.getEnvironment().setSourceClasspath(compileClasspath.get());
-                log.info("Spoon using {} compileClasspath ({} entries) for {}",
-                        classpathSource, compileClasspath.get().length, projectRoot);
-            } else {
-                launcher.getEnvironment().setNoClasspath(true);
-                log.debug("Spoon noClasspath mode for {} (Gradle/Maven classpath not available)", projectRoot);
-            }
+            ClasspathResolver.tryResolve(projectRoot).ifPresentOrElse(
+                    r -> {
+                        launcher.getEnvironment().setNoClasspath(false);
+                        launcher.getEnvironment().setSourceClasspath(r.entries());
+                        log.info("Spoon using {} compileClasspath ({} entries, {} remote repo URLs) for {}",
+                                r.source(), r.entries().length, r.remoteRepositories().size(), projectRoot);
+                        if (graphCacheProperties.isSourcesJarsEnabled()) {
+                            Path sourcesCacheDir = resolveSourcesRemoteCacheDir(projectRoot);
+                            List<String> sj = SourcesJarClasspathAugmentor.collectSourcesJars(
+                                    r,
+                                    sourcesCacheDir,
+                                    graphCacheProperties.isSourcesRemoteEnabled());
+                            sourcesJarPaths.addAll(sj);
+                            for (String jar : sj) {
+                                launcher.addInputResource(jar);
+                            }
+                            if (!sj.isEmpty()) {
+                                log.info("Spoon input includes {} *-sources.jar from dependency classpath",
+                                        sj.size());
+                            }
+                        }
+                    },
+                    () -> {
+                        launcher.getEnvironment().setNoClasspath(true);
+                        log.debug("Spoon noClasspath mode for {} (Gradle/Maven classpath not available)",
+                                projectRoot);
+                    });
 
             launcher.getEnvironment().setCommentEnabled(false);
             launcher.getEnvironment().setAutoImports(false);
@@ -405,7 +542,7 @@ public class AstGraphService {
                 model = launcher.getModel();
                 if (model == null) {
                     log.error("Spoon returned null model for {}, returning empty graph", projectRoot);
-                    return new ProjectGraph();
+                    return new BuildGraphOutcome(new ProjectGraph(), List.copyOf(sourcesJarPaths));
                 }
             }
 
@@ -685,7 +822,7 @@ public class AstGraphService {
                     String callerId = nearestExecId(inv);
                     if (callerId == null) return;
                     graph.addEdge(new GraphEdge(
-                            callerId, EdgeKind.INVOKES, execRefId(inv.getExecutable(), inv),
+                            callerId, EdgeKind.INVOKES, execRefIdForChainedInvocation(inv),
                             relPath(root, sourceFile(inv)), posLine(inv)
                     ));
                 });
@@ -793,7 +930,7 @@ public class AstGraphService {
 
             log.info("Spoon graph built: {} nodes, {} edge-sources",
                     graph.nodes.size(), graph.edgesFrom.size());
-            return graph;
+            return new BuildGraphOutcome(graph, List.copyOf(sourcesJarPaths));
 
         } catch (IOException e) {
             throw new RuntimeException("Failed to collect source roots for " + projectRoot, e);
@@ -1099,6 +1236,28 @@ public class AstGraphService {
         } catch (Exception e) {
             return "unresolved:" + ref.getSimpleName();
         }
+    }
+
+    /**
+     * Like {@link #execRefId(CtExecutableReference, CtElement)} for {@link CtInvocation}, but when the
+     * callee owner is unknown ({@code ?#method(sig)}) and the receiver is another invocation
+     * ({@code a().b(...)}), prefixes with the resolved id of the inner call so chains read as
+     * {@code Type#outer()#inner(sig)} (helps noClasspath / unresolved declaring types).
+     */
+    private String execRefIdForChainedInvocation(CtInvocation<?> inv) {
+        String base = execRefId(inv.getExecutable(), inv);
+        if (!base.startsWith("?#")) {
+            return base;
+        }
+        String suffix = base.substring(2);
+        CtExpression<?> target = inv.getTarget();
+        if (target instanceof CtInvocation<?> inner) {
+            String innerId = execRefIdForChainedInvocation(inner);
+            if (!innerId.startsWith("?")) {
+                return innerId + "#" + suffix;
+            }
+        }
+        return base;
     }
 
     private String fieldId(CtField<?> field) {

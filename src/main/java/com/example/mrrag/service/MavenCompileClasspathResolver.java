@@ -77,7 +77,7 @@ public final class MavenCompileClasspathResolver {
     /**
      * Nearest ancestor of {@code start} that contains a {@code pom.xml} (the Maven module base directory).
      */
-    static Optional<Path> findMavenModuleRoot(Path start) {
+    public static Optional<Path> findMavenModuleRoot(Path start) {
         Path cur = start.toAbsolutePath().normalize();
         for (int depth = 0; depth < 32; depth++) {
             if (Files.isRegularFile(cur.resolve("pom.xml"))) {
