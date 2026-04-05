@@ -4,7 +4,6 @@ import com.example.mrrag.config.EdgeKindConfig;
 import com.example.mrrag.config.GraphCacheProperties;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.env.MockEnvironment;
 
 import java.io.IOException;
@@ -22,18 +21,34 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Integration test: builds a Spoon AST graph for {@code MultiDependencyProject},
  * checks that project classes are indexed, and verifies that dependency segments
  * (jackson-databind, okhttp, guava) are saved to the global {@code deps/} cache.
+ *
+ * <p>All working directories are placed under {@code build/mr-rag-workspace/}
+ * so that artefacts survive the test run and can be inspected manually.
  */
 @Tag("integration")
 class MultiDependencyProjectIndexingTest {
 
     // ---------------------------------------------------------------
-    // Helpers
+    // Workspace root  (build/mr-rag-workspace relative to repo root)
     // ---------------------------------------------------------------
 
     /**
-     * Returns the classpath root of the MultiDependencyProject fixture.
-     * This is a read-only directory inside the test resources jar/directory.
+     * Returns {@code <repoRoot>/build/mr-rag-workspace}, creating it if absent.
+     * Each test gets a named sub-directory so runs don't stomp on each other.
      */
+    private static Path workspaceDir(String testName) throws IOException {
+        Path dir = findRepoRoot()
+                .resolve("build")
+                .resolve("mr-rag-workspace")
+                .resolve(testName);
+        Files.createDirectories(dir);
+        return dir;
+    }
+
+    // ---------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------
+
     private static Path fixtureRoot() throws URISyntaxException {
         URL url = MultiDependencyProjectIndexingTest.class
                 .getClassLoader()
@@ -43,22 +58,16 @@ class MultiDependencyProjectIndexingTest {
     }
 
     /**
-     * Copies the fixture into {@code destDir} and then copies the Gradle wrapper
-     * ({@code gradlew}, {@code gradlew.bat}, {@code gradle/wrapper/}) from the
-     * repository root so that {@link GradleCompileClasspathResolver} can invoke it.
-     *
-     * <p>The repository root is located by walking up from the compiled test-class
-     * output directory until a directory containing {@code gradlew} is found.
+     * Copies the fixture into {@code destDir} and injects the Gradle wrapper
+     * from the repository root so that {@link GradleCompileClasspathResolver}
+     * can invoke it.
      */
     private static Path prepareProjectDir(Path destDir) throws IOException, URISyntaxException {
-        // 1. Copy fixture sources into the writable temp dir
-        Path fixture = fixtureRoot();
-        copyTree(fixture, destDir);
+        Files.createDirectories(destDir);
+        copyTree(fixtureRoot(), destDir);
 
-        // 2. Locate repo root (contains gradlew)
         Path repoRoot = findRepoRoot();
 
-        // 3. Copy gradlew / gradlew.bat
         for (String name : new String[]{"gradlew", "gradlew.bat"}) {
             Path src = repoRoot.resolve(name);
             if (Files.exists(src)) {
@@ -68,7 +77,6 @@ class MultiDependencyProjectIndexingTest {
             }
         }
 
-        // 4. Copy gradle/wrapper/
         Path wrapperSrc = repoRoot.resolve("gradle").resolve("wrapper");
         if (Files.isDirectory(wrapperSrc)) {
             Path wrapperDst = destDir.resolve("gradle").resolve("wrapper");
@@ -79,17 +87,13 @@ class MultiDependencyProjectIndexingTest {
         return destDir;
     }
 
-    /** Recursively copies {@code src} tree into {@code dst} (dst must exist). */
     private static void copyTree(Path src, Path dst) throws IOException {
         try (var stream = Files.walk(src)) {
             stream.forEach(s -> {
                 try {
                     Path d = dst.resolve(src.relativize(s));
-                    if (Files.isDirectory(s)) {
-                        Files.createDirectories(d);
-                    } else {
-                        Files.copy(s, d, StandardCopyOption.REPLACE_EXISTING);
-                    }
+                    if (Files.isDirectory(s)) Files.createDirectories(d);
+                    else Files.copy(s, d, StandardCopyOption.REPLACE_EXISTING);
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
@@ -97,7 +101,6 @@ class MultiDependencyProjectIndexingTest {
         }
     }
 
-    /** Makes a file executable (POSIX only; silently ignored on Windows). */
     private static void makeExecutable(Path path) {
         try {
             Set<PosixFilePermission> perms = new java.util.HashSet<>(
@@ -107,19 +110,14 @@ class MultiDependencyProjectIndexingTest {
                     PosixFilePermission.GROUP_EXECUTE,
                     PosixFilePermission.OTHERS_EXECUTE));
             Files.setPosixFilePermissions(path, perms);
-        } catch (UnsupportedOperationException | IOException ignored) {
-            // Windows — execute bit is controlled by file extension
-        }
+        } catch (UnsupportedOperationException | IOException ignored) {}
     }
 
-    /**
-     * Walks up from the test-class output directory until a directory
-     * containing {@code gradlew} (or {@code build.gradle}) is found.
-     */
     private static Path findRepoRoot() {
-        Path start = Path.of(MultiDependencyProjectIndexingTest.class
-                .getProtectionDomain().getCodeSource().getLocation().getPath());
-        Path candidate = start.toAbsolutePath().normalize();
+        Path candidate = Path.of(
+                MultiDependencyProjectIndexingTest.class
+                        .getProtectionDomain().getCodeSource().getLocation().getPath())
+                .toAbsolutePath().normalize();
         while (candidate != null) {
             if (Files.exists(candidate.resolve("gradlew"))
                     || Files.exists(candidate.resolve("build.gradle"))) {
@@ -127,8 +125,7 @@ class MultiDependencyProjectIndexingTest {
             }
             candidate = candidate.getParent();
         }
-        throw new IllegalStateException(
-                "Cannot locate repo root (no gradlew found above " + start + ")");
+        throw new IllegalStateException("Cannot locate repo root");
     }
 
     private static EdgeKindConfig allEdgesEnabled() {
@@ -139,18 +136,14 @@ class MultiDependencyProjectIndexingTest {
     // Tests
     // ---------------------------------------------------------------
 
-    /**
-     * Verifies that Spoon can index the project source and that the graph
-     * contains both project-defined types.
-     */
     @Test
-    void projectClassesAreIndexed(@TempDir Path tempDir) throws Exception {
-        Path projectRoot = prepareProjectDir(tempDir.resolve("project"));
+    void projectClassesAreIndexed() throws Exception {
+        Path ws          = workspaceDir("projectClassesAreIndexed");
+        Path projectRoot = ws.resolve("project");
         Files.createDirectories(projectRoot);
-        // re-copy fixture only (no gradlew needed for noClasspath mode)
         copyTree(fixtureRoot(), projectRoot);
 
-        AstGraphService service = buildService(tempDir.resolve("cache"));
+        AstGraphService service = buildService(ws.resolve("cache"));
         AstGraphService.ProjectGraph graph = service.buildGraph(projectRoot);
 
         assertThat(graph.nodes).isNotEmpty();
@@ -159,16 +152,14 @@ class MultiDependencyProjectIndexingTest {
         assertThat(nodeIds).as("UserService must be indexed").anyMatch(id -> id.contains("UserService"));
     }
 
-    /**
-     * Verifies DECLARES edges: UserService must declare getProfile, evict, cacheSize.
-     */
     @Test
-    void userServiceDeclaresExpectedMethods(@TempDir Path tempDir) throws Exception {
-        Path projectRoot = tempDir.resolve("project");
+    void userServiceDeclaresExpectedMethods() throws Exception {
+        Path ws          = workspaceDir("userServiceDeclaresExpectedMethods");
+        Path projectRoot = ws.resolve("project");
         Files.createDirectories(projectRoot);
         copyTree(fixtureRoot(), projectRoot);
 
-        AstGraphService service = buildService(tempDir.resolve("cache"));
+        AstGraphService service = buildService(ws.resolve("cache"));
         AstGraphService.ProjectGraph graph = service.buildGraph(projectRoot);
 
         String userServiceId = graph.nodes.keySet().stream()
@@ -178,25 +169,18 @@ class MultiDependencyProjectIndexingTest {
                 .as("com.example.multi.service.UserService must be a graph node")
                 .isNotNull();
 
-        var declares = graph.outgoing(userServiceId, AstGraphService.EdgeKind.DECLARES);
+        var declares     = graph.outgoing(userServiceId, AstGraphService.EdgeKind.DECLARES);
         var declaredNames = declares.stream().map(e -> e.callee()).toList();
         assertThat(declaredNames).as("must declare getProfile").anyMatch(id -> id.contains("getProfile"));
         assertThat(declaredNames).as("must declare evict").anyMatch(id -> id.contains("evict"));
         assertThat(declaredNames).as("must declare cacheSize").anyMatch(id -> id.contains("cacheSize"));
     }
 
-    /**
-     * Verifies that after {@link AstGraphService#buildGraph} the graph cache
-     * contains a {@code main} segment for the project and at least one dep
-     * segment (jackson-databind) under the global {@code deps/} directory.
-     *
-     * <p>Gradle wrapper is copied from the repo root at runtime, so this test
-     * runs without any {@code assumeThat} guard.
-     */
     @Test
-    void depSegmentsAreSavedToGlobalDepsDir(@TempDir Path tempDir) throws Exception {
-        Path projectRoot = prepareProjectDir(tempDir.resolve("project"));
-        Path cacheDir   = tempDir.resolve("cache");
+    void depSegmentsAreSavedToGlobalDepsDir() throws Exception {
+        Path ws          = workspaceDir("depSegmentsAreSavedToGlobalDepsDir");
+        Path projectRoot = prepareProjectDir(ws.resolve("project"));
+        Path cacheDir    = ws.resolve("cache");
 
         AstGraphService service = buildService(cacheDir);
         ProjectKey key = service.projectKey(projectRoot);
@@ -221,16 +205,13 @@ class MultiDependencyProjectIndexingTest {
                 .anyMatch(id -> id.contains("jackson-databind"));
     }
 
-    /**
-     * Verifies that a second call to {@link AstGraphService#buildGraph} uses
-     * the disk cache and does not rebuild.
-     */
     @Test
-    void secondCallUsesDiskCache(@TempDir Path tempDir) throws Exception {
-        Path projectRoot = tempDir.resolve("project");
+    void secondCallUsesDiskCache() throws Exception {
+        Path ws          = workspaceDir("secondCallUsesDiskCache");
+        Path projectRoot = ws.resolve("project");
         Files.createDirectories(projectRoot);
         copyTree(fixtureRoot(), projectRoot);
-        Path cacheDir = tempDir.resolve("cache");
+        Path cacheDir = ws.resolve("cache");
 
         AstGraphService service = buildService(cacheDir);
         ProjectKey key = service.projectKey(projectRoot);
