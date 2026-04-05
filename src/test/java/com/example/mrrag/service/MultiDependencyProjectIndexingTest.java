@@ -13,6 +13,7 @@ import java.nio.file.*;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.EnumSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,8 +60,18 @@ class MultiDependencyProjectIndexingTest {
 
     /**
      * Copies the fixture into {@code destDir} and injects the Gradle wrapper
-     * from the repository root so that {@link GradleCompileClasspathResolver}
-     * can invoke it.
+     * (gradlew script + gradle/wrapper/gradle-wrapper.jar + gradle-wrapper.properties)
+     * so that {@link GradleCompileClasspathResolver} can invoke it.
+     *
+     * <p>The wrapper JAR is resolved in priority order:
+     * <ol>
+     *   <li>Repo root {@code gradle/wrapper/gradle-wrapper.jar} (present when commited)</li>
+     *   <li>Any {@code gradle-wrapper.jar} found under
+     *       {@code ~/.gradle/wrapper/dists/} (downloaded by a previous wrapper run)</li>
+     * </ol>
+     * If neither source is available the wrapper scripts are still copied, and
+     * {@link GradleCompileClasspathResolver} will fall back to the system {@code gradle}
+     * executable automatically.
      */
     private static Path prepareProjectDir(Path destDir) throws IOException, URISyntaxException {
         Files.createDirectories(destDir);
@@ -68,6 +79,7 @@ class MultiDependencyProjectIndexingTest {
 
         Path repoRoot = findRepoRoot();
 
+        // Copy gradlew / gradlew.bat scripts
         for (String name : new String[]{"gradlew", "gradlew.bat"}) {
             Path src = repoRoot.resolve(name);
             if (Files.exists(src)) {
@@ -77,14 +89,54 @@ class MultiDependencyProjectIndexingTest {
             }
         }
 
+        // Prepare gradle/wrapper/ directory
+        Path wrapperDst = destDir.resolve("gradle").resolve("wrapper");
+        Files.createDirectories(wrapperDst);
+
+        // Copy gradle-wrapper.properties from repo root wrapper dir
         Path wrapperSrc = repoRoot.resolve("gradle").resolve("wrapper");
         if (Files.isDirectory(wrapperSrc)) {
-            Path wrapperDst = destDir.resolve("gradle").resolve("wrapper");
-            Files.createDirectories(wrapperDst);
             copyTree(wrapperSrc, wrapperDst);
         }
 
+        // Resolve gradle-wrapper.jar
+        Path jarDst = wrapperDst.resolve("gradle-wrapper.jar");
+        if (!Files.exists(jarDst)) {
+            // 1. Try repo root
+            Path jarFromRepo = wrapperSrc.resolve("gradle-wrapper.jar");
+            if (Files.exists(jarFromRepo)) {
+                Files.copy(jarFromRepo, jarDst, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                // 2. Search ~/.gradle/wrapper/dists/ for any gradle-wrapper.jar
+                findWrapperJarInGradleHome().ifPresent(found -> {
+                    try {
+                        Files.copy(found, jarDst, StandardCopyOption.REPLACE_EXISTING);
+                    } catch (IOException e) {
+                        throw new RuntimeException("Cannot copy gradle-wrapper.jar from " + found, e);
+                    }
+                });
+            }
+        }
+
         return destDir;
+    }
+
+    /**
+     * Searches {@code ~/.gradle/wrapper/dists} for any {@code gradle-wrapper.jar}
+     * cached by a previous Gradle wrapper invocation on this machine.
+     */
+    private static Optional<Path> findWrapperJarInGradleHome() {
+        Path gradleHome = Path.of(System.getProperty("user.home"), ".gradle", "wrapper", "dists");
+        if (!Files.isDirectory(gradleHome)) {
+            return Optional.empty();
+        }
+        try (var walk = Files.walk(gradleHome, 6)) {
+            return walk
+                    .filter(p -> p.getFileName().toString().equals("gradle-wrapper.jar"))
+                    .findFirst();
+        } catch (IOException e) {
+            return Optional.empty();
+        }
     }
 
     private static void copyTree(Path src, Path dst) throws IOException {
