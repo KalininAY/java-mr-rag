@@ -978,6 +978,12 @@ public class AstGraphService {
         launcher.getEnvironment().disableConsistencyChecks();
         launcher.getEnvironment().setCommentEnabled(false);
         launcher.getEnvironment().setAutoImports(false);
+        // Spoon 11+: skip files with syntax errors or JLS violations instead of
+        // aborting the entire batch. Without this, a single problematic file
+        // (e.g. from a *-sources.jar) causes the whole model to be empty.
+        try {
+            launcher.getEnvironment().setIgnoreSyntaxErrors(true);
+        } catch (NoSuchMethodError ignored) {}
         try {
             launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
         } catch (NoSuchMethodError ignored) {}
