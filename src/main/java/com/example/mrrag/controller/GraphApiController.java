@@ -4,9 +4,10 @@ import com.example.mrrag.model.GraphBuildStats;
 import com.example.mrrag.service.AstGraphService.EdgeKind;
 import com.example.mrrag.service.AstGraphService.NodeKind;
 import com.example.mrrag.service.AstGraphService.ProjectGraph;
-import com.example.mrrag.service.graph.GraphBuildService;
-import com.example.mrrag.service.source.GitLabProjectSourceProvider;
-import com.example.mrrag.service.source.ProjectSourceProvider;
+import com.example.mrrag.service.graph.AstGraphI;
+import com.example.mrrag.service.source.GitLabSourcesProvider;
+import com.example.mrrag.service.source.SourcesProvider;
+import com.example.mrrag.service.dto.ProjectSourceDto;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
@@ -30,9 +31,6 @@ import java.util.stream.Collectors;
  *   "gitToken"  : "glpat-xxx"   // optional; falls back to app.gitlab.token
  * }
  * </pre>
- *
- * <p>{@code ref} accepts a branch name, a tag name, or a full / short commit SHA.
- * GitLab4J passes it directly to the Repository Files API which resolves any ref type.
  */
 @Slf4j
 @RestController
@@ -40,18 +38,13 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class GraphApiController {
 
-    private final GraphBuildService graphService;
-    private final GitLabApi         gitLabApi;
+    private final AstGraphI  graphService;
+    private final GitLabApi  gitLabApi;
 
     // -----------------------------------------------------------------------
     // DTO
     // -----------------------------------------------------------------------
 
-    /**
-     * @param projectId numeric GitLab project id (required)
-     * @param ref       branch, tag, or commit SHA (required)
-     * @param gitToken  optional per-request PAT; overrides application-level token
-     */
     public record IngestRefRequest(
             Long   projectId,
             String ref,
@@ -77,11 +70,11 @@ public class GraphApiController {
         long wallStart = System.currentTimeMillis();
 
         GitLabApi api = resolveApi(req.gitToken());
-        ProjectSourceProvider provider =
-                new GitLabProjectSourceProvider(api, req.projectId(), req.ref());
+        SourcesProvider provider = new GitLabSourcesProvider(api, req.projectId(), req.ref());
 
         long fetchStart = System.currentTimeMillis();
-        ProjectGraph graph = graphService.buildGraph(provider);
+        ProjectSourceDto dto = provider.getProjectSourceDto();
+        ProjectGraph graph = graphService.buildGraph(dto);
         long buildMs = System.currentTimeMillis() - fetchStart;
         long totalMs = System.currentTimeMillis() - wallStart;
 

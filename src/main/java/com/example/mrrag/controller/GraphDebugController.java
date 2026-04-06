@@ -1,9 +1,13 @@
 package com.example.mrrag.controller;
 
-import com.example.mrrag.service.AstGraphService;
 import com.example.mrrag.service.AstGraphService.ProjectGraph;
 import com.example.mrrag.service.AstGraphService.GraphNode;
 import com.example.mrrag.service.GraphViewBuilder;
+import com.example.mrrag.service.graph.AstGraphI;
+import com.example.mrrag.service.graph.AstGraphUtils;
+import com.example.mrrag.service.source.LocalCloneSourcesProvider;
+import com.example.mrrag.service.source.SourcesProvider;
+import com.example.mrrag.service.dto.ProjectSourceDto;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -14,17 +18,6 @@ import java.util.stream.Collectors;
 
 /**
  * Debug endpoints for inspecting the Spoon AST graph.
- *
- * <pre>
- * GET  /debug/graph/stats?repoDir=...
- *      — overall node/edge counts, breakdown by kind, list of indexed files
- *
- * GET  /debug/graph/file?repoDir=...&diffPath=...
- *      — show how a GitLab diff path is normalized, and list all nodes in that file
- *
- * GET  /debug/graph/line?repoDir=...&diffPath=...&line=N
- *      — show all graph nodes whose range covers line N, plus all outgoing edges from those nodes at line N
- * </pre>
  */
 @Slf4j
 @RestController
@@ -32,24 +25,19 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class GraphDebugController {
 
-    private final AstGraphService graphService;
+    private final AstGraphI graphService;
 
-    // ------------------------------------------------------------------
-    // GET /debug/graph/stats?repoDir=/tmp/repo-123/source
-    // ------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // GET /debug/graph/stats?repoDir=...
+    // -----------------------------------------------------------------------
 
     @GetMapping("/stats")
-    public Map<String, Object> stats(@RequestParam String repoDir) {
-        Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(root);
-
+    public Map<String, Object> stats(@RequestParam String repoDir) throws Exception {
+        ProjectGraph graph = buildGraphFromDir(repoDir);
         GraphViewBuilder.ViewGraph build = new GraphViewBuilder().build(graph);
-        String s = build.byId("bugbusters.modules.extensions.allure.model.AllureStep#findPlaceFrom()").toMarkdown();
-        String s1 = build.byId("bugbusters.modules.extensions.allure.utils.Steps#step(java.lang.String,io.qameta.allure.Allure$ThrowableRunnable)").toMarkdown();
 
         Map<String, Long> byKind = graph.nodes.values().stream()
                 .collect(Collectors.groupingBy(n -> n.kind().name(), Collectors.counting()));
-
         Map<String, Long> edgesByKind = graph.edgesFrom.values().stream()
                 .flatMap(List::stream)
                 .collect(Collectors.groupingBy(e -> e.kind().name(), Collectors.counting()));
@@ -64,18 +52,16 @@ public class GraphDebugController {
         );
     }
 
-    // ------------------------------------------------------------------
-    // GET /debug/graph/file?repoDir=...&diffPath=gl-hooks/src/main/java/Foo.java
-    // ------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // GET /debug/graph/file?repoDir=...&diffPath=...
+    // -----------------------------------------------------------------------
 
     @GetMapping("/file")
     public Map<String, Object> file(
             @RequestParam String repoDir,
             @RequestParam String diffPath
-    ) {
-        Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(root);
-
+    ) throws Exception {
+        ProjectGraph graph = buildGraphFromDir(repoDir);
         String normalized = graphService.normalizeFilePath(diffPath, graph);
         List<GraphNode> nodes = graph.byFile.getOrDefault(normalized, List.of());
 
@@ -95,23 +81,20 @@ public class GraphDebugController {
         );
     }
 
-    // ------------------------------------------------------------------
-    // GET /debug/graph/line?repoDir=...&diffPath=...&line=42
-    // ------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // GET /debug/graph/line?repoDir=...&diffPath=...&line=N
+    // -----------------------------------------------------------------------
 
     @GetMapping("/line")
     public Map<String, Object> line(
             @RequestParam String repoDir,
             @RequestParam String diffPath,
             @RequestParam int line
-    ) {
-        Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(root);
-
+    ) throws Exception {
+        ProjectGraph graph = buildGraphFromDir(repoDir);
         String normalized = graphService.normalizeFilePath(diffPath, graph);
         List<GraphNode> enclosing = graph.nodesAtLine(normalized, line);
 
-        // All outgoing edges from enclosing nodes that were recorded at this exact line
         List<Map<String, Object>> edgesAtLine = enclosing.stream()
                 .flatMap(enc -> graph.outgoing(enc.id()).stream()
                         .filter(e -> normalized.equals(e.filePath()) && e.line() == line)
@@ -120,7 +103,7 @@ public class GraphDebugController {
                             Map<String, Object> m = new LinkedHashMap<>();
                             m.put("fromNode",   enc.id());
                             m.put("edgeKind",   e.kind().name());
-                            m.put("callee",       e.callee());
+                            m.put("callee",     e.callee());
                             m.put("toResolved", target != null);
                             if (target != null) {
                                 m.put("toFile",  target.filePath());
@@ -146,5 +129,15 @@ public class GraphDebugController {
                         .collect(Collectors.toList()),
                 "edgesAtLine",    edgesAtLine
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    private ProjectGraph buildGraphFromDir(String repoDir) throws Exception {
+        SourcesProvider provider = new LocalCloneSourcesProvider(Path.of(repoDir));
+        ProjectSourceDto dto = provider.getProjectSourceDto();
+        return graphService.buildGraph(dto);
     }
 }

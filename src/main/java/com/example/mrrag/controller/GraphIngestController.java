@@ -1,10 +1,13 @@
 package com.example.mrrag.controller;
 
 import com.example.mrrag.model.GraphBuildStats;
-import com.example.mrrag.service.AstGraphService;
 import com.example.mrrag.service.AstGraphService.EdgeKind;
 import com.example.mrrag.service.AstGraphService.NodeKind;
 import com.example.mrrag.service.AstGraphService.ProjectGraph;
+import com.example.mrrag.service.graph.AstGraphI;
+import com.example.mrrag.service.source.LocalCloneSourcesProvider;
+import com.example.mrrag.service.source.SourcesProvider;
+import com.example.mrrag.service.dto.ProjectSourceDto;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
@@ -23,9 +26,8 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * REST endpoint that clones a Git repository into a <b>persistent</b>
- * workspace directory using <b>JGit</b> (no external {@code git} process),
- * builds its AST symbol graph via {@link AstGraphService} and returns
+ * REST endpoint that clones a Git repository into a persistent workspace directory
+ * using JGit, builds its AST symbol graph via {@link AstGraphI} and returns
  * build statistics.
  *
  * <pre>
@@ -35,20 +37,10 @@ import java.util.stream.Collectors;
  * {
  *   "repoUrl"  : "http://gitlab.example.com/org/repo.git",
  *   "branch"   : "feature/my-branch",
- *   "commit"   : "a1b2c3d4",            // optional full / short commit SHA to checkout
- *   "gitToken" : "glpat-xxxxxxxxxxxx", // optional; falls back to app.gitlab.token
- *   "force"    : false                 // true = re-clone even if dir exists
+ *   "commit"   : "a1b2c3d4",
+ *   "gitToken" : "glpat-xxxxxxxxxxxx",
+ *   "force"    : false
  * }
- * </pre>
- *
- * <p>When {@code commit} is provided the clone checks out that exact commit after cloning
- * the specified branch (or default branch if {@code branch} is omitted).  This is useful
- * for analysing the repository state at a specific point in time without waiting for a full
- * re-clone.
- *
- * <p>Clone directory layout:
- * <pre>
- *   ${app.workspace.dir}/repos/&lt;repo-slug&gt;/&lt;branch-slug&gt;
  * </pre>
  */
 @Slf4j
@@ -56,7 +48,7 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/graph")
 public class GraphIngestController {
 
-    private final AstGraphService graphService;
+    private final AstGraphI graphService;
 
     @Value("${app.workspace.dir:/tmp/mr-rag-workspace}")
     private String workspaceDir;
@@ -64,7 +56,7 @@ public class GraphIngestController {
     @Value("${app.gitlab.token:}")
     private String defaultGitlabToken;
 
-    public GraphIngestController(AstGraphService graphService) {
+    public GraphIngestController(AstGraphI graphService) {
         this.graphService = graphService;
     }
 
@@ -72,15 +64,6 @@ public class GraphIngestController {
     // Request DTO
     // -----------------------------------------------------------------------
 
-    /**
-     * @param repoUrl  Git clone URL (HTTPS).
-     * @param branch   Branch / tag to clone. Uses repository default when {@code null}.
-     * @param commit   Optional commit SHA to checkout after cloning.  Accepts full (40-char)
-     *                 or abbreviated (7+ char) SHA.  Takes precedence over {@code branch} for
-     *                 the working-tree state but the branch is still used as the clone ref.
-     * @param gitToken GitLab PAT. Falls back to {@code app.gitlab.token}.
-     * @param force    {@code true} = delete existing clone and re-clone.
-     */
     public record IngestRequest(
             String  repoUrl,
             String  branch,
@@ -117,8 +100,10 @@ public class GraphIngestController {
 
         if (forceReclone && exists) {
             log.info("force=true — deleting existing clone dir: {}", cloneDir);
+            // Invalidate graph for this dir via dto
+            SourcesProvider tmpProvider = new LocalCloneSourcesProvider(cloneDir);
+            graphService.invalidate(tmpProvider.getProjectSourceDto());
             FileSystemUtils.deleteRecursively(cloneDir);
-            graphService.invalidate(cloneDir);
             exists = false;
         }
 
@@ -134,32 +119,27 @@ public class GraphIngestController {
                 throw e;
             }
             cloneMs = System.currentTimeMillis() - cloneStart;
-            log.info("Cloned {} (branch={}, commit={}) in {} ms → {}",
-                    repoUrl, branch, commit != null ? commit : "HEAD", cloneMs, cloneDir);
         } else {
             log.info("Reusing existing clone: {}", cloneDir);
         }
 
+        SourcesProvider provider = new LocalCloneSourcesProvider(cloneDir);
+        ProjectSourceDto dto = provider.getProjectSourceDto();
+
         long buildStart = System.currentTimeMillis();
-        ProjectGraph graph = graphService.buildGraph(cloneDir);
+        ProjectGraph graph = graphService.buildGraph(dto);
         long buildMs  = System.currentTimeMillis() - buildStart;
         long totalMs  = System.currentTimeMillis() - wallStart;
 
         Map<NodeKind, Long> nodesByKind = Arrays.stream(NodeKind.values())
-                .collect(Collectors.toMap(
-                        k -> k,
-                        k -> graph.nodes.values().stream()
-                                .filter(n -> n.kind() == k).count()));
-
+                .collect(Collectors.toMap(k -> k,
+                        k -> graph.nodes.values().stream().filter(n -> n.kind() == k).count()));
         Map<EdgeKind, Long> edgesByKind = Arrays.stream(EdgeKind.values())
-                .collect(Collectors.toMap(
-                        k -> k,
+                .collect(Collectors.toMap(k -> k,
                         k -> graph.edgesFrom.values().stream()
                                 .flatMap(java.util.List::stream)
                                 .filter(e -> e.kind() == k).count()));
-
-        long totalEdges = graph.edgesFrom.values().stream()
-                .mapToLong(java.util.List::size).sum();
+        long totalEdges = graph.edgesFrom.values().stream().mapToLong(java.util.List::size).sum();
 
         return new GraphBuildStats(
                 repoUrl, cloneDir.toString(),
@@ -173,10 +153,6 @@ public class GraphIngestController {
     // JGit clone + optional checkout
     // -----------------------------------------------------------------------
 
-    /**
-     * Clones the repository and, if {@code commitSha} is non-blank, performs a
-     * detached-HEAD checkout to that exact commit after the clone completes.
-     */
     private void cloneWithJGit(String repoUrl, String branch, String commitSha,
                                Path targetDir, String token)
             throws GitAPIException, IOException {
@@ -190,26 +166,16 @@ public class GraphIngestController {
         if (branch != null && !branch.isBlank()) {
             cmd.setBranch("refs/heads/" + branch);
         }
-
         if (token != null && !token.isBlank()) {
             cmd.setCredentialsProvider(
                     new UsernamePasswordCredentialsProvider("oauth2", token));
         }
-
         cmd.setProgressMonitor(new Slf4jProgressMonitor());
-
-        log.info("JGit clone: {} branch={} → {}", repoUrl,
-                branch != null ? branch : "<default>", targetDir);
 
         try (Git git = cmd.call()) {
             if (commitSha != null && !commitSha.isBlank()) {
-                log.info("Checking out commit {}", commitSha);
-                git.checkout()
-                   .setName(commitSha)
-                   .call();
-                log.info("Checked out commit {}", commitSha);
+                git.checkout().setName(commitSha).call();
             }
-            log.debug("JGit done, HEAD={}", git.getRepository().resolve("HEAD"));
         }
     }
 
@@ -237,26 +203,20 @@ public class GraphIngestController {
     // -----------------------------------------------------------------------
 
     private static final class Slf4jProgressMonitor extends BatchingProgressMonitor {
-
         @Override
         protected void onUpdate(String taskName, int workCurr, Duration d) {
             log.debug("[jgit] {} {}", taskName, workCurr);
         }
-
         @Override
         protected void onEndTask(String taskName, int workCurr, Duration d) {
             log.info("[jgit] {} done ({})", taskName, workCurr);
         }
-
         @Override
-        protected void onUpdate(String taskName, int workCurr, int workTotal,
-                                int percentDone, Duration d) {
+        protected void onUpdate(String taskName, int workCurr, int workTotal, int percentDone, Duration d) {
             log.debug("[jgit] {} {}/{} ({}%)", taskName, workCurr, workTotal, percentDone);
         }
-
         @Override
-        protected void onEndTask(String taskName, int workCurr, int workTotal,
-                                 int percentDone, Duration d) {
+        protected void onEndTask(String taskName, int workCurr, int workTotal, int percentDone, Duration d) {
             log.info("[jgit] {} done {}/{}", taskName, workCurr, workTotal);
         }
     }
