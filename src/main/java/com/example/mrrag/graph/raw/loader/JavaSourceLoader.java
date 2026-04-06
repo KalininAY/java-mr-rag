@@ -3,14 +3,10 @@ package com.example.mrrag.graph.raw.loader;
 import java.util.List;
 
 /**
- * Strategy: load Java source files to be processed by Spoon.
- *
- * <p>Two built-in implementations:
- * <ul>
- *   <li>{@link LocalFileSourceLoader}  – scans a locally cloned directory</li>
- *   <li>{@link GitLabSourceLoader}     – fetches files via GitLab API (no clone)</li>
- * </ul>
+ * @deprecated Use {@link com.example.mrrag.commons.source.JavaSourceLoader} instead.
+ *             This interface is a deprecated re-export kept for binary compatibility.
  */
+@Deprecated
 public interface JavaSourceLoader {
 
     /**

@@ -1,12 +1,18 @@
 package com.example.mrrag.graph.raw.source;
 
 /**
- * A single Java source file held in memory.
- *
- * @param path    repository-relative path,
- *                e.g. {@code "src/main/java/com/example/Foo.java"}.
- *                Used verbatim as {@code GraphNode.filePath()} so it must
- *                match the paths that appear in GitLab diff output.
- * @param content raw UTF-8 source text
+ * @deprecated Use {@link com.example.mrrag.commons.source.ProjectSource} instead.
+ *             This class is a deprecated re-export kept for binary compatibility.
  */
-public record ProjectSource(String path, String content) {}
+@Deprecated
+public record ProjectSource(String path, String content) {
+    /** Converts to the canonical commons type. */
+    public com.example.mrrag.commons.source.ProjectSource toCommons() {
+        return new com.example.mrrag.commons.source.ProjectSource(path, content);
+    }
+
+    /** Creates from the canonical commons type. */
+    public static ProjectSource from(com.example.mrrag.commons.source.ProjectSource s) {
+        return new ProjectSource(s.path(), s.content());
+    }
+}

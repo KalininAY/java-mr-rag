@@ -1,9 +1,16 @@
 package com.example.mrrag.graph.raw.loader;
 
 /**
- * A single Java source file held in memory.
- *
- * @param path    repository-relative path, e.g. {@code "src/main/java/com/example/Foo.java"}
- * @param content raw UTF-8 source text
+ * @deprecated Use {@link com.example.mrrag.commons.source.VirtualSource} instead.
+ *             This class is a deprecated re-export kept for binary compatibility.
  */
-public record VirtualSource(String path, String content) {}
+@Deprecated
+public record VirtualSource(String path, String content) {
+    public com.example.mrrag.commons.source.VirtualSource toCommons() {
+        return new com.example.mrrag.commons.source.VirtualSource(path, content);
+    }
+
+    public static VirtualSource from(com.example.mrrag.commons.source.VirtualSource s) {
+        return new VirtualSource(s.path(), s.content());
+    }
+}
