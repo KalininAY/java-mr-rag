@@ -110,7 +110,7 @@ public final class SourcesJarClasspathAugmentor {
     /**
      * {@code foo-1.0.jar} → {@code foo-1.0-sources.jar} in the same directory.
      */
-    static String toSourcesJarPath(String binaryJarPath) {
+    public static String toSourcesJarPath(String binaryJarPath) {
         if (binaryJarPath.length() < 5 || !binaryJarPath.endsWith(".jar")) {
             return null;
         }

@@ -1,9 +1,8 @@
 package com.example.mrrag.graph;
 
-import com.example.mrrag.graph.GraphBuilder;
 import com.example.mrrag.app.source.GitLabProjectSourceProvider;
-import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
-import com.example.mrrag.graph.raw.source.ProjectSourceProvider;
+import com.example.mrrag.commons.source.LocalCloneProjectSourceProvider;
+import com.example.mrrag.commons.source.ProjectSourceProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
@@ -14,7 +13,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Backward-compatible index API used by {@link com.example.mrrag.app.integration.ContextEnricher}.
+ * Backward-compatible index API used by {@link com.example.mrrag.app.integration.ContextEnricher}
+ * (via {@link com.example.mrrag.review.spi.ChangeGroupEnrichmentPort}).
  *
  * <h2>Build modes</h2>
  * <ul>
@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class JavaIndexService {
 
-    private final GraphBuilder graphService;
+    private final AstGraphService graphService;
     private final GitLabApi         gitLabApi;
 
     private final Map<Path, ProjectIndex> indexCache = new ConcurrentHashMap<>();
@@ -71,7 +71,7 @@ public class JavaIndexService {
      */
     public ProjectIndex buildIndexFromProvider(ProjectSourceProvider provider) throws Exception {
         log.info("Building index via provider: {}", provider.getClass().getSimpleName());
-        AstGraphService.ProjectGraph graph = graphService.buildGraph(provider);
+        GraphRawBuilder.ProjectGraphRaw graph = graphService.buildGraph(provider);
         return project(graph, null);
     }
 
@@ -85,7 +85,7 @@ public class JavaIndexService {
     // ------------------------------------------------------------------
 
     /** Raw graph from local clone. */
-    public AstGraphService.ProjectGraph getGraph(Path projectRoot) {
+    public GraphRawBuilder.ProjectGraphRaw getGraph(Path projectRoot) throws Exception {
         return graphService.buildGraph(projectRoot);
     }
 
@@ -95,12 +95,12 @@ public class JavaIndexService {
      * @param projectId numeric GitLab project id
      * @param ref       branch, tag, or commit SHA
      */
-    public AstGraphService.ProjectGraph getGraphFromRef(long projectId, String ref) throws Exception {
+    public GraphRawBuilder.ProjectGraphRaw getGraphFromRef(long projectId, String ref) throws Exception {
         return graphService.buildGraph(new GitLabProjectSourceProvider(gitLabApi, projectId, ref));
     }
 
     /** Raw graph via any provider. */
-    public AstGraphService.ProjectGraph getGraphFromProvider(ProjectSourceProvider provider) throws Exception {
+    public GraphRawBuilder.ProjectGraphRaw getGraphFromProvider(ProjectSourceProvider provider) throws Exception {
         return graphService.buildGraph(provider);
     }
 
@@ -108,10 +108,10 @@ public class JavaIndexService {
     // Projection: ProjectGraph → ProjectIndex
     // ------------------------------------------------------------------
 
-    private ProjectIndex project(AstGraphService.ProjectGraph g, Path root) {
+    private ProjectIndex project(GraphRawBuilder.ProjectGraphRaw g, Path root) {
         ProjectIndex idx = new ProjectIndex();
 
-        for (AstGraphService.GraphNode node : g.nodes.values()) {
+        for (GraphRawBuilder.GraphNode node : g.nodes.values()) {
             switch (node.kind()) {
                 case METHOD -> {
                     String sig = extractSignatureFromId(node.id());
@@ -135,9 +135,9 @@ public class JavaIndexService {
             }
         }
 
-        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
-            for (AstGraphService.GraphEdge e : edges) {
-                if (e.kind() == AstGraphService.EdgeKind.INVOKES) {
+        for (List<GraphRawBuilder.GraphEdge> edges : g.edgesFrom.values()) {
+            for (GraphRawBuilder.GraphEdge e : edges) {
+                if (e.kind() == GraphRawBuilder.EdgeKind.INVOKES) {
                     CallSite cs = new CallSite(simpleNameFromId(e.callee()), e.filePath(),
                             e.line(), e.callee(), List.of());
                     idx.callSites.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(cs);
@@ -145,10 +145,10 @@ public class JavaIndexService {
             }
         }
 
-        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
-            for (AstGraphService.GraphEdge e : edges) {
-                if (e.kind() == AstGraphService.EdgeKind.READS_FIELD
-                        || e.kind() == AstGraphService.EdgeKind.WRITES_FIELD) {
+        for (List<GraphRawBuilder.GraphEdge> edges : g.edgesFrom.values()) {
+            for (GraphRawBuilder.GraphEdge e : edges) {
+                if (e.kind() == GraphRawBuilder.EdgeKind.READS_FIELD
+                        || e.kind() == GraphRawBuilder.EdgeKind.WRITES_FIELD) {
                     FieldAccess fa = new FieldAccess(simpleNameFromFieldId(e.callee()),
                             e.filePath(), e.line(), e.callee());
                     idx.fieldAccesses.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(fa);
@@ -157,10 +157,10 @@ public class JavaIndexService {
             }
         }
 
-        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
-            for (AstGraphService.GraphEdge e : edges) {
-                if (e.kind() == AstGraphService.EdgeKind.READS_LOCAL_VAR
-                        || e.kind() == AstGraphService.EdgeKind.WRITES_LOCAL_VAR) {
+        for (List<GraphRawBuilder.GraphEdge> edges : g.edgesFrom.values()) {
+            for (GraphRawBuilder.GraphEdge e : edges) {
+                if (e.kind() == GraphRawBuilder.EdgeKind.READS_LOCAL_VAR
+                        || e.kind() == GraphRawBuilder.EdgeKind.WRITES_LOCAL_VAR) {
                     String name = simpleNameFromVarId(e.callee());
                     NameUsage nu = new NameUsage(name, e.filePath(), e.line());
                     idx.nameUsages.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(nu);

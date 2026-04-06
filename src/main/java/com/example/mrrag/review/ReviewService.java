@@ -1,18 +1,15 @@
 package com.example.mrrag.review;
 
 import com.example.mrrag.review.model.*;
-import com.example.mrrag.service.ContextEnricher;
-import com.example.mrrag.service.GitLabService;
-import com.example.mrrag.service.JavaIndexService;
+import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
+import com.example.mrrag.review.spi.MergeRequestCheckoutPort;
+import com.example.mrrag.graph.JavaIndexService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.eclipse.jgit.api.errors.GitAPIException;
-import org.gitlab4j.api.GitLabApiException;
 import org.gitlab4j.api.models.Diff;
 import org.gitlab4j.api.models.MergeRequest;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -34,39 +31,39 @@ import java.util.List;
 @RequiredArgsConstructor
 public class ReviewService {
 
-    private final GitLabService gitLabService;
+    private final MergeRequestCheckoutPort mergeRequestCheckout;
     private final JavaIndexService javaIndexService;
     private final DiffParser diffParser;
     private final SemanticDiffFilter semanticDiffFilter;
     private final ChangeGrouper changeGrouper;
-    private final ContextEnricher contextEnricher;
+    private final ChangeGroupEnrichmentPort changeGroupEnrichment;
 
     public ReviewContext buildReviewContext(ReviewRequest request)
-            throws GitLabApiException, GitAPIException, IOException {
+            throws Exception {
 
         log.info("Building review context for project={} mrIid={}",
                 request.projectId(), request.mrIid());
 
-        MergeRequest mr = gitLabService.getMergeRequest(request.projectId(), request.mrIid());
+        MergeRequest mr = mergeRequestCheckout.getMergeRequest(request.projectId(), request.mrIid());
 
         Path sourceRepoDir = null;
         Path targetRepoDir = null;
         try {
             // Clone into <project>-mr<id>/from-<branch>-<ts>
             log.info("Cloning source branch: {}", request.sourceBranch());
-            sourceRepoDir = gitLabService.checkoutBranch(
+            sourceRepoDir = mergeRequestCheckout.checkoutBranch(
                     request.projectId(), request.mrIid(), request.sourceBranch(), "from");
 
             // Clone into <project>-mr<id>/to-<branch>-<ts>
             log.info("Cloning target branch: {}", request.targetBranch());
-            targetRepoDir = gitLabService.checkoutBranch(
+            targetRepoDir = mergeRequestCheckout.checkoutBranch(
                     request.projectId(), request.mrIid(), request.targetBranch(), "to");
 
             JavaIndexService.ProjectIndex sourceIndex = javaIndexService.buildIndex(sourceRepoDir);
             JavaIndexService.ProjectIndex targetIndex = javaIndexService.buildIndex(targetRepoDir);
 
             log.info("Fetching MR diffs...");
-            List<Diff> rawDiffs = gitLabService.getMrDiffs(request.projectId(), request.mrIid());
+            List<Diff> rawDiffs = mergeRequestCheckout.getMrDiffs(request.projectId(), request.mrIid());
             List<ChangedLine> rawLines = diffParser.parse(rawDiffs);
             log.info("Parsed {} changed lines from {} file diffs", rawLines.size(), rawDiffs.size());
 
@@ -77,7 +74,7 @@ public class ReviewService {
             List<ChangeGroup> groups = changeGrouper.group(changedLines, sourceIndex);
             log.info("Grouped into {} change groups", groups.size());
 
-            contextEnricher.enrich(groups, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir);
+            changeGroupEnrichment.enrich(groups, sourceIndex, targetIndex, sourceRepoDir, targetRepoDir);
 
             int totalSnippets = groups.stream().mapToInt(g -> g.enrichments().size()).sum();
             int totalSnippetLines = groups.stream()
@@ -103,15 +100,15 @@ public class ReviewService {
         } finally {
             javaIndexService.invalidate(sourceRepoDir);
             javaIndexService.invalidate(targetRepoDir);
-            gitLabService.cleanup(sourceRepoDir);
-            gitLabService.cleanup(targetRepoDir);
+            mergeRequestCheckout.cleanup(sourceRepoDir);
+            mergeRequestCheckout.cleanup(targetRepoDir);
         }
     }
 
     /** Auto-detect branches from GitLab MR metadata. */
     public ReviewContext buildReviewContext(long projectId, long mrIid)
-            throws GitLabApiException, GitAPIException, IOException {
-        MergeRequest mr = gitLabService.getMergeRequest(projectId, mrIid);
+            throws Exception {
+        MergeRequest mr = mergeRequestCheckout.getMergeRequest(projectId, mrIid);
         return buildReviewContext(new ReviewRequest(
                 projectId, mrIid,
                 mr.getSourceBranch(),

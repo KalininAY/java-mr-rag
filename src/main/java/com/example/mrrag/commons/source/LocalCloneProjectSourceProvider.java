@@ -1,7 +1,5 @@
-package com.example.mrrag.app.source;
+package com.example.mrrag.commons.source;
 
-import com.example.mrrag.graph.raw.source.ProjectSource;
-import com.example.mrrag.graph.raw.source.ProjectSourceProvider;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -10,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 /**
@@ -25,19 +24,11 @@ import java.util.stream.Stream;
  * </ol>
  *
  * <p>Each returned {@link ProjectSource#path()} is relative to
- * {@code projectRoot} with forward slashes — matching the paths
- * GitLab reports in diff output.
- *
- * <h2>Usage</h2>
- * <pre>{@code
- * ProjectSourceProvider provider = new LocalCloneProjectSourceProvider(cloneRoot);
- * ProjectGraph graph = graphBuildService.buildGraph(provider);
- * }</pre>
+ * {@code projectRoot} with forward slashes — matching paths GitLab reports in diff output.
  */
 @Slf4j
 public class LocalCloneProjectSourceProvider implements ProjectSourceProvider {
 
-    /** Directory names that are never used as Spoon source roots. */
     private static final java.util.Set<String> EXCLUDED_DIRS = java.util.Set.of(
             "build", "target", "out", ".gradle", ".git",
             "generated", "generated-sources", "generated-test-sources"
@@ -51,6 +42,11 @@ public class LocalCloneProjectSourceProvider implements ProjectSourceProvider {
 
     public Path getProjectRoot() {
         return projectRoot;
+    }
+
+    @Override
+    public Optional<Path> localProjectRoot() {
+        return Optional.of(projectRoot);
     }
 
     @Override
@@ -83,8 +79,6 @@ public class LocalCloneProjectSourceProvider implements ProjectSourceProvider {
         log.info("Loaded {} .java files from local clone {}", result.size(), projectRoot);
         return result;
     }
-
-    // ------------------------------------------------------------------ helpers
 
     private List<Path> resolveSourceRoots() throws IOException {
         List<Path> candidates = List.of(

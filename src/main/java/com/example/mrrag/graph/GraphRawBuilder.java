@@ -2,12 +2,11 @@ package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.EdgeKindConfig;
 import com.example.mrrag.app.config.GraphCacheProperties;
+import com.example.mrrag.commons.source.LocalCloneProjectSourceProvider;
+import com.example.mrrag.commons.source.ProjectSource;
+import com.example.mrrag.commons.source.ProjectSourceProvider;
+import com.example.mrrag.commons.source.VirtualSource;
 import com.example.mrrag.graph.raw.*;
-import com.example.mrrag.app.source.GitLabSpoonLoader;
-import com.example.mrrag.app.source.GitLabProjectSourceProvider;
-import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
-import com.example.mrrag.graph.raw.source.ProjectSource;
-import com.example.mrrag.graph.raw.source.ProjectSourceProvider;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -82,14 +81,14 @@ public class GraphRawBuilder implements GraphBuilder {
 
         public Set<String> allFilePaths() { return byFile.keySet(); }
 
-        void addNode(GraphNode n) {
+        public void addNode(GraphNode n) {
             nodes.put(n.id(), n);
             bySimpleName.computeIfAbsent(n.simpleName(), k -> new ArrayList<>()).add(n);
             byLine.computeIfAbsent(n.filePath() + "#" + n.startLine(), k -> new ArrayList<>()).add(n);
             byFile.computeIfAbsent(n.filePath(), k -> new ArrayList<>()).add(n);
         }
 
-        void addEdge(GraphEdge e) {
+        public void addEdge(GraphEdge e) {
             edgesFrom.computeIfAbsent(e.caller(), k -> new ArrayList<>()).add(e);
             edgesTo.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(e);
         }
@@ -235,7 +234,7 @@ public class GraphRawBuilder implements GraphBuilder {
         log.info("Building AST graph via provider: {}", provider.getClass().getSimpleName());
         List<ProjectSource> sources = provider.getSources();
         log.info("Provider supplied {} .java files", sources.size());
-        Path classpathRoot = provider instanceof LocalCloneProjectSourceProvider l ? l.getProjectRoot() : null;
+        Path classpathRoot = provider.localProjectRoot().orElse(null);
         return doBuildGraphFromSources(sources, classpathRoot);
     }
 
@@ -275,12 +274,11 @@ public class GraphRawBuilder implements GraphBuilder {
     // ------------------------------------------------------------------
 
     /**
-     * @deprecated Pass a {@link GitLabProjectSourceProvider}
-     *     to {@link #buildGraph(ProjectSourceProvider)} instead.
+     * @deprecated Prefer {@link #buildGraph(ProjectSourceProvider)} with a provider
+     *     that supplies virtual sources (e.g. GitLab API).
      */
     @Deprecated
-    public ProjectGraphRaw buildGraphFromVirtualSources(
-            List<GitLabSpoonLoader.VirtualSource> sources) throws Exception {
+    public ProjectGraphRaw buildGraphFromVirtualSources(List<VirtualSource> sources) throws Exception {
         List<ProjectSource> mapped = sources.stream()
                 .map(s -> new ProjectSource(s.path(), s.content()))
                 .toList();

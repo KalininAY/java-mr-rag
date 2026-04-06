@@ -1,7 +1,7 @@
 package com.example.mrrag.review;
 
 import com.example.mrrag.review.model.ChangedLine;
-import com.example.mrrag.service.JavaIndexService;
+import com.example.mrrag.graph.JavaIndexService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 

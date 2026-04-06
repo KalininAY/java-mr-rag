@@ -1,7 +1,7 @@
 package com.example.mrrag.app.source;
 
-import com.example.mrrag.graph.raw.source.ProjectSource;
-import com.example.mrrag.graph.raw.source.ProjectSourceProvider;
+import com.example.mrrag.commons.source.ProjectSource;
+import com.example.mrrag.commons.source.ProjectSourceProvider;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
 import org.gitlab4j.api.GitLabApiException;

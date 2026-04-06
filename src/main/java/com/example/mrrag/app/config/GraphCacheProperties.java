@@ -6,7 +6,7 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Disk cache for serialized {@link com.example.mrrag.service.AstGraphService.ProjectGraph}
+ * Disk cache for serialized {@link com.example.mrrag.graph.GraphRawBuilder.ProjectGraphRaw}
  * and toggles discovery of sibling {@code *-sources.jar} files on the compile classpath.
  */
 @Data

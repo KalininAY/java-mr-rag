@@ -1,8 +1,8 @@
 package com.example.mrrag.app.controller;
 
 import com.example.mrrag.graph.AstGraphService;
-import com.example.mrrag.graph.AstGraphService.ProjectGraph;
-import com.example.mrrag.graph.AstGraphService.GraphNode;
+import com.example.mrrag.graph.GraphRawBuilder.GraphNode;
+import com.example.mrrag.graph.GraphRawBuilder.ProjectGraphRaw;
 import com.example.mrrag.graph.linked.LinkedGraphBuilder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -40,28 +40,28 @@ public class GraphDebugController {
     // ------------------------------------------------------------------
 
     @GetMapping("/stats")
-    public Map<String, Object> stats(@RequestParam String repoDir) {
+    public Map<String, Object> stats(@RequestParam String repoDir) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(root);
+        ProjectGraphRaw graph = graphService.buildGraph(root);
 
-        var build = linkedGraphBuilder.build(graph.raw());
+        var build = linkedGraphBuilder.build(graph);
         String s = build.byId("bugbusters.modules.extensions.allure.model.AllureStep#findPlaceFrom()").toMarkdown();
         String s1 = build.byId("bugbusters.modules.extensions.allure.utils.Steps#step(java.lang.String,io.qameta.allure.Allure$ThrowableRunnable)").toMarkdown();
 
         Map<String, Long> byKind = graph.nodes.values().stream()
                 .collect(Collectors.groupingBy(n -> n.kind().name(), Collectors.counting()));
 
-        Map<String, Long> edgesByKind = graph.raw().edgesFrom.values().stream()
+        Map<String, Long> edgesByKind = graph.edgesFrom.values().stream()
                 .flatMap(List::stream)
                 .collect(Collectors.groupingBy(e -> e.kind().name(), Collectors.counting()));
 
         return Map.of(
                 "repoDir",      repoDir,
                 "totalNodes",   graph.nodes.size(),
-                "totalEdgeSrc", graph.raw().edgesFrom.size(),
+                "totalEdgeSrc", graph.edgesFrom.size(),
                 "nodesByKind",  byKind,
                 "edgesByKind",  edgesByKind,
-                "indexedFiles", new TreeSet<>(graph.raw().byFile.keySet())
+                "indexedFiles", new TreeSet<>(graph.byFile.keySet())
         );
     }
 
@@ -70,22 +70,19 @@ public class GraphDebugController {
     // ------------------------------------------------------------------
 
     @GetMapping("/file")
-    public Map<String, Object> file(
-            @RequestParam String repoDir,
-            @RequestParam String diffPath
-    ) {
+    public Map<String, Object> file(@RequestParam String repoDir,
+                                    @RequestParam String diffPath) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(root);
+        ProjectGraphRaw graph = graphService.buildGraph(root);
 
         String normalized = graphService.normalizeFilePath(diffPath, graph);
         List<GraphNode> nodes = graph.nodesAtLine(normalized, -1);
-        List<GraphNode> byFile = graph.raw().byFile.getOrDefault(normalized, List.of())
-                .stream().map(GraphNode::from).collect(Collectors.toList());
+        List<GraphNode> byFile = graph.byFile.getOrDefault(normalized, List.of());
 
         return Map.of(
                 "diffPath",       diffPath,
                 "normalizedPath", normalized,
-                "matched",        !normalized.equals(diffPath) || graph.raw().byFile.containsKey(normalized),
+                "matched",        !normalized.equals(diffPath) || graph.byFile.containsKey(normalized),
                 "nodeCount",      byFile.size(),
                 "nodes",          byFile.stream()
                         .map(n -> Map.of(
@@ -103,13 +100,11 @@ public class GraphDebugController {
     // ------------------------------------------------------------------
 
     @GetMapping("/line")
-    public Map<String, Object> line(
-            @RequestParam String repoDir,
-            @RequestParam String diffPath,
-            @RequestParam int line
-    ) {
+    public Map<String, Object> line(@RequestParam String repoDir,
+                                    @RequestParam String diffPath,
+                                    @RequestParam int line) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(root);
+        ProjectGraphRaw graph = graphService.buildGraph(root);
 
         String normalized = graphService.normalizeFilePath(diffPath, graph);
         List<GraphNode> enclosing = graph.nodesAtLine(normalized, line);

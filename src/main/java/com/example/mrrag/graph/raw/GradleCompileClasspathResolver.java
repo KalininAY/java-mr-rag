@@ -139,7 +139,7 @@ public final class GradleCompileClasspathResolver {
     /**
      * Gradle task path like {@code :services:api:mrragSpoonCompileClasspath}, or empty for root project.
      */
-    static String gradleTaskPath(Path gradleRoot, Path moduleRoot) {
+    public static String gradleTaskPath(Path gradleRoot, Path moduleRoot) {
         Path gr = gradleRoot.toAbsolutePath().normalize();
         Path mod = moduleRoot.toAbsolutePath().normalize();
         if (!mod.startsWith(gr)) {
@@ -216,7 +216,7 @@ public final class GradleCompileClasspathResolver {
         }
     }
 
-    static Optional<String> parseClasspathBlock(String output) {
+    public static Optional<String> parseClasspathBlock(String output) {
         String start = "SPOON_CP_START";
         String end = "SPOON_CP_END";
         int a = output.indexOf(start);

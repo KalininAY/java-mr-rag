@@ -1,5 +1,6 @@
-package com.example.mrrag.service;
+package com.example.mrrag.graph;
 
+import com.example.mrrag.graph.GraphRawBuilder.ProjectGraphRaw;
 import com.example.mrrag.graph.raw.ProjectGraphSerialization;
 import org.junit.jupiter.api.Test;
 
@@ -13,39 +14,39 @@ class ProjectGraphRawSerializationTest {
 
     @Test
     void roundTripJson() throws Exception {
-        AstGraphService.GraphNode n = new AstGraphService.GraphNode(
+        GraphRawBuilder.GraphNode n = new GraphRawBuilder.GraphNode(
                 "com.example.Foo",
-                AstGraphService.NodeKind.CLASS,
+                GraphRawBuilder.NodeKind.CLASS,
                 "Foo",
                 "src/main/java/com/example/Foo.java",
                 1, 5,
                 "class Foo {}",
                 "class Foo {}"
         );
-        AstGraphService.GraphEdge e = new AstGraphService.GraphEdge(
+        GraphRawBuilder.GraphEdge e = new GraphRawBuilder.GraphEdge(
                 "com.example.Foo",
-                AstGraphService.EdgeKind.DECLARES,
+                GraphRawBuilder.EdgeKind.DECLARES,
                 "com.example.Foo#bar()",
                 "src/main/java/com/example/Foo.java",
                 2
         );
-        AstGraphService.ProjectGraph g = AstGraphService.ProjectGraph.reconstruct(List.of(n), List.of(e));
+        ProjectGraphRaw g = ProjectGraphRaw.reconstruct(List.of(n), List.of(e));
 
         byte[] json = ProjectGraphSerialization.toJson(g);
-        AstGraphService.ProjectGraph g2 = ProjectGraphSerialization.fromJson(json);
+        ProjectGraphRaw g2 = ProjectGraphSerialization.fromJson(json);
 
         assertEquals(1, g2.nodes.size());
         assertEquals("com.example.Foo", g2.nodes.get("com.example.Foo").id());
         assertEquals(1, g2.outgoing("com.example.Foo").size());
-        assertEquals(AstGraphService.EdgeKind.DECLARES, g2.outgoing("com.example.Foo").get(0).kind());
+        assertEquals(GraphRawBuilder.EdgeKind.DECLARES, g2.outgoing("com.example.Foo").get(0).kind());
     }
 
     @Test
     void roundTripStream() throws Exception {
-        AstGraphService.ProjectGraph g = AstGraphService.ProjectGraph.reconstruct(List.of(), List.of());
+        ProjectGraphRaw g = ProjectGraphRaw.reconstruct(List.of(), List.of());
         ByteArrayOutputStream bout = new ByteArrayOutputStream();
         ProjectGraphSerialization.write(g, bout);
-        AstGraphService.ProjectGraph g2 = ProjectGraphSerialization.read(new ByteArrayInputStream(bout.toByteArray()));
+        ProjectGraphRaw g2 = ProjectGraphSerialization.read(new ByteArrayInputStream(bout.toByteArray()));
         assertTrue(g2.nodes.isEmpty());
     }
 }

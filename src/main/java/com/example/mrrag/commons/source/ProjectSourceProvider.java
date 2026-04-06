@@ -1,6 +1,8 @@
 package com.example.mrrag.commons.source;
 
+import java.nio.file.Path;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Strategy: supply the raw Java source files of a project.
@@ -26,4 +28,13 @@ public interface ProjectSourceProvider {
      * @throws Exception on any IO / API error
      */
     List<ProjectSource> getSources() throws Exception;
+
+    /**
+     * When sources come from a local checkout, returns the repository root so the graph
+     * layer can resolve compile classpath (Gradle/Maven). Virtual/API-only providers
+     * return empty.
+     */
+    default Optional<Path> localProjectRoot() {
+        return Optional.empty();
+    }
 }

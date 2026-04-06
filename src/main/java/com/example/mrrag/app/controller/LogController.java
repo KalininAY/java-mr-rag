@@ -1,7 +1,7 @@
 package com.example.mrrag.app.controller;
 
 import com.example.mrrag.app.config.AppConfig;
-import com.example.mrrag.logging.InMemoryLogAppender;
+import com.example.mrrag.app.logging.InMemoryLogAppender;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Controller;

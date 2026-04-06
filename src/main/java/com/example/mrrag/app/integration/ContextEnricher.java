@@ -3,7 +3,12 @@ package com.example.mrrag.app.integration;
 import com.example.mrrag.review.model.ChangedLine;
 import com.example.mrrag.review.model.ChangeGroup;
 import com.example.mrrag.review.model.EnrichmentSnippet;
+import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
 import com.example.mrrag.graph.AstGraphService;
+import com.example.mrrag.graph.GraphRawBuilder;
+import com.example.mrrag.graph.GraphRawBuilder.GraphEdge;
+import com.example.mrrag.graph.GraphRawBuilder.GraphNode;
+import com.example.mrrag.graph.GraphRawBuilder.ProjectGraphRaw;
 import com.example.mrrag.graph.JavaIndexService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -39,7 +44,7 @@ import java.util.*;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class ContextEnricher {
+public class ContextEnricher implements ChangeGroupEnrichmentPort {
 
     private final AstGraphService graphService;
     private final JavaIndexService indexService;
@@ -54,15 +59,16 @@ public class ContextEnricher {
     // Public API
     // -----------------------------------------------------------------------
 
+    @Override
     public List<ChangeGroup> enrich(
             List<ChangeGroup> groups,
             JavaIndexService.ProjectIndex sourceIndex,
             JavaIndexService.ProjectIndex targetIndex,
             Path sourceRepoDir,
             Path targetRepoDir
-    ) {
-        AstGraphService.ProjectGraph sourceGraph = graphService.buildGraph(sourceRepoDir);
-        AstGraphService.ProjectGraph targetGraph = graphService.buildGraph(targetRepoDir);
+    ) throws Exception {
+        ProjectGraphRaw sourceGraph = graphService.buildGraph(sourceRepoDir);
+        ProjectGraphRaw targetGraph = graphService.buildGraph(targetRepoDir);
 
         for (ChangeGroup group : groups) {
             enrichGroup(group, sourceGraph, targetGraph, sourceRepoDir, targetRepoDir);
@@ -76,8 +82,8 @@ public class ContextEnricher {
 
     private void enrichGroup(
             ChangeGroup group,
-            AstGraphService.ProjectGraph sourceGraph,
-            AstGraphService.ProjectGraph targetGraph,
+            ProjectGraphRaw sourceGraph,
+            ProjectGraphRaw targetGraph,
             Path sourceRepoDir,
             Path targetRepoDir
     ) {
@@ -100,7 +106,7 @@ public class ContextEnricher {
 
     private void strategyEdgesAtChangedLines(
             List<ChangedLine> lines,
-            AstGraphService.ProjectGraph graph,
+            ProjectGraphRaw graph,
             Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
@@ -114,12 +120,12 @@ public class ContextEnricher {
             int    line = cl.lineNumber() > 0 ? cl.lineNumber() : cl.oldLineNumber();
             if (line <= 0) continue;
 
-            List<AstGraphService.GraphNode> enclosing = graph.nodesAtLine(file, line);
+            List<GraphNode> enclosing = graph.nodesAtLine(file, line);
 
-            for (AstGraphService.GraphNode enc : enclosing) {
+            for (GraphNode enc : enclosing) {
                 if (full(snippets)) break;
 
-                for (AstGraphService.GraphEdge edge : graph.outgoing(enc.id())) {
+                for (GraphEdge edge : graph.outgoing(enc.id())) {
                     if (full(snippets)) break;
                     if (!file.equals(edge.filePath()) || edge.line() != line) continue;
 
@@ -127,7 +133,7 @@ public class ContextEnricher {
                     if (seenDecl.contains(targetId)) continue;
                     seenDecl.add(targetId);
 
-                    AstGraphService.GraphNode target = graph.nodes.get(targetId);
+                    GraphNode target = graph.nodes.get(targetId);
                     if (target == null) continue;
 
                     switch (edge.kind()) {
@@ -150,7 +156,7 @@ public class ContextEnricher {
 
     private void strategyDeletedDeclarations(
             List<ChangedLine> deleted,
-            AstGraphService.ProjectGraph targetGraph,
+            ProjectGraphRaw targetGraph,
             List<EnrichmentSnippet> snippets
     ) {
         for (ChangedLine cl : deleted) {
@@ -160,13 +166,13 @@ public class ContextEnricher {
             int    oldLine = cl.oldLineNumber();
             if (oldLine <= 0) continue;
 
-            List<AstGraphService.GraphNode> declared =
-                    targetGraph.byLine.getOrDefault(file + "#" + oldLine, List.of());
+            List<GraphNode> declared = targetGraph.byLine
+                    .getOrDefault(file + "#" + oldLine, List.of());
 
-            for (AstGraphService.GraphNode decl : declared) {
+            for (GraphNode decl : declared) {
                 if (full(snippets)) break;
 
-                List<AstGraphService.GraphEdge> usageEdges = targetGraph.incoming(decl.id());
+                List<GraphEdge> usageEdges = targetGraph.incoming(decl.id());
                 if (usageEdges.isEmpty()) continue;
 
                 EnrichmentSnippet.SnippetType type = switch (decl.kind()) {
@@ -177,7 +183,7 @@ public class ContextEnricher {
                 };
 
                 List<String> usageLines = usageEdges.stream()
-                        .filter(e -> e.kind() != AstGraphService.EdgeKind.DECLARES)
+                        .filter(e -> e.kind() != GraphRawBuilder.EdgeKind.DECLARES)
                         .limit(10)
                         .map(e -> e.filePath() + ":" + e.line())
                         .distinct()
@@ -201,7 +207,7 @@ public class ContextEnricher {
 
     private void strategyContainingMethod(
             List<ChangedLine> all,
-            AstGraphService.ProjectGraph graph,
+            ProjectGraphRaw graph,
             Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
@@ -217,7 +223,7 @@ public class ContextEnricher {
         int    line = first.lineNumber() > 0 ? first.lineNumber() : first.oldLineNumber();
 
         graph.nodesAtLine(file, line).stream()
-                .filter(n -> n.kind() == AstGraphService.NodeKind.METHOD)
+                .filter(n -> n.kind() == GraphRawBuilder.NodeKind.METHOD)
                 .min(Comparator.comparingInt(n -> n.endLine() - n.startLine()))
                 .ifPresent(method -> {
                     if (full(snippets)) return;
@@ -238,7 +244,7 @@ public class ContextEnricher {
     // -----------------------------------------------------------------------
 
     private void emitMethodDeclaration(
-            AstGraphService.GraphNode node, Path repoDir,
+            GraphNode node, Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
         List<String> sigLines = readUntilOpenBrace(repoDir, node.filePath(),
@@ -254,7 +260,7 @@ public class ContextEnricher {
     }
 
     private void emitFieldDeclaration(
-            AstGraphService.GraphNode node, Path repoDir,
+            GraphNode node, Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
         List<String> lines = readLines(repoDir, node.filePath(),
@@ -269,7 +275,7 @@ public class ContextEnricher {
     }
 
     private void emitVariableDeclaration(
-            AstGraphService.GraphNode node, Path repoDir,
+            GraphNode node, Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
         List<String> lines = readLines(repoDir, node.filePath(),
@@ -338,7 +344,7 @@ public class ContextEnricher {
         while (snippets.size() > maxSnippetsPerGroup) snippets.remove(snippets.size() - 1);
     }
 
-    private String describeDeletedUsages(AstGraphService.GraphNode decl, int count) {
+    private String describeDeletedUsages(GraphNode decl, int count) {
         String kind = switch (decl.kind()) {
             case METHOD   -> "method";
             case FIELD    -> "field";

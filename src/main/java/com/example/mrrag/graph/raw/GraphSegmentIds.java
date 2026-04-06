@@ -1,7 +1,7 @@
 package com.example.mrrag.graph.raw;
 
 import com.example.mrrag.graph.raw.MavenArtifactCoordinates;
-import com.example.mrrag.service.AstGraphService;
+import com.example.mrrag.graph.GraphRawBuilder;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -11,7 +11,7 @@ import java.util.HexFormat;
 import java.util.Optional;
 
 /**
- * Identifies a shard of a {@link AstGraphService.ProjectGraph}: project sources ({@link #MAIN})
+ * Identifies a shard of a {@link GraphRawBuilder.ProjectGraphRaw}: project sources ({@link #MAIN})
  * or a dependency {@code *-sources.jar}.
  *
  * <h3>Dep segment ID format</h3>
@@ -59,7 +59,7 @@ public final class GraphSegmentIds {
                 (segmentId.startsWith(DEP_PREFIX) || segmentId.startsWith(JAR_PREFIX));
     }
 
-    static String sha256Hex(String s) {
+    public static String sha256Hex(String s) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             return HexFormat.of().formatHex(md.digest(s.getBytes(StandardCharsets.UTF_8)));

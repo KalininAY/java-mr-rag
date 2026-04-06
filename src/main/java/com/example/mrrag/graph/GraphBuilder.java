@@ -1,6 +1,6 @@
 package com.example.mrrag.graph;
 
-import com.example.mrrag.graph.raw.source.ProjectSourceProvider;
+import com.example.mrrag.commons.source.ProjectSourceProvider;
 
 import java.nio.file.Path;
 

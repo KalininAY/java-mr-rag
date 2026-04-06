@@ -1,10 +1,10 @@
 package com.example.mrrag.app.controller;
 
-import com.example.mrrag.model.GraphBuildStats;
-import com.example.mrrag.service.AstGraphService;
-import com.example.mrrag.service.AstGraphService.EdgeKind;
-import com.example.mrrag.service.AstGraphService.NodeKind;
-import com.example.mrrag.service.AstGraphService.ProjectGraph;
+import com.example.mrrag.graph.GraphBuildStats;
+import com.example.mrrag.graph.AstGraphService;
+import com.example.mrrag.graph.GraphRawBuilder.EdgeKind;
+import com.example.mrrag.graph.GraphRawBuilder.NodeKind;
+import com.example.mrrag.graph.GraphRawBuilder.ProjectGraphRaw;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
@@ -141,7 +141,7 @@ public class GraphIngestController {
         }
 
         long buildStart = System.currentTimeMillis();
-        ProjectGraph graph = graphService.buildGraph(cloneDir);
+        ProjectGraphRaw graph = graphService.buildGraph(cloneDir);
         long buildMs  = System.currentTimeMillis() - buildStart;
         long totalMs  = System.currentTimeMillis() - wallStart;
 

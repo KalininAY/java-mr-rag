@@ -92,7 +92,7 @@ public final class RemoteSourcesJarResolver {
     /**
      * Path under {@code cacheDir} mirroring Maven repo layout, with sanitized path segments.
      */
-    static Path cachePath(Path cacheDir, MavenArtifactCoordinates gav) {
+    public static Path cachePath(Path cacheDir, MavenArtifactCoordinates gav) {
         Path p = cacheDir;
         for (String seg : gav.groupId().split("\\.", -1)) {
             if (seg.isEmpty()) {

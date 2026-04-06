@@ -1,4 +1,4 @@
-package com.example.mrrag.service;
+package com.example.mrrag.graph;
 
 import com.example.mrrag.graph.raw.MavenArtifactCoordinates;
 import com.example.mrrag.graph.raw.RemoteSourcesJarResolver;

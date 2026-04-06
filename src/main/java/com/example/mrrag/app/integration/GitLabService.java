@@ -1,5 +1,6 @@
 package com.example.mrrag.app.integration;
 
+import com.example.mrrag.review.spi.MergeRequestCheckoutPort;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
@@ -39,7 +40,7 @@ import java.util.List;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class GitLabService {
+public class GitLabService implements MergeRequestCheckoutPort {
 
     private static final DateTimeFormatter TS_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss-SSS");
@@ -51,11 +52,13 @@ public class GitLabService {
     private String gitlabToken;
 
     /** Fetches the MergeRequest object from GitLab. */
+    @Override
     public MergeRequest getMergeRequest(long projectId, long mrIid) throws GitLabApiException {
         return gitLabApi.getMergeRequestApi().getMergeRequest(projectId, mrIid);
     }
 
     /** Fetches the raw diff entries for an MR (all files). */
+    @Override
     public List<Diff> getMrDiffs(long projectId, long mrIid) throws GitLabApiException {
         return gitLabApi.getMergeRequestApi().getDiffs(projectId, mrIid);
     }
@@ -69,6 +72,7 @@ public class GitLabService {
      * @param role      human-readable role label, e.g. {@code "from"} or {@code "to"}
      * @return path to the freshly-cloned working tree (leaf dir)
      */
+    @Override
     public Path checkoutBranch(long projectId, long mrIid, String branch, String role)
             throws GitLabApiException, GitAPIException, IOException {
 
@@ -100,6 +104,7 @@ public class GitLabService {
      * Deletes a checkout leaf directory. Safe to call with {@code null} or a
      * non-existent path.
      */
+    @Override
     public void cleanup(Path repoDir) {
         if (repoDir == null) return;
         if (!Files.exists(repoDir)) {

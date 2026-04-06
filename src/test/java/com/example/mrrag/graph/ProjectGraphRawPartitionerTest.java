@@ -1,4 +1,4 @@
-package com.example.mrrag.service;
+package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.GraphCacheProperties;
 import com.example.mrrag.graph.raw.GraphSegmentIds;
@@ -18,9 +18,9 @@ class ProjectGraphRawPartitionerTest {
 
     @Test
     void mainOnlyWhenNoSourcesJars() {
-        var g = new AstGraphService.ProjectGraph();
-        g.addNode(new AstGraphService.GraphNode(
-                "com.app.Foo", AstGraphService.NodeKind.CLASS, "Foo",
+        var g = new GraphRawBuilder.ProjectGraphRaw();
+        g.addNode(new GraphRawBuilder.GraphNode(
+                "com.app.Foo", GraphRawBuilder.NodeKind.CLASS, "Foo",
                 "src/main/java/com/app/Foo.java", 1, 2, "", ""));
         Path root = Path.of("/tmp/proj");
         var parts = ProjectGraphPartitioner.partition(g, root, List.of());
@@ -45,12 +45,12 @@ class ProjectGraphRawPartitionerTest {
                 "test-fingerprint");
 
         // main segment only
-        AstGraphService.ProjectGraph mainGraph = new AstGraphService.ProjectGraph();
-        mainGraph.addNode(new AstGraphService.GraphNode(
-                "com.app.Foo", AstGraphService.NodeKind.CLASS, "Foo",
+        GraphRawBuilder.ProjectGraphRaw mainGraph = new GraphRawBuilder.ProjectGraphRaw();
+        mainGraph.addNode(new GraphRawBuilder.GraphNode(
+                "com.app.Foo", GraphRawBuilder.NodeKind.CLASS, "Foo",
                 "src/main/java/com/app/Foo.java", 1, 2, "", ""));
 
-        Map<String, AstGraphService.ProjectGraph> segments = Map.of(
+        Map<String, GraphRawBuilder.ProjectGraphRaw> segments = Map.of(
                 GraphSegmentIds.MAIN, mainGraph);
         store.savePartitioned(key, segments);
 

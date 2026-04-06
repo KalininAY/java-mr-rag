@@ -1,12 +1,12 @@
 package com.example.mrrag.app.controller;
 
-import com.example.mrrag.model.GraphBuildStats;
-import com.example.mrrag.service.AstGraphService.EdgeKind;
-import com.example.mrrag.service.AstGraphService.NodeKind;
-import com.example.mrrag.service.AstGraphService.ProjectGraph;
-import com.example.mrrag.graph.GraphBuilder;
+import com.example.mrrag.graph.GraphBuildStats;
+import com.example.mrrag.graph.AstGraphService;
+import com.example.mrrag.graph.GraphRawBuilder.EdgeKind;
+import com.example.mrrag.graph.GraphRawBuilder.NodeKind;
+import com.example.mrrag.graph.GraphRawBuilder.ProjectGraphRaw;
 import com.example.mrrag.app.source.GitLabProjectSourceProvider;
-import com.example.mrrag.graph.raw.source.ProjectSourceProvider;
+import com.example.mrrag.commons.source.ProjectSourceProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
@@ -40,7 +40,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class GraphApiController {
 
-    private final GraphBuilder graphService;
+    private final AstGraphService graphService;
     private final GitLabApi         gitLabApi;
 
     // -----------------------------------------------------------------------
@@ -81,7 +81,7 @@ public class GraphApiController {
                 new GitLabProjectSourceProvider(api, req.projectId(), req.ref());
 
         long fetchStart = System.currentTimeMillis();
-        ProjectGraph graph = graphService.buildGraph(provider);
+        ProjectGraphRaw graph = graphService.buildGraph(provider);
         long buildMs = System.currentTimeMillis() - fetchStart;
         long totalMs = System.currentTimeMillis() - wallStart;
 

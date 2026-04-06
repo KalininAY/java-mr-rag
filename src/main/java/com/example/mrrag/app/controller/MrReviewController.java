@@ -4,7 +4,6 @@ import com.example.mrrag.review.model.ChangeGroup;
 import com.example.mrrag.review.model.ChangeGroupMarkdown;
 import com.example.mrrag.review.model.ReviewContext;
 import com.example.mrrag.review.model.ReviewRequest;
-import com.example.mrrag.service.AstGraphService;
 import com.example.mrrag.review.ReviewService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,7 +17,6 @@ import org.springframework.web.bind.annotation.*;
 public class MrReviewController {
 
     private final ReviewService reviewService;
-    private final AstGraphService graphService;
 
     /** Full review context as JSON. */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
