@@ -4,18 +4,20 @@ import com.example.mrrag.service.dto.ProjectSourceDto;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.*;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.stream.Stream;
 
 /**
  * {@link SourcesProvider} that reads {@code .java} files from a locally
  * cloned directory and populates {@link ProjectSourceDto#classpathRoot()}
  * so the graph builder can attempt compile-classpath resolution.
  *
- * <p>This replaces the previous {@link LocalCloneProjectSourceProvider}
- * as the recommended implementation for local projects.
+ * <p>File collection is performed in parallel using
+ * {@link Stream#parallel()} to maximise throughput on large repositories.
+ * Results are accumulated in a thread-safe {@link ConcurrentLinkedQueue}.
  */
 @Slf4j
 public class LocalCloneSourcesProvider implements SourcesProvider {
@@ -50,26 +52,27 @@ public class LocalCloneSourcesProvider implements SourcesProvider {
             log.warn("Project root does not exist or is not a directory: {}", projectRoot);
             return List.of();
         }
-        List<ProjectSource> result = new ArrayList<>();
-        Files.walkFileTree(projectRoot, new SimpleFileVisitor<>() {
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                if (file.toString().endsWith(".java")) {
+
+        ConcurrentLinkedQueue<ProjectSource> result = new ConcurrentLinkedQueue<>();
+
+        try (Stream<Path> walk = Files.walk(projectRoot)) {
+            walk.parallel()
+                .filter(p -> p.toString().endsWith(".java") && Files.isRegularFile(p))
+                .forEach(file -> {
                     String relPath = projectRoot.relativize(file)
                             .toString()
                             .replace('\\', '/');
-                    String content = Files.readString(file);
-                    result.add(new ProjectSource(relPath, content));
-                }
-                return FileVisitResult.CONTINUE;
-            }
+                    try {
+                        String content = Files.readString(file);
+                        result.add(new ProjectSource(relPath, content));
+                    } catch (IOException e) {
+                        log.warn("Skipping unreadable file: {} — {}", relPath, e.getMessage());
+                    }
+                });
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
 
-            @Override
-            public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                log.warn("Skipping unreadable file: {} — {}", file, exc.getMessage());
-                return FileVisitResult.CONTINUE;
-            }
-        });
-        return result;
+        return List.copyOf(result);
     }
 }

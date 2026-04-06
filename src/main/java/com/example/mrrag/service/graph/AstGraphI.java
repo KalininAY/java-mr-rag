@@ -34,11 +34,12 @@ public interface AstGraphI {
     ProjectGraph buildGraph(ProjectSourceDto dto) throws Exception;
 
     /**
-     * Evict any cached graph for the project identified by the DTO.
+     * Evict any cached graph for the given project.
      *
-     * @param dto the project whose cached graph should be invalidated
+     * @param projectId the unique project identifier previously used in
+     *                  {@link ProjectSourceDto#projectId()}
      */
-    void invalidate(ProjectSourceDto dto);
+    void invalidate(String projectId);
 
     /**
      * Translate a path from a GitLab diff into the graph-relative path.

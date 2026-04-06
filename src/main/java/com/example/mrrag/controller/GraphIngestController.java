@@ -29,19 +29,6 @@ import java.util.stream.Collectors;
  * REST endpoint that clones a Git repository into a persistent workspace directory
  * using JGit, builds its AST symbol graph via {@link AstGraphI} and returns
  * build statistics.
- *
- * <pre>
- * POST /api/graph/ingest
- * Content-Type: application/json
- *
- * {
- *   "repoUrl"  : "http://gitlab.example.com/org/repo.git",
- *   "branch"   : "feature/my-branch",
- *   "commit"   : "a1b2c3d4",
- *   "gitToken" : "glpat-xxxxxxxxxxxx",
- *   "force"    : false
- * }
- * </pre>
  */
 @Slf4j
 @RestController
@@ -100,9 +87,9 @@ public class GraphIngestController {
 
         if (forceReclone && exists) {
             log.info("force=true — deleting existing clone dir: {}", cloneDir);
-            // Invalidate graph for this dir via dto
-            SourcesProvider tmpProvider = new LocalCloneSourcesProvider(cloneDir);
-            graphService.invalidate(tmpProvider.getProjectSourceDto());
+            String projectId = new LocalCloneSourcesProvider(cloneDir)
+                    .getProjectSourceDto().projectId();
+            graphService.invalidate(projectId);
             FileSystemUtils.deleteRecursively(cloneDir);
             exists = false;
         }
