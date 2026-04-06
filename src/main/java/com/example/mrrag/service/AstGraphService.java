@@ -1,6 +1,7 @@
 package com.example.mrrag.service;
 
 import com.example.mrrag.config.EdgeKindConfig;
+import com.example.mrrag.config.GraphCacheProperties;
 import com.example.mrrag.service.graph.GraphBuildService;
 import com.example.mrrag.service.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.service.source.ProjectSource;
@@ -111,7 +112,9 @@ public class AstGraphService implements GraphBuildService {
     // Dependencies & cache
     // ------------------------------------------------------------------
 
-    private final EdgeKindConfig edgeConfig;
+    private final EdgeKindConfig          edgeConfig;
+    private final GraphCacheProperties    cacheProps;
+    private final ProjectGraphCacheStore  cacheStore;
 
     /**
      * Cache keyed by the {@link Path} of a local clone.
@@ -119,10 +122,95 @@ public class AstGraphService implements GraphBuildService {
      * {@link #buildGraph(ProjectSourceProvider)} is intentionally cache-free
      * — lifetime is controlled by the caller.
      */
-    private final Map<Path, ProjectGraph> localCache = new ConcurrentHashMap<>();
+    private final Map<Path, ProjectGraph>        localCache   = new ConcurrentHashMap<>();
+    private final Map<ProjectKey, ProjectGraph>  keyCache     = new ConcurrentHashMap<>();
 
+    /** Primary Spring constructor — injects cache support. */
+    public AstGraphService(EdgeKindConfig edgeConfig,
+                           GraphCacheProperties cacheProps,
+                           ProjectGraphCacheStore cacheStore) {
+        this.edgeConfig  = edgeConfig;
+        this.cacheProps  = cacheProps;
+        this.cacheStore  = cacheStore;
+    }
+
+    /** Minimal constructor for callers that do not need disk-cache support. */
     public AstGraphService(EdgeKindConfig edgeConfig) {
-        this.edgeConfig = edgeConfig;
+        this(edgeConfig, null, null);
+    }
+
+    // ------------------------------------------------------------------
+    // ProjectKey helpers
+    // ------------------------------------------------------------------
+
+    /**
+     * Derives a stable {@link ProjectKey} for the given local project root
+     * by computing a {@link ProjectFingerprint}.
+     */
+    public ProjectKey projectKey(Path projectRoot) {
+        return new ProjectKey(projectRoot, ProjectFingerprint.compute(projectRoot));
+    }
+
+    // ------------------------------------------------------------------
+    // GraphBuildService — ProjectKey-based entry point
+    // ------------------------------------------------------------------
+
+    /**
+     * Build (or return cached) graph identified by {@link ProjectKey}.
+     *
+     * <ol>
+     *   <li>Returns the in-memory cached graph if present.</li>
+     *   <li>Tries to load from disk via {@link ProjectGraphCacheStore} (if configured).</li>
+     *   <li>Falls back to a full Spoon build from source.</li>
+     * </ol>
+     */
+    public ProjectGraph buildGraph(ProjectKey key) throws Exception {
+        // 1. In-memory cache
+        ProjectGraph cached = keyCache.get(key);
+        if (cached != null) {
+            log.debug("buildGraph(ProjectKey): in-memory cache hit for {}", key);
+            return cached;
+        }
+
+        // 2. Disk cache
+        if (cacheStore != null) {
+            var loaded = cacheStore.tryLoadAllSegments(key);
+            if (loaded.isPresent()) {
+                Map<String, ProjectGraph> segments = loaded.get();
+                ProjectGraph main = segments.getOrDefault(GraphSegmentIds.MAIN, new ProjectGraph());
+                keyCache.put(key, main);
+                log.debug("buildGraph(ProjectKey): disk cache hit for {}", key);
+                return main;
+            }
+        }
+
+        // 3. Full build
+        log.info("buildGraph(ProjectKey): building from source for {}", key.projectRoot());
+        ProjectGraph graph = buildGraph(new LocalCloneProjectSourceProvider(key.projectRoot()));
+        keyCache.put(key, graph);
+
+        // Persist to disk cache
+        if (cacheStore != null) {
+            Map<String, ProjectGraph> segments = new LinkedHashMap<>();
+            segments.put(GraphSegmentIds.MAIN, graph);
+            try {
+                cacheStore.saveAllSegments(key, segments);
+                log.debug("buildGraph(ProjectKey): saved to disk cache for {}", key);
+            } catch (Exception e) {
+                log.warn("buildGraph(ProjectKey): failed to save cache for {}: {}", key, e.getMessage());
+            }
+        }
+
+        return graph;
+    }
+
+    /**
+     * Evicts the in-memory entry for the given {@link ProjectKey}.
+     * The disk cache is intentionally preserved.
+     */
+    public void invalidate(ProjectKey key) {
+        keyCache.remove(key);
+        log.debug("invalidate(ProjectKey): evicted in-memory entry for {}", key);
     }
 
     // ------------------------------------------------------------------
