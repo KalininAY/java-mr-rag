@@ -31,6 +31,11 @@ import java.util.List;
  * <strong>commit SHA</strong>.  Use any of these to pin the analysis to
  * an exact repository state.
  *
+ * <h2>Rate limiting</h2>
+ * <p>For large projects (hundreds of Java files) the sequential download
+ * loop may take several seconds.  Consider adding retries or a small
+ * back-off if you observe HTTP 429 responses.
+ *
  * <h2>Usage</h2>
  * <pre>{@code
  * ProjectSourceProvider provider =
