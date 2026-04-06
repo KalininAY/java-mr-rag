@@ -1,5 +1,6 @@
-package com.example.mrrag.service;
+package com.example.mrrag.graph;
 
+import com.example.mrrag.service.AstGraphService;
 import com.example.mrrag.service.AstGraphService.*;
 import com.example.mrrag.view.*;
 import lombok.extern.slf4j.Slf4j;

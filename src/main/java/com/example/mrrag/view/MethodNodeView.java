@@ -1,5 +1,6 @@
 package com.example.mrrag.view;
 
+import com.example.mrrag.graph.GraphViewBuilder;
 import com.example.mrrag.service.AstGraphService.GraphNode;
 
 import java.util.*;
@@ -27,7 +28,7 @@ import java.util.*;
  *
  * <p><b>Annotations</b> — use {@link #getAnnotatedBy()} inherited from
  * {@link GraphNodeView}; it is populated from {@code ANNOTATED_WITH} outgoing
- * edges by {@link com.example.mrrag.service.GraphViewBuilder}.
+ * edges by {@link GraphViewBuilder}.
  *
  * <p><b>Edge line numbers</b> — {@link #addEdgeLine(String, int)} records the
  * source line at which each outgoing edge is used (call site, field read, etc.).
@@ -131,7 +132,7 @@ public class MethodNodeView extends GraphNodeView {
     /**
      * Maps target node id → list of source lines at which this method's outgoing
      * edges reference that target.  Populated by
-     * {@link com.example.mrrag.service.GraphViewBuilder} when wiring edges.
+     * {@link GraphViewBuilder} when wiring edges.
      * Excluded from {@code toMarkdown()} output (Map fields are skipped).
      */
     private final Map<String, List<Integer>> edgeLinesMap = new HashMap<>();
@@ -167,7 +168,7 @@ public class MethodNodeView extends GraphNodeView {
 
     /**
      * Records a source line at which this method references {@code targetId}.
-     * Called by {@link com.example.mrrag.service.GraphViewBuilder} when wiring
+     * Called by {@link GraphViewBuilder} when wiring
      * each outgoing edge so that external nodes display {@code Lines:[...]}.
      *
      * @param targetId raw node id of the referenced target

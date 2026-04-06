@@ -1,5 +1,6 @@
 package com.example.mrrag.view;
 
+import com.example.mrrag.graph.GraphViewBuilder;
 import com.example.mrrag.service.AstGraphService.GraphNode;
 
 import java.util.*;
@@ -16,7 +17,7 @@ import java.util.*;
  *
  * <p><b>Annotations</b> — use {@link #getAnnotatedBy()} inherited from
  * {@link GraphNodeView}; it is populated from {@code ANNOTATED_WITH} outgoing
- * edges by {@link com.example.mrrag.service.GraphViewBuilder}.
+ * edges by {@link GraphViewBuilder}.
  *
  * <p><b>Edge line numbers</b> — {@link #addEdgeLine(String, int)} records the
  * source line at which each outgoing edge is used (call site, field read, etc.).

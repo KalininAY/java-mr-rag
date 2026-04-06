@@ -2,6 +2,10 @@ package com.example.mrrag.service;
 
 import com.example.mrrag.config.EdgeKindConfig;
 import com.example.mrrag.config.GraphCacheProperties;
+import com.example.mrrag.graph.raw.ClasspathResolver;
+import com.example.mrrag.graph.raw.ProjectFingerprint;
+import com.example.mrrag.graph.raw.ProjectGraphCacheStore;
+import com.example.mrrag.graph.raw.ProjectKey;
 import com.example.mrrag.service.graph.GraphBuildService;
 import com.example.mrrag.service.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.service.source.ProjectSource;
@@ -115,7 +119,7 @@ public class AstGraphService implements GraphBuildService {
 
     private final EdgeKindConfig          edgeConfig;
     private final GraphCacheProperties    cacheProps;
-    private final ProjectGraphCacheStore  cacheStore;
+    private final ProjectGraphCacheStore cacheStore;
 
     /**
      * Cache keyed by the {@link Path} of a local clone.

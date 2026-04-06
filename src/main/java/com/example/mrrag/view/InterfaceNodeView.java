@@ -1,5 +1,6 @@
 package com.example.mrrag.view;
 
+import com.example.mrrag.graph.GraphViewBuilder;
 import com.example.mrrag.service.AstGraphService.GraphNode;
 
 import java.util.ArrayList;
@@ -18,7 +19,7 @@ import java.util.List;
  * </ul>
  *
  * <p>All list fields are pre-populated by
- * {@link com.example.mrrag.service.GraphViewBuilder} during its two-pass
+ * {@link GraphViewBuilder} during its two-pass
  * edge-wiring step.
  *
  * <p>{@link #getContent()} returns the full Spoon pretty-printed source of

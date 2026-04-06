@@ -3,7 +3,7 @@ package com.example.mrrag.controller;
 import com.example.mrrag.service.AstGraphService;
 import com.example.mrrag.service.AstGraphService.ProjectGraph;
 import com.example.mrrag.service.AstGraphService.GraphNode;
-import com.example.mrrag.service.GraphViewBuilder;
+import com.example.mrrag.graph.GraphViewBuilder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;

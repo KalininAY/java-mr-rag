@@ -1,5 +1,7 @@
 package com.example.mrrag.service;
 
+import com.example.mrrag.graph.raw.GradleRepositoriesParser;
+import com.example.mrrag.graph.raw.MavenRepositoriesParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

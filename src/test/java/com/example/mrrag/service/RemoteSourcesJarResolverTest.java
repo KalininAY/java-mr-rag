@@ -1,5 +1,7 @@
 package com.example.mrrag.service;
 
+import com.example.mrrag.graph.raw.MavenArtifactCoordinates;
+import com.example.mrrag.graph.raw.RemoteSourcesJarResolver;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

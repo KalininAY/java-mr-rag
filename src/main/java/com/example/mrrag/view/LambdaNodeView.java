@@ -1,5 +1,6 @@
 package com.example.mrrag.view;
 
+import com.example.mrrag.graph.GraphViewBuilder;
 import com.example.mrrag.service.AstGraphService.GraphNode;
 
 import java.util.*;
@@ -16,7 +17,7 @@ import java.util.*;
  * enclosing statement's verbatim source lines for clearer markdown context).
  *
  * <p>All list fields are pre-populated by
- * {@link com.example.mrrag.service.GraphViewBuilder}.
+ * {@link GraphViewBuilder}.
  */
 public class LambdaNodeView extends GraphNodeView {
 
@@ -126,7 +127,7 @@ public class LambdaNodeView extends GraphNodeView {
     /**
      * Maps target node id → list of source lines at which this lambda's outgoing
      * edges reference that target.  Populated by
-     * {@link com.example.mrrag.service.GraphViewBuilder} when wiring edges.
+     * {@link GraphViewBuilder} when wiring edges.
      * Excluded from {@code toMarkdown()} output (Map fields are skipped).
      */
     private final Map<String, List<Integer>> edgeLinesMap = new HashMap<>();
@@ -157,7 +158,7 @@ public class LambdaNodeView extends GraphNodeView {
 
     /**
      * Records a source line at which this lambda references {@code targetId}.
-     * Called by {@link com.example.mrrag.service.GraphViewBuilder} when wiring
+     * Called by {@link GraphViewBuilder} when wiring
      * each outgoing edge so that external nodes display {@code Lines:[...]}.
      *
      * @param targetId raw node id of the referenced target

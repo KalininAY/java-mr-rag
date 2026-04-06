@@ -1,5 +1,7 @@
 package com.example.mrrag.service;
 
+import com.example.mrrag.graph.raw.MavenArtifactCoordinates;
+
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;

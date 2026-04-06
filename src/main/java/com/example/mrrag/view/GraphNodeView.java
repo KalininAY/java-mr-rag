@@ -1,5 +1,6 @@
 package com.example.mrrag.view;
 
+import com.example.mrrag.graph.GraphViewBuilder;
 import com.example.mrrag.service.AstGraphService.GraphNode;
 import com.example.mrrag.service.AstGraphService.NodeKind;
 
@@ -30,7 +31,7 @@ import java.util.stream.Collectors;
  * VARIABLE, TYPE_PARAM, and ANNOTATION_ATTRIBUTE nodes.
  *
  * <p><b>Wiring</b> — all list fields are mutable so
- * {@link com.example.mrrag.service.GraphViewBuilder} can populate neighbours
+ * {@link GraphViewBuilder } can populate neighbours
  * in two passes: first create all views, then wire references.
  *
  * <p><b>Concurrency</b> — view objects are <em>not</em> thread-safe after
@@ -65,7 +66,7 @@ public abstract class GraphNodeView {
      * {@code Transactional} (if present in the graph).
      *
      * <p>Populated from {@code ANNOTATED_WITH} outgoing edges by
-     * {@link com.example.mrrag.service.GraphViewBuilder}.
+     * {@link GraphViewBuilder}.
      */
     private final List<ClassNodeView> annotatedBy = new ArrayList<>();
 
@@ -172,7 +173,7 @@ public abstract class GraphNodeView {
 
     /**
      * Records a source line at which {@code callerId} invokes this callable.
-     * Populated from reverse INVOKES wiring in {@link com.example.mrrag.service.GraphViewBuilder}.
+     * Populated from reverse INVOKES wiring in {@link GraphViewBuilder}.
      */
     public void recordCallerInvocationSite(String callerId, int line) {
         if (callerId == null || line <= 0) return;

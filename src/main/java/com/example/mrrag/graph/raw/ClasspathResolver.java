@@ -1,4 +1,4 @@
-package com.example.mrrag.service;
+package com.example.mrrag.graph.raw;
 
 import java.nio.file.Path;
 import java.util.List;

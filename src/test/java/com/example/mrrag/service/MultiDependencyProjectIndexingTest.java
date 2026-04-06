@@ -2,6 +2,9 @@ package com.example.mrrag.service;
 
 import com.example.mrrag.config.EdgeKindConfig;
 import com.example.mrrag.config.GraphCacheProperties;
+import com.example.mrrag.graph.raw.GradleCompileClasspathResolver;
+import com.example.mrrag.graph.raw.ProjectGraphCacheStore;
+import com.example.mrrag.graph.raw.ProjectKey;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;

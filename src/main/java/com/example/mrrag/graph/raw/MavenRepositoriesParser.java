@@ -1,4 +1,6 @@
-package com.example.mrrag.service;
+package com.example.mrrag.graph.raw;
+
+import com.example.mrrag.graph.raw.GradleRepositoriesParser;
 
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamConstants;

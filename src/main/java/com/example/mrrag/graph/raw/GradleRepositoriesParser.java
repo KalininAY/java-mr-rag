@@ -1,4 +1,4 @@
-package com.example.mrrag.service;
+package com.example.mrrag.graph.raw;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;

@@ -1,5 +1,6 @@
 package com.example.mrrag.service;
 
+import com.example.mrrag.graph.raw.MavenArtifactCoordinates;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;

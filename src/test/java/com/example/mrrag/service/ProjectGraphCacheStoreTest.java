@@ -1,6 +1,8 @@
 package com.example.mrrag.service;
 
 import com.example.mrrag.config.GraphCacheProperties;
+import com.example.mrrag.graph.raw.ProjectGraphCacheStore;
+import com.example.mrrag.graph.raw.ProjectKey;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,7 +26,7 @@ class ProjectGraphCacheStoreTest {
     Path tmp;
 
     ProjectGraphCacheStore store;
-    ProjectKey             key;
+    ProjectKey key;
 
     /** A minimal non-empty graph with one node. */
     static AstGraphService.ProjectGraph singleNodeGraph(String id) {

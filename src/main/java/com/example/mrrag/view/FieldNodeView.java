@@ -1,5 +1,6 @@
 package com.example.mrrag.view;
 
+import com.example.mrrag.graph.GraphViewBuilder;
 import com.example.mrrag.service.AstGraphService.GraphNode;
 
 import java.util.ArrayList;
@@ -10,14 +11,14 @@ import java.util.List;
  *
  * <p>Represents an instance or static field declared in a class.
  * All list fields are pre-populated by
- * {@link com.example.mrrag.service.GraphViewBuilder}.
+ * {@link GraphViewBuilder}.
  *
  * <p>{@link #getContent()} returns the Spoon pretty-printed field declaration
  * line, e.g. {@code "private int count = 0;"}.
  *
  * <p><b>Annotations</b> — use {@link #getAnnotatedBy()} inherited from
  * {@link GraphNodeView}; it is populated from {@code ANNOTATED_WITH} outgoing
- * edges by {@link com.example.mrrag.service.GraphViewBuilder}.
+ * edges by {@link GraphViewBuilder}.
  */
 public class FieldNodeView extends GraphNodeView {
 

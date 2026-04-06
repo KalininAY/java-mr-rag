@@ -1,5 +1,7 @@
 package com.example.mrrag.config;
 
+import com.example.mrrag.graph.raw.ClasspathResolver;
+import com.example.mrrag.graph.raw.ProjectKey;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -13,7 +15,7 @@ public class GraphCacheProperties {
 
     /**
      * When true, each {@code ProjectGraph} is written under {@link #dir} and can be
-     * loaded individually without rebuilding (same {@link com.example.mrrag.service.ProjectKey}).
+     * loaded individually without rebuilding (same {@link ProjectKey}).
      */
     private boolean serializationEnabled = true;
 
@@ -40,7 +42,7 @@ public class GraphCacheProperties {
 
     /**
      * When true and GAV can be inferred from a classpath {@code .jar} path, download
-     * {@code -sources.jar} from {@link com.example.mrrag.service.ClasspathResolver.Result#remoteRepositories()}.
+     * {@code -sources.jar} from {@link ClasspathResolver.Result#remoteRepositories()}.
      */
     private boolean sourcesRemoteEnabled = true;
 
