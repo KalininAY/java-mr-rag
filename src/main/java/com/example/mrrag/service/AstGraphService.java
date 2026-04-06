@@ -59,7 +59,7 @@ public class AstGraphService implements GraphBuildService {
     public record GraphNode(
             String id, NodeKind kind, String simpleName,
             String filePath, int startLine, int endLine,
-            String sourceSnippet) {}
+            String sourceSnippet, String declarationSnippet) {}
 
     public record GraphEdge(
             String caller, EdgeKind kind, String callee,
@@ -96,6 +96,14 @@ public class AstGraphService implements GraphBuildService {
             return byFile.getOrDefault(relPath, List.of()).stream()
                     .filter(n -> n.startLine() <= line && n.endLine() >= line)
                     .toList();
+        }
+
+        /** Reconstruct a {@link ProjectGraph} from flat node/edge lists (used by deserialization). */
+        public static ProjectGraph reconstruct(List<GraphNode> nodes, List<GraphEdge> edges) {
+            ProjectGraph g = new ProjectGraph();
+            for (GraphNode n : nodes) g.addNode(n);
+            for (GraphEdge e : edges) g.addEdge(e);
+            return g;
         }
     }
 
@@ -270,7 +278,7 @@ public class AstGraphService implements GraphBuildService {
                           : (type instanceof CtInterface)      ? NodeKind.INTERFACE
                           :                                      NodeKind.CLASS;
             graph.addNode(new GraphNode(id, kind, type.getSimpleName(), file, ln[0], ln[1],
-                    extractSource(sourceLines, file, ln[0], ln[1], type)));
+                    extractSource(sourceLines, file, ln[0], ln[1], type), ""));
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
                 type.getAnnotations().forEach(ann -> graph.addEdge(new GraphEdge(
                         id, EdgeKind.ANNOTATED_WITH,
@@ -306,7 +314,7 @@ public class AstGraphService implements GraphBuildService {
                     String tpId = typeParamId(ownerId, tp); int[] tpLn = lines(tp);
                     graph.addNode(new GraphNode(tpId, NodeKind.TYPE_PARAM, tp.getSimpleName(),
                             file, tpLn[0], tpLn[1],
-                            extractSource(sourceLines, file, tpLn[0], tpLn[1], tp)));
+                            extractSource(sourceLines, file, tpLn[0], tpLn[1], tp), ""));
                     graph.addEdge(new GraphEdge(ownerId, EdgeKind.HAS_TYPE_PARAM, tpId, file, ownerLn[0]));
                     if (edgeConfig.isEnabled(EdgeKind.HAS_BOUND)) {
                         CtTypeReference<?> sc = tp.getSuperclass();
@@ -324,7 +332,7 @@ public class AstGraphService implements GraphBuildService {
             String id = typeMemberExecId(m); if (id == null) return;
             String file = relPath(root, sourceFile(m)); int[] ln = lines(m);
             graph.addNode(new GraphNode(id, NodeKind.METHOD, m.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], m)));
+                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], m), ""));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = qualifiedName(m.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
@@ -344,7 +352,7 @@ public class AstGraphService implements GraphBuildService {
             String id = typeMemberExecId(c); if (id == null) return;
             String file = relPath(root, sourceFile(c)); int[] ln = lines(c);
             graph.addNode(new GraphNode(id, NodeKind.CONSTRUCTOR, c.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], c)));
+                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], c), ""));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = qualifiedName(c.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
@@ -357,7 +365,7 @@ public class AstGraphService implements GraphBuildService {
             String id = fieldId(field); if (id == null) return;
             String file = relPath(root, sourceFile(field)); int[] ln = lines(field);
             graph.addNode(new GraphNode(id, NodeKind.FIELD, field.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], field)));
+                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], field), ""));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = qualifiedName(field.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
@@ -374,7 +382,7 @@ public class AstGraphService implements GraphBuildService {
             String id = varId(v); if (id == null) return;
             String file = relPath(root, sourceFile(v)); int[] ln = lines(v);
             graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], v)));
+                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], v), ""));
         });
 
         // ── 8. ANNOTATION_ATTRIBUTE nodes ─────────────────────────────────────────
@@ -389,7 +397,7 @@ public class AstGraphService implements GraphBuildService {
                     String attrId = annoId + "#" + m.getSimpleName(); int[] ln = lines(m);
                     graph.addNode(new GraphNode(attrId, NodeKind.ANNOTATION_ATTRIBUTE,
                             m.getSimpleName(), file, ln[0], ln[1],
-                            extractSource(sourceLines, file, ln[0], ln[1], m)));
+                            extractSource(sourceLines, file, ln[0], ln[1], m), ""));
                     graph.addEdge(new GraphEdge(annoId, EdgeKind.ANNOTATION_ATTR, attrId, file, ln[0]));
                 });
             });
@@ -400,7 +408,7 @@ public class AstGraphService implements GraphBuildService {
             String file = relPath(root, sourceFile(lambda)); int[] ln = lines(lambda);
             String id = "lambda@" + file + ":" + ln[0];
             graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb",
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], lambda)));
+                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], lambda), ""));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 CtMethod<?> em = lambda.getParent(CtMethod.class);
                 if (em != null) { String enc = typeMemberExecId(em); if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0])); }
