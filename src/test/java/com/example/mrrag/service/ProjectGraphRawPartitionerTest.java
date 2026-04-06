@@ -1,6 +1,6 @@
 package com.example.mrrag.service;
 
-import com.example.mrrag.config.GraphCacheProperties;
+import com.example.mrrag.app.config.GraphCacheProperties;
 import com.example.mrrag.graph.raw.GraphSegmentIds;
 import com.example.mrrag.graph.raw.ProjectGraphCacheStore;
 import com.example.mrrag.graph.raw.ProjectGraphPartitioner;

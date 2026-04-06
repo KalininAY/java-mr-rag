@@ -1,4 +1,4 @@
-package com.example.mrrag.model;
+package com.example.mrrag.review.model;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;

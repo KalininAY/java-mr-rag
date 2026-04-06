@@ -1,11 +1,11 @@
-package com.example.mrrag.service;
+package com.example.mrrag.review;
 
-import com.example.mrrag.model.ChangedLine;
+import com.example.mrrag.review.model.ChangedLine;
+import com.example.mrrag.service.JavaIndexService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Variant B semantic diff filter: operates on top of the raw git diff and

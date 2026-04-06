@@ -1,4 +1,4 @@
-package com.example.mrrag.controller;
+package com.example.mrrag.app.controller;
 
 import com.example.mrrag.model.GraphBuildStats;
 import com.example.mrrag.service.AstGraphService;

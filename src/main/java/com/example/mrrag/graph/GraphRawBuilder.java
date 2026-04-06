@@ -1,11 +1,11 @@
 package com.example.mrrag.graph;
 
-import com.example.mrrag.config.EdgeKindConfig;
-import com.example.mrrag.config.GraphCacheProperties;
+import com.example.mrrag.app.config.EdgeKindConfig;
+import com.example.mrrag.app.config.GraphCacheProperties;
 import com.example.mrrag.graph.raw.*;
-import com.example.mrrag.graph.raw.GitLabSpoonLoader;
-import com.example.mrrag.graph.raw.source.GitLabProjectSourceProvider;
-import com.example.mrrag.graph.raw.source.LocalCloneProjectSourceProvider;
+import com.example.mrrag.app.source.GitLabSpoonLoader;
+import com.example.mrrag.app.source.GitLabProjectSourceProvider;
+import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.graph.raw.source.ProjectSource;
 import com.example.mrrag.graph.raw.source.ProjectSourceProvider;
 import lombok.extern.slf4j.Slf4j;

@@ -1,8 +1,8 @@
 package com.example.mrrag.service;
 
 import com.example.mrrag.graph.GraphBuilder;
-import com.example.mrrag.graph.raw.source.GitLabProjectSourceProvider;
-import com.example.mrrag.graph.raw.source.LocalCloneProjectSourceProvider;
+import com.example.mrrag.app.source.GitLabProjectSourceProvider;
+import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.graph.raw.source.ProjectSourceProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

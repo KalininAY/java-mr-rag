@@ -1,4 +1,4 @@
-package com.example.mrrag.config;
+package com.example.mrrag.app.config;
 
 import org.gitlab4j.api.GitLabApi;
 import org.springframework.beans.factory.annotation.Value;

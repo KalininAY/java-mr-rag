@@ -1,11 +1,11 @@
-package com.example.mrrag.controller;
+package com.example.mrrag.app.controller;
 
-import com.example.mrrag.model.ChangeGroup;
-import com.example.mrrag.model.ChangeGroupMarkdown;
-import com.example.mrrag.model.ReviewContext;
-import com.example.mrrag.model.ReviewRequest;
+import com.example.mrrag.review.model.ChangeGroup;
+import com.example.mrrag.review.model.ChangeGroupMarkdown;
+import com.example.mrrag.review.model.ReviewContext;
+import com.example.mrrag.review.model.ReviewRequest;
 import com.example.mrrag.service.AstGraphService;
-import com.example.mrrag.service.ReviewService;
+import com.example.mrrag.review.ReviewService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;

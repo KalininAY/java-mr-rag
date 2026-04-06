@@ -1,5 +1,7 @@
-package com.example.mrrag.graph.raw.loader;
+package com.example.mrrag.app.source;
 
+import com.example.mrrag.graph.raw.loader.JavaSourceLoader;
+import com.example.mrrag.graph.raw.loader.VirtualSource;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;

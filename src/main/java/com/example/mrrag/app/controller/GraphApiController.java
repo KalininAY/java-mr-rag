@@ -1,11 +1,11 @@
-package com.example.mrrag.controller;
+package com.example.mrrag.app.controller;
 
 import com.example.mrrag.model.GraphBuildStats;
 import com.example.mrrag.service.AstGraphService.EdgeKind;
 import com.example.mrrag.service.AstGraphService.NodeKind;
 import com.example.mrrag.service.AstGraphService.ProjectGraph;
 import com.example.mrrag.graph.GraphBuilder;
-import com.example.mrrag.graph.raw.source.GitLabProjectSourceProvider;
+import com.example.mrrag.app.source.GitLabProjectSourceProvider;
 import com.example.mrrag.graph.raw.source.ProjectSourceProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

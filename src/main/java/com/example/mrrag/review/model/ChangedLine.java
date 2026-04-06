@@ -1,4 +1,4 @@
-package com.example.mrrag.model;
+package com.example.mrrag.review.model;
 
 /**
  * Represents a single changed line from a unified diff.

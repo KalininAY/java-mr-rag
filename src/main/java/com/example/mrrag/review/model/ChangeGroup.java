@@ -1,4 +1,6 @@
-package com.example.mrrag.model;
+package com.example.mrrag.review.model;
+
+import com.example.mrrag.model.EnrichmentSnippet;
 
 import java.util.List;
 

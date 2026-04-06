@@ -1,6 +1,9 @@
-package com.example.mrrag.service;
+package com.example.mrrag.review;
 
-import com.example.mrrag.model.*;
+import com.example.mrrag.review.model.*;
+import com.example.mrrag.service.ContextEnricher;
+import com.example.mrrag.service.GitLabService;
+import com.example.mrrag.service.JavaIndexService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.errors.GitAPIException;

@@ -1,6 +1,6 @@
 package com.example.mrrag;
 
-import com.example.mrrag.config.GraphCacheProperties;
+import com.example.mrrag.app.config.GraphCacheProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;

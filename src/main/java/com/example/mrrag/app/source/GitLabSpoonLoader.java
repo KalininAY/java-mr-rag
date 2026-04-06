@@ -1,8 +1,8 @@
-package com.example.mrrag.graph.raw;
+package com.example.mrrag.app.source;
 
 import com.example.mrrag.graph.raw.loader.JavaSourceLoader;
 import com.example.mrrag.service.AstGraphService;
-import com.example.mrrag.graph.raw.loader.GitLabSourceLoader;
+import com.example.mrrag.app.source.GitLabSourceLoader;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;

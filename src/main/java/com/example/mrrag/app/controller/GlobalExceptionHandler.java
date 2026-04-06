@@ -1,4 +1,4 @@
-package com.example.mrrag.controller;
+package com.example.mrrag.app.controller;
 
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApiException;

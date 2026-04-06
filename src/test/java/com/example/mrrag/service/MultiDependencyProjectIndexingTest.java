@@ -1,7 +1,7 @@
 package com.example.mrrag.service;
 
-import com.example.mrrag.config.EdgeKindConfig;
-import com.example.mrrag.config.GraphCacheProperties;
+import com.example.mrrag.app.config.EdgeKindConfig;
+import com.example.mrrag.app.config.GraphCacheProperties;
 import com.example.mrrag.graph.raw.GradleCompileClasspathResolver;
 import com.example.mrrag.graph.raw.GraphSegmentIds;
 import com.example.mrrag.graph.raw.ProjectGraphCacheStore;

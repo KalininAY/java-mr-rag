@@ -1,4 +1,4 @@
-package com.example.mrrag.config;
+package com.example.mrrag.app.config;
 
 import com.example.mrrag.graph.raw.ClasspathResolver;
 import com.example.mrrag.graph.raw.ProjectKey;

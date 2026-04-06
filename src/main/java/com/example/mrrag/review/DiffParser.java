@@ -1,6 +1,6 @@
-package com.example.mrrag.service;
+package com.example.mrrag.review;
 
-import com.example.mrrag.model.ChangedLine;
+import com.example.mrrag.review.model.ChangedLine;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.models.Diff;
 import org.springframework.stereotype.Component;
