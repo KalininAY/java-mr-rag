@@ -194,7 +194,7 @@ public class AstGraphService implements GraphBuildService {
             Map<String, ProjectGraph> segments = new LinkedHashMap<>();
             segments.put(GraphSegmentIds.MAIN, graph);
             try {
-                cacheStore.saveAllSegments(key, segments);
+                cacheStore.savePartitioned(key, segments);
                 log.debug("buildGraph(ProjectKey): saved to disk cache for {}", key);
             } catch (Exception e) {
                 log.warn("buildGraph(ProjectKey): failed to save cache for {}: {}", key, e.getMessage());
