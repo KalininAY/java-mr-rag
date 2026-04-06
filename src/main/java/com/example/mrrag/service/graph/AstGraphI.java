@@ -1,0 +1,55 @@
+package com.example.mrrag.service.graph;
+
+import com.example.mrrag.service.dto.ProjectSourceDto;
+import com.example.mrrag.service.AstGraphService.ProjectGraph;
+
+/**
+ * Primary contract for building an AST symbol graph.
+ *
+ * <p>Decouples graph construction logic from any specific source provider
+ * (local clone, GitLab API, test fixtures, etc.).
+ *
+ * <h2>Graph model types</h2>
+ * <ul>
+ *   <li>{@link com.example.mrrag.service.AstGraphService.NodeKind} — CLASS, INTERFACE, METHOD, etc.</li>
+ *   <li>{@link com.example.mrrag.service.AstGraphService.EdgeKind} — DECLARES, INVOKES, EXTENDS, etc.</li>
+ *   <li>{@link ProjectGraph} — fully indexed graph with nodes and edges.</li>
+ * </ul>
+ */
+public interface AstGraphI {
+
+    /**
+     * Build (or return a cached) symbol graph from a {@link ProjectSourceDto}.
+     *
+     * <p>The DTO provides all data required for graph construction:
+     * source files, optional classpath root, and project identity.
+     * The caller decides how to create the DTO — from a local clone
+     * ({@link com.example.mrrag.service.source.SourcesProvider}) or
+     * via GitLab API.
+     *
+     * @param dto fully populated project source DTO
+     * @return fully populated (or partial) {@link ProjectGraph}
+     * @throws Exception on any IO / API / parse error
+     */
+    ProjectGraph buildGraph(ProjectSourceDto dto) throws Exception;
+
+    /**
+     * Evict any cached graph for the project identified by the DTO.
+     *
+     * @param dto the project whose cached graph should be invalidated
+     */
+    void invalidate(ProjectSourceDto dto);
+
+    /**
+     * Translate a path from a GitLab diff into the graph-relative path.
+     *
+     * <p>Handles mono-repo prefixes, back-slash normalisation, and partial
+     * suffix matching against all paths stored in {@code graph}.
+     *
+     * @param diffPath path as reported by GitLab
+     * @param graph    the target graph whose known paths are used for matching
+     * @return matching graph-relative path, or {@code diffPath} unchanged when
+     *         no match is found
+     */
+    String normalizeFilePath(String diffPath, ProjectGraph graph);
+}
