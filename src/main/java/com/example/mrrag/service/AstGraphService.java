@@ -7,6 +7,7 @@ import com.example.mrrag.service.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.service.source.ProjectSource;
 import com.example.mrrag.service.source.ProjectSourceProvider;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import spoon.Launcher;
 import spoon.compiler.ModelBuildingException;
@@ -125,7 +126,12 @@ public class AstGraphService implements GraphBuildService {
     private final Map<Path, ProjectGraph>        localCache   = new ConcurrentHashMap<>();
     private final Map<ProjectKey, ProjectGraph>  keyCache     = new ConcurrentHashMap<>();
 
-    /** Primary Spring constructor — injects cache support. */
+    /**
+     * Primary Spring constructor — injects cache support.
+     * {@code @Autowired} is required because a second single-arg constructor
+     * is present for tests; without it Spring cannot determine which one to use.
+     */
+    @Autowired
     public AstGraphService(EdgeKindConfig edgeConfig,
                            GraphCacheProperties cacheProps,
                            ProjectGraphCacheStore cacheStore) {
