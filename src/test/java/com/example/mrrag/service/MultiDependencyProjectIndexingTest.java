@@ -165,17 +165,29 @@ class MultiDependencyProjectIndexingTest {
         } catch (UnsupportedOperationException | IOException ignored) {}
     }
 
+    /**
+     * Locates the repository root by walking up from the compiled test-classes directory.
+     *
+     * <p>Uses {@code getLocation().toURI()} instead of {@code getLocation().getPath()}
+     * to correctly handle Windows paths like {@code D:\PROJS\...}, which
+     * {@code getPath()} returns as {@code /D:/PROJS/...} — an invalid Windows path
+     * that triggers {@link java.nio.file.InvalidPathException}.
+     */
     private static Path findRepoRoot() {
-        Path candidate = Path.of(
-                MultiDependencyProjectIndexingTest.class
-                        .getProtectionDomain().getCodeSource().getLocation().getPath())
-                .toAbsolutePath().normalize();
-        while (candidate != null) {
-            if (Files.exists(candidate.resolve("gradlew"))
-                    || Files.exists(candidate.resolve("build.gradle"))) {
-                return candidate;
+        try {
+            Path candidate = Path.of(
+                    MultiDependencyProjectIndexingTest.class
+                            .getProtectionDomain().getCodeSource().getLocation().toURI())
+                    .toAbsolutePath().normalize();
+            while (candidate != null) {
+                if (Files.exists(candidate.resolve("gradlew"))
+                        || Files.exists(candidate.resolve("build.gradle"))) {
+                    return candidate;
+                }
+                candidate = candidate.getParent();
             }
-            candidate = candidate.getParent();
+        } catch (URISyntaxException e) {
+            throw new IllegalStateException("Cannot resolve code source location to URI", e);
         }
         throw new IllegalStateException("Cannot locate repo root");
     }
