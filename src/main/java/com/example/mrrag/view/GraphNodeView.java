@@ -5,6 +5,7 @@ import com.example.mrrag.service.AstGraphService.NodeKind;
 
 import java.lang.reflect.Field;
 import java.util.*;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -498,6 +499,25 @@ public abstract class GraphNodeView {
         return null;
     }
 
+    /**
+     * First source line that contains a type declaration keyword (after annotations / javadoc).
+     */
+    private static final Pattern TYPE_DECLARATION_LINE =
+            Pattern.compile("\\b(class|interface|enum|record|@interface)\\b");
+
+    private static int lineIndexOfTypeDeclaration(String[] lines) {
+        for (int i = 0; i < lines.length; i++) {
+            if (TYPE_DECLARATION_LINE.matcher(lines[i]).find()) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    private static boolean isTypeNodeKind(NodeKind k) {
+        return k == NodeKind.CLASS || k == NodeKind.INTERFACE || k == NodeKind.ANNOTATION;
+    }
+
     private static String physicalLineContent(GraphNodeView view, int physicalLine) {
         if (physicalLine <= 0 || view.getStartLine() <= 0) {
             return null;
@@ -549,8 +569,13 @@ public abstract class GraphNodeView {
         }
         String snippet = view.getContent();
         if (snippet != null && !snippet.isBlank()) {
-            int first = Math.max(1, view.getStartLine());
-            String firstLine = snippet.split("\n", 2)[0];
+            String[] contentLines = snippet.split("\n", -1);
+            int skip = 0;
+            if (isTypeNodeKind(view.getKind())) {
+                skip = lineIndexOfTypeDeclaration(contentLines);
+            }
+            int first = Math.max(1, view.getStartLine()) + skip;
+            String firstLine = contentLines[skip];
             lines.add(first + "|" + firstLine);
             return;
         }

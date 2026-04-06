@@ -235,7 +235,8 @@ public class AstGraphService implements GraphBuildService {
         log.info("Building AST graph via provider: {}", provider.getClass().getSimpleName());
         List<ProjectSource> sources = provider.getSources();
         log.info("Provider supplied {} .java files", sources.size());
-        return doBuildGraphFromSources(sources);
+        Path classpathRoot = provider instanceof LocalCloneProjectSourceProvider l ? l.getProjectRoot() : null;
+        return doBuildGraphFromSources(sources, classpathRoot);
     }
 
     // ------------------------------------------------------------------
@@ -302,7 +303,7 @@ public class AstGraphService implements GraphBuildService {
         List<ProjectSource> mapped = sources.stream()
                 .map(s -> new ProjectSource(s.path(), s.content()))
                 .toList();
-        return doBuildGraphFromSources(mapped);
+        return doBuildGraphFromSources(mapped, null);
     }
 
     // ------------------------------------------------------------------
@@ -316,8 +317,10 @@ public class AstGraphService implements GraphBuildService {
      * <p>All {@link ProjectSource} entries are fed to Spoon as
      * {@link VirtualFile} objects, so no temporary directory is needed
      * regardless of whether the files came from a local clone or an API.
+     *
+     * @param classpathRoot when non-null (e.g. local clone), try Gradle/Maven compile classpath for Spoon
      */
-    private ProjectGraph doBuildGraphFromSources(List<ProjectSource> sources) {
+    private ProjectGraph doBuildGraphFromSources(List<ProjectSource> sources, Path classpathRoot) {
         // Build source-lines map for snippet extraction
         Map<String, String[]> sourceLines = new ConcurrentHashMap<>();
         for (ProjectSource src : sources) {
@@ -325,7 +328,22 @@ public class AstGraphService implements GraphBuildService {
         }
 
         Launcher launcher = new Launcher();
-        launcher.getEnvironment().setNoClasspath(true);
+        if (classpathRoot != null) {
+            ClasspathResolver.tryResolve(classpathRoot).ifPresentOrElse(
+                    r -> {
+                        launcher.getEnvironment().setNoClasspath(false);
+                        launcher.getEnvironment().setSourceClasspath(r.entries());
+                        log.info("Spoon using {} compileClasspath ({} entries) for {}",
+                                r.source(), r.entries().length, classpathRoot);
+                    },
+                    () -> {
+                        launcher.getEnvironment().setNoClasspath(true);
+                        log.debug("Spoon noClasspath mode for {} (Gradle/Maven classpath not available)",
+                                classpathRoot);
+                    });
+        } else {
+            launcher.getEnvironment().setNoClasspath(true);
+        }
         launcher.getEnvironment().setCommentEnabled(false);
         launcher.getEnvironment().setAutoImports(false);
         try { launcher.getEnvironment().setIgnoreDuplicateDeclarations(true); }
@@ -515,7 +533,7 @@ public class AstGraphService implements GraphBuildService {
             model.getElements(new TypeFilter<>(CtInvocation.class)).forEach(inv -> {
                 String callerId = nearestExecId(inv); if (callerId == null) return;
                 graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES,
-                        execRefId(inv.getExecutable()),
+                        execRefIdForChainedInvocation(inv),
                         relPath(root, sourceFile(inv)), posLine(inv)));
             });
 
@@ -529,7 +547,7 @@ public class AstGraphService implements GraphBuildService {
                 if (edgeConfig.isEnabled(ek))
                     graph.addEdge(new GraphEdge(callerId, ek, typeId, relPath(root, sourceFile(cc)), posLine(cc)));
                 if (edgeConfig.isEnabled(EdgeKind.INVOKES))
-                    graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES, execRefId(cc.getExecutable()),
+                    graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES, execRefId(cc.getExecutable(), cc),
                             relPath(root, sourceFile(cc)), posLine(cc)));
             });
 
@@ -538,7 +556,7 @@ public class AstGraphService implements GraphBuildService {
             model.getElements(new TypeFilter<>(CtExecutableReferenceExpression.class)).forEach(ref -> {
                 String callerId = nearestExecId(ref); if (callerId == null) return;
                 graph.addEdge(new GraphEdge(callerId, EdgeKind.REFERENCES_METHOD,
-                        execRefId(ref.getExecutable()),
+                        execRefId(ref.getExecutable(), ref),
                         relPath(root, sourceFile(ref)), posLine(ref)));
             });
 
@@ -630,18 +648,176 @@ public class AstGraphService implements GraphBuildService {
         try {
             CtType<?> decl = member.getDeclaringType();
             String owner = decl != null ? decl.getQualifiedName() : "?";
-            return (member instanceof CtExecutable<?> exec)
-                    ? owner + "#" + exec.getSignature()
-                    : owner + "#" + member.getSimpleName();
-        } catch (Exception e) { return null; }
+            if (member instanceof CtConstructor<?>) {
+                return constructorExecutableId(owner, ((CtExecutable<?>) member).getSignature());
+            }
+            if (member instanceof CtExecutable<?> exec) {
+                return owner + "#" + exec.getSignature();
+            }
+            return owner + "#" + member.getSimpleName();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
-    private String execRefId(CtExecutableReference<?> ref) {
+    private static String constructorExecutableId(String ownerQualified, String signature) {
+        if (signature == null || signature.isBlank()) {
+            return ownerQualified + "#<init>()";
+        }
+        int open = signature.indexOf('(');
+        if (open < 0) {
+            return ownerQualified + "#<init>()";
+        }
+        return ownerQualified + "#<init>" + signature.substring(open);
+    }
+
+    private static String qualifiedExecutableOwner(CtExecutableReference<?> ref, CtElement useSite) {
+        try {
+            if (ref.getDeclaringType() != null) {
+                String q = ref.getDeclaringType().getQualifiedName();
+                if (isUsableQualifiedName(q)) {
+                    return q;
+                }
+            }
+        } catch (Exception ignored) { }
+        try {
+            CtExecutable<?> decl = ref.getDeclaration();
+            if (decl instanceof CtTypeMember tm && tm.getDeclaringType() != null) {
+                String q = tm.getDeclaringType().getQualifiedName();
+                if (isUsableQualifiedName(q)) {
+                    return q;
+                }
+            }
+        } catch (Exception ignored) { }
+
+        if (useSite instanceof CtInvocation inv) {
+            String inferred = inferOwnerFromInvocation(inv);
+            if (inferred != null) {
+                return inferred;
+            }
+        }
+        if (useSite instanceof CtConstructorCall<?> cc) {
+            String inferred = inferOwnerFromConstructorCall(cc);
+            if (inferred != null) {
+                return inferred;
+            }
+        }
+        if (useSite instanceof CtExecutableReferenceExpression ere) {
+            String inferred = inferOwnerFromExecutableReferenceExpression(ere);
+            if (inferred != null) {
+                return inferred;
+            }
+        }
+        return "?";
+    }
+
+    private static boolean isUsableQualifiedName(String q) {
+        return q != null && !q.isBlank() && !"?".equals(q);
+    }
+
+    private static String inferOwnerFromInvocation(CtInvocation<?> inv) {
+        CtExpression<?> target = inv.getTarget();
+        if (target instanceof CtTypeAccess<?> ta) {
+            try {
+                if (ta.getAccessedType() != null) {
+                    String q = ta.getAccessedType().getQualifiedName();
+                    if (isUsableQualifiedName(q)) {
+                        return q;
+                    }
+                }
+            } catch (Exception ignored) { }
+        }
+        if (target != null) {
+            try {
+                CtTypeReference<?> t = target.getType();
+                if (t != null) {
+                    String q = t.getQualifiedName();
+                    if (isUsableQualifiedName(q)) {
+                        return q;
+                    }
+                }
+            } catch (Exception ignored) { }
+        }
+        return null;
+    }
+
+    private static String inferOwnerFromConstructorCall(CtConstructorCall<?> cc) {
+        try {
+            if (cc.getType() != null) {
+                String q = cc.getType().getQualifiedName();
+                if (isUsableQualifiedName(q)) {
+                    return q;
+                }
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
+
+    private static String inferOwnerFromExecutableReferenceExpression(CtExecutableReferenceExpression<?, ?> ere) {
+        try {
+            CtExpression<?> target = ere.getTarget();
+            if (target instanceof CtTypeAccess<?> ta && ta.getAccessedType() != null) {
+                String q = ta.getAccessedType().getQualifiedName();
+                if (isUsableQualifiedName(q)) {
+                    return q;
+                }
+            }
+            if (target != null) {
+                CtTypeReference<?> t = target.getType();
+                if (t != null) {
+                    String q = t.getQualifiedName();
+                    if (isUsableQualifiedName(q)) {
+                        return q;
+                    }
+                }
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
+
+    private String execRefId(CtExecutableReference<?> ref, CtElement useSite) {
         if (ref == null) return "unresolved";
         try {
-            String owner = ref.getDeclaringType() != null ? ref.getDeclaringType().getQualifiedName() : "?";
-            return owner + "#" + ref.getSignature();
-        } catch (Exception e) { return "unresolved:" + ref.getSimpleName(); }
+            String owner = qualifiedExecutableOwner(ref, useSite);
+            String sig = ref.getSignature();
+            if (ref.isConstructor()) {
+                return constructorExecutableId(owner, sig);
+            }
+            return owner + "#" + sig;
+        } catch (Exception e) {
+            return "unresolved:" + ref.getSimpleName();
+        }
+    }
+
+    /**
+     * Chains {@code a().b()} when the outer owner is unknown ({@code ?#b(...)}), and falls back to
+     * the static type of the receiver expression for {@code x.setName(...)}.
+     */
+    private String execRefIdForChainedInvocation(CtInvocation<?> inv) {
+        String base = execRefId(inv.getExecutable(), inv);
+        if (!base.startsWith("?#")) {
+            return base;
+        }
+        String suffix = base.substring(2);
+        CtExpression<?> target = inv.getTarget();
+        if (target instanceof CtInvocation<?> inner) {
+            String innerId = execRefIdForChainedInvocation(inner);
+            if (!innerId.startsWith("?")) {
+                return innerId + "#" + suffix;
+            }
+        }
+        if (target != null) {
+            try {
+                CtTypeReference<?> t = target.getType();
+                if (t != null) {
+                    String q = t.getQualifiedName();
+                    if (isUsableQualifiedName(q)) {
+                        return q + "#" + suffix;
+                    }
+                }
+            } catch (Exception ignored) { }
+        }
+        return base;
     }
 
     private String fieldId(CtField<?> field) {
