@@ -1,9 +1,9 @@
 package com.example.mrrag.app.controller;
 
-import com.example.mrrag.service.AstGraphService;
-import com.example.mrrag.service.AstGraphService.ProjectGraph;
-import com.example.mrrag.service.AstGraphService.GraphNode;
-import com.example.mrrag.graph.GraphViewBuilder;
+import com.example.mrrag.graph.AstGraphService;
+import com.example.mrrag.graph.AstGraphService.ProjectGraph;
+import com.example.mrrag.graph.AstGraphService.GraphNode;
+import com.example.mrrag.graph.linked.LinkedGraphBuilder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -33,6 +33,7 @@ import java.util.stream.Collectors;
 public class GraphDebugController {
 
     private final AstGraphService graphService;
+    private final LinkedGraphBuilder linkedGraphBuilder;
 
     // ------------------------------------------------------------------
     // GET /debug/graph/stats?repoDir=/tmp/repo-123/source
@@ -43,24 +44,24 @@ public class GraphDebugController {
         Path root = Path.of(repoDir);
         ProjectGraph graph = graphService.buildGraph(root);
 
-        GraphViewBuilder.ViewGraph build = new GraphViewBuilder().build(graph);
+        var build = linkedGraphBuilder.build(graph.raw());
         String s = build.byId("bugbusters.modules.extensions.allure.model.AllureStep#findPlaceFrom()").toMarkdown();
         String s1 = build.byId("bugbusters.modules.extensions.allure.utils.Steps#step(java.lang.String,io.qameta.allure.Allure$ThrowableRunnable)").toMarkdown();
 
         Map<String, Long> byKind = graph.nodes.values().stream()
                 .collect(Collectors.groupingBy(n -> n.kind().name(), Collectors.counting()));
 
-        Map<String, Long> edgesByKind = graph.edgesFrom.values().stream()
+        Map<String, Long> edgesByKind = graph.raw().edgesFrom.values().stream()
                 .flatMap(List::stream)
                 .collect(Collectors.groupingBy(e -> e.kind().name(), Collectors.counting()));
 
         return Map.of(
                 "repoDir",      repoDir,
                 "totalNodes",   graph.nodes.size(),
-                "totalEdgeSrc", graph.edgesFrom.size(),
+                "totalEdgeSrc", graph.raw().edgesFrom.size(),
                 "nodesByKind",  byKind,
                 "edgesByKind",  edgesByKind,
-                "indexedFiles", new TreeSet<>(graph.byFile.keySet())
+                "indexedFiles", new TreeSet<>(graph.raw().byFile.keySet())
         );
     }
 
@@ -77,14 +78,16 @@ public class GraphDebugController {
         ProjectGraph graph = graphService.buildGraph(root);
 
         String normalized = graphService.normalizeFilePath(diffPath, graph);
-        List<GraphNode> nodes = graph.byFile.getOrDefault(normalized, List.of());
+        List<GraphNode> nodes = graph.nodesAtLine(normalized, -1);
+        List<GraphNode> byFile = graph.raw().byFile.getOrDefault(normalized, List.of())
+                .stream().map(GraphNode::from).collect(Collectors.toList());
 
         return Map.of(
                 "diffPath",       diffPath,
                 "normalizedPath", normalized,
-                "matched",        !normalized.equals(diffPath) || graph.byFile.containsKey(normalized),
-                "nodeCount",      nodes.size(),
-                "nodes",          nodes.stream()
+                "matched",        !normalized.equals(diffPath) || graph.raw().byFile.containsKey(normalized),
+                "nodeCount",      byFile.size(),
+                "nodes",          byFile.stream()
                         .map(n -> Map.of(
                                 "id",    n.id(),
                                 "kind",  n.kind().name(),
