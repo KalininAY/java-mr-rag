@@ -1,5 +1,6 @@
 package com.example.mrrag.graph.raw;
 
+import com.example.mrrag.graph.GraphRawBuilder;
 import com.example.mrrag.service.AstGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -10,7 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * JSON snapshot of a {@link AstGraphService.ProjectGraph} for disk cache.
+ * JSON snapshot of a {@link GraphRawBuilder.ProjectGraphRaw} for disk cache.
  */
 public final class ProjectGraphSerialization {
 
@@ -20,22 +21,22 @@ public final class ProjectGraphSerialization {
     private ProjectGraphSerialization() {
     }
 
-    public static byte[] toJson(AstGraphService.ProjectGraph graph) throws IOException {
+    public static byte[] toJson(GraphRawBuilder.ProjectGraphRaw graph) throws IOException {
         Snapshot snap = Snapshot.from(graph);
         return MAPPER.writeValueAsBytes(snap);
     }
 
-    public static AstGraphService.ProjectGraph fromJson(byte[] json) throws IOException {
+    public static GraphRawBuilder.ProjectGraphRaw fromJson(byte[] json) throws IOException {
         Snapshot snap = MAPPER.readValue(json, Snapshot.class);
         return snap.toGraph();
     }
 
-    public static void write(AstGraphService.ProjectGraph graph, OutputStream out) throws IOException {
+    public static void write(GraphRawBuilder.ProjectGraphRaw graph, OutputStream out) throws IOException {
         Snapshot snap = Snapshot.from(graph);
         MAPPER.writeValue(out, snap);
     }
 
-    public static AstGraphService.ProjectGraph read(InputStream in) throws IOException {
+    public static GraphRawBuilder.ProjectGraphRaw read(InputStream in) throws IOException {
         Snapshot snap = MAPPER.readValue(in, Snapshot.class);
         return snap.toGraph();
     }
@@ -55,32 +56,32 @@ public final class ProjectGraphSerialization {
             this.edges = edges;
         }
 
-        static Snapshot from(AstGraphService.ProjectGraph g) {
+        static Snapshot from(GraphRawBuilder.ProjectGraphRaw g) {
             List<NodeSnapshot> nodes = new ArrayList<>(g.nodes.size());
-            for (AstGraphService.GraphNode n : g.nodes.values()) {
+            for (GraphRawBuilder.GraphNode n : g.nodes.values()) {
                 nodes.add(NodeSnapshot.from(n));
             }
             List<EdgeSnapshot> edges = new ArrayList<>();
-            for (List<AstGraphService.GraphEdge> list : g.edgesFrom.values()) {
-                for (AstGraphService.GraphEdge e : list) {
+            for (List<GraphRawBuilder.GraphEdge> list : g.edgesFrom.values()) {
+                for (GraphRawBuilder.GraphEdge e : list) {
                     edges.add(EdgeSnapshot.from(e));
                 }
             }
             return new Snapshot(nodes, edges);
         }
 
-        AstGraphService.ProjectGraph toGraph() {
+        GraphRawBuilder.ProjectGraphRaw toGraph() {
             List<NodeSnapshot> nList = nodes != null ? nodes : List.of();
             List<EdgeSnapshot> eList = edges != null ? edges : List.of();
-            List<AstGraphService.GraphNode> nodeList = new ArrayList<>();
+            List<GraphRawBuilder.GraphNode> nodeList = new ArrayList<>();
             for (NodeSnapshot n : nList) {
                 nodeList.add(n.toGraphNode());
             }
-            List<AstGraphService.GraphEdge> edgeList = new ArrayList<>();
+            List<GraphRawBuilder.GraphEdge> edgeList = new ArrayList<>();
             for (EdgeSnapshot e : eList) {
                 edgeList.add(e.toGraphEdge());
             }
-            return AstGraphService.ProjectGraph.reconstruct(nodeList, edgeList);
+            return GraphRawBuilder.ProjectGraphRaw.reconstruct(nodeList, edgeList);
         }
     }
 
@@ -94,7 +95,7 @@ public final class ProjectGraphSerialization {
         public String sourceSnippet;
         public String declarationSnippet;
 
-        static NodeSnapshot from(AstGraphService.GraphNode n) {
+        static NodeSnapshot from(GraphRawBuilder.GraphNode n) {
             NodeSnapshot s = new NodeSnapshot();
             s.id = n.id();
             s.kind = n.kind().name();
@@ -107,10 +108,10 @@ public final class ProjectGraphSerialization {
             return s;
         }
 
-        AstGraphService.GraphNode toGraphNode() {
-            return new AstGraphService.GraphNode(
+        GraphRawBuilder.GraphNode toGraphNode() {
+            return new GraphRawBuilder.GraphNode(
                     id,
-                    AstGraphService.NodeKind.valueOf(kind),
+                    GraphRawBuilder.NodeKind.valueOf(kind),
                     simpleName,
                     filePath,
                     startLine,
@@ -128,7 +129,7 @@ public final class ProjectGraphSerialization {
         public String filePath;
         public int line;
 
-        static EdgeSnapshot from(AstGraphService.GraphEdge e) {
+        static EdgeSnapshot from(GraphRawBuilder.GraphEdge e) {
             EdgeSnapshot s = new EdgeSnapshot();
             s.caller = e.caller();
             s.kind = e.kind().name();
@@ -138,10 +139,10 @@ public final class ProjectGraphSerialization {
             return s;
         }
 
-        AstGraphService.GraphEdge toGraphEdge() {
-            return new AstGraphService.GraphEdge(
+        GraphRawBuilder.GraphEdge toGraphEdge() {
+            return new GraphRawBuilder.GraphEdge(
                     caller,
-                    AstGraphService.EdgeKind.valueOf(kind),
+                    GraphRawBuilder.EdgeKind.valueOf(kind),
                     callee,
                     filePath != null ? filePath : "",
                     line

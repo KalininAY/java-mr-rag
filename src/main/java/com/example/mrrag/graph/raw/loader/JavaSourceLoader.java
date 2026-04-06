@@ -1,6 +1,4 @@
-package com.example.mrrag.service.loader;
-
-import com.example.mrrag.service.loader.VirtualSource;
+package com.example.mrrag.graph.raw.loader;
 
 import java.util.List;
 

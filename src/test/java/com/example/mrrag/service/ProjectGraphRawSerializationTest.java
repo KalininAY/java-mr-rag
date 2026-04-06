@@ -9,7 +9,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class ProjectGraphSerializationTest {
+class ProjectGraphRawSerializationTest {
 
     @Test
     void roundTripJson() throws Exception {

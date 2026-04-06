@@ -1,4 +1,4 @@
-package com.example.mrrag.service.source;
+package com.example.mrrag.graph.raw.source;
 
 /**
  * A single Java source file held in memory.

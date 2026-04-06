@@ -1,7 +1,7 @@
 package com.example.mrrag.graph.raw;
 
+import com.example.mrrag.graph.GraphRawBuilder;
 import com.example.mrrag.service.AstGraphService;
-import com.example.mrrag.service.GraphSegmentIds;
 
 import java.net.URI;
 import java.nio.file.Path;
@@ -12,8 +12,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Splits a full {@link AstGraphService.ProjectGraph} into {@link GraphSegmentIds#MAIN} and one graph
- * per {@code *-sources.jar} by classifying {@link AstGraphService.GraphNode#filePath()} and edge paths.
+ * Splits a full {@link GraphRawBuilder.ProjectGraphRaw} into {@link GraphSegmentIds#MAIN} and one graph
+ * per {@code *-sources.jar} by classifying {@link GraphRawBuilder.GraphNode#filePath()} and edge paths.
  */
 public final class ProjectGraphPartitioner {
 
@@ -23,8 +23,8 @@ public final class ProjectGraphPartitioner {
     /**
      * @param sourcesJarAbsPaths absolute paths of {@code *-sources.jar} that were Spoon inputs
      */
-    public static Map<String, AstGraphService.ProjectGraph> partition(
-            AstGraphService.ProjectGraph full,
+    public static Map<String, GraphRawBuilder.ProjectGraphRaw> partition(
+            GraphRawBuilder.ProjectGraphRaw full,
             Path projectRoot,
             List<String> sourcesJarAbsPaths) {
 
@@ -37,18 +37,18 @@ public final class ProjectGraphPartitioner {
         }
         jars.sort(Comparator.comparing(p -> p.toString().length()).reversed());
 
-        Map<String, AstGraphService.ProjectGraph> out = new LinkedHashMap<>();
-        out.put(GraphSegmentIds.MAIN, new AstGraphService.ProjectGraph());
+        Map<String, GraphRawBuilder.ProjectGraphRaw> out = new LinkedHashMap<>();
+        out.put(GraphSegmentIds.MAIN, new GraphRawBuilder.ProjectGraphRaw());
         for (Path jar : jars) {
-            out.put(GraphSegmentIds.segmentIdForJar(jar), new AstGraphService.ProjectGraph());
+            out.put(GraphSegmentIds.segmentIdForJar(jar), new GraphRawBuilder.ProjectGraphRaw());
         }
 
-        for (AstGraphService.GraphNode n : full.nodes.values()) {
+        for (GraphRawBuilder.GraphNode n : full.nodes.values()) {
             String seg = classify(n.filePath(), rootNorm, jars);
             out.get(seg).addNode(n);
         }
-        for (List<AstGraphService.GraphEdge> list : full.edgesFrom.values()) {
-            for (AstGraphService.GraphEdge e : list) {
+        for (List<GraphRawBuilder.GraphEdge> list : full.edgesFrom.values()) {
+            for (GraphRawBuilder.GraphEdge e : list) {
                 String seg = classify(e.filePath(), rootNorm, jars);
                 out.get(seg).addEdge(e);
             }

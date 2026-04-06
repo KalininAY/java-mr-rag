@@ -1,12 +1,13 @@
-package com.example.mrrag.service;
+package com.example.mrrag.graph.raw;
 
-import com.example.mrrag.service.loader.GitLabSourceLoader;
-import com.example.mrrag.service.loader.VirtualSource;
+import com.example.mrrag.graph.raw.loader.JavaSourceLoader;
+import com.example.mrrag.service.AstGraphService;
+import com.example.mrrag.graph.raw.loader.GitLabSourceLoader;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
 import org.gitlab4j.api.GitLabApiException;
-import org.springframework.stereotype.Service;
+import org.springframework.stereotype.Component;
 import spoon.Launcher;
 import spoon.compiler.ModelBuildingException;
 import spoon.reflect.CtModel;
@@ -20,15 +21,15 @@ import java.util.List;
  * <strong>without cloning the repository</strong>.
  *
  * <p>Source fetching is delegated to {@link GitLabSourceLoader} (implements
- * {@link com.example.mrrag.service.loader.JavaSourceLoader}), so the two concerns
+ * {@link JavaSourceLoader}), so the two concerns
  * — transport and Spoon model building — are cleanly separated.
  *
- * @deprecated Prefer injecting {@link com.example.mrrag.service.loader.JavaSourceLoader}
+ * @deprecated Prefer injecting {@link JavaSourceLoader}
  *     directly and calling {@link AstGraphService#buildGraphFromVirtualSources}.  This class
  *     is kept for backward-compatibility with callers that used the old API.
  */
 @Slf4j
-@Service
+@Component
 @RequiredArgsConstructor
 public class GitLabSpoonLoader {
 
@@ -42,8 +43,8 @@ public class GitLabSpoonLoader {
     @Deprecated
     public record VirtualSource(String path, String content) {
         /** Convert to the canonical loader record. */
-        public com.example.mrrag.service.loader.VirtualSource toLoaderRecord() {
-            return new com.example.mrrag.service.loader.VirtualSource(path, content);
+        public com.example.mrrag.graph.raw.loader.VirtualSource toLoaderRecord() {
+            return new com.example.mrrag.graph.raw.loader.VirtualSource(path, content);
         }
     }
 

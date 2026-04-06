@@ -1,6 +1,7 @@
 package com.example.mrrag.service;
 
 import com.example.mrrag.config.GraphCacheProperties;
+import com.example.mrrag.graph.raw.GraphSegmentIds;
 import com.example.mrrag.graph.raw.ProjectGraphCacheStore;
 import com.example.mrrag.graph.raw.ProjectKey;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * dep segments live under {@code depsDir/<prefix>/<name>/graph.json + meta.json},
  * main segment stays in the project bundle.
  */
-class ProjectGraphCacheStoreTest {
+class ProjectGraphRawCacheStoreTest {
 
     @TempDir
     Path tmp;

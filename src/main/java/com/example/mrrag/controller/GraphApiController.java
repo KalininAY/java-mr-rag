@@ -4,9 +4,9 @@ import com.example.mrrag.model.GraphBuildStats;
 import com.example.mrrag.service.AstGraphService.EdgeKind;
 import com.example.mrrag.service.AstGraphService.NodeKind;
 import com.example.mrrag.service.AstGraphService.ProjectGraph;
-import com.example.mrrag.service.graph.GraphBuildService;
-import com.example.mrrag.service.source.GitLabProjectSourceProvider;
-import com.example.mrrag.service.source.ProjectSourceProvider;
+import com.example.mrrag.graph.GraphBuilder;
+import com.example.mrrag.graph.raw.source.GitLabProjectSourceProvider;
+import com.example.mrrag.graph.raw.source.ProjectSourceProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
@@ -40,7 +40,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class GraphApiController {
 
-    private final GraphBuildService graphService;
+    private final GraphBuilder graphService;
     private final GitLabApi         gitLabApi;
 
     // -----------------------------------------------------------------------

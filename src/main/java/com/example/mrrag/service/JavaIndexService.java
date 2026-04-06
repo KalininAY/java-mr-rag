@@ -1,9 +1,9 @@
 package com.example.mrrag.service;
 
-import com.example.mrrag.service.graph.GraphBuildService;
-import com.example.mrrag.service.source.GitLabProjectSourceProvider;
-import com.example.mrrag.service.source.LocalCloneProjectSourceProvider;
-import com.example.mrrag.service.source.ProjectSourceProvider;
+import com.example.mrrag.graph.GraphBuilder;
+import com.example.mrrag.graph.raw.source.GitLabProjectSourceProvider;
+import com.example.mrrag.graph.raw.source.LocalCloneProjectSourceProvider;
+import com.example.mrrag.graph.raw.source.ProjectSourceProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class JavaIndexService {
 
-    private final GraphBuildService graphService;
+    private final GraphBuilder graphService;
     private final GitLabApi         gitLabApi;
 
     private final Map<Path, ProjectIndex> indexCache = new ConcurrentHashMap<>();

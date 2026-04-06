@@ -1,10 +1,9 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.service.AstGraphService;
-import com.example.mrrag.service.AstGraphService.*;
 import com.example.mrrag.view.*;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
+import org.springframework.stereotype.Component;
 
 import java.util.*;
 
@@ -41,7 +40,7 @@ import java.util.*;
  * correctly emits {@code -1|<id>} lines for them.
  */
 @Slf4j
-@Service
+@Component
 public class GraphViewBuilder {
 
     // ------------------------------------------------------------------
@@ -49,7 +48,7 @@ public class GraphViewBuilder {
     // ------------------------------------------------------------------
 
     /**
-     * Container returned by {@link #build(ProjectGraph)}.
+     * Container returned by {@link #build(GraphRawBuilder.ProjectGraphRaw)}.
      * Provides typed look-up methods by node id or simple name.
      */
     public static class ViewGraph {

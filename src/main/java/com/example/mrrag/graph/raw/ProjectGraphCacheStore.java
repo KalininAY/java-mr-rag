@@ -1,8 +1,8 @@
 package com.example.mrrag.graph.raw;
 
 import com.example.mrrag.config.GraphCacheProperties;
+import com.example.mrrag.graph.GraphRawBuilder;
 import com.example.mrrag.service.AstGraphService;
-import com.example.mrrag.service.GraphSegmentIds;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -30,7 +30,7 @@ import java.util.Optional;
 import java.util.stream.Stream;
 
 /**
- * Persists {@link AstGraphService.ProjectGraph} as JSON files on disk.
+ * Persists {@link GraphRawBuilder.ProjectGraphRaw} as JSON files on disk.
  *
  * <h3>Storage layout</h3>
  * <pre>
@@ -208,7 +208,7 @@ public class ProjectGraphCacheStore {
     // Load
     // ------------------------------------------------------------------
 
-    public Optional<Map<String, AstGraphService.ProjectGraph>> tryLoadAllSegments(ProjectKey key) {
+    public Optional<Map<String, GraphRawBuilder.ProjectGraphRaw>> tryLoadAllSegments(ProjectKey key) {
         if (!properties.isSerializationEnabled()) {
             return Optional.empty();
         }
@@ -217,9 +217,9 @@ public class ProjectGraphCacheStore {
         if (Files.isRegularFile(manifest)) {
             try {
                 SegmentManifest man = MAPPER.readValue(manifest.toFile(), SegmentManifest.class);
-                Map<String, AstGraphService.ProjectGraph> out = new LinkedHashMap<>();
+                Map<String, GraphRawBuilder.ProjectGraphRaw> out = new LinkedHashMap<>();
                 for (String id : man.segments) {
-                    Optional<AstGraphService.ProjectGraph> g = loadSegmentFile(key, id);
+                    Optional<GraphRawBuilder.ProjectGraphRaw> g = loadSegmentFile(key, id);
                     if (g.isEmpty()) {
                         log.warn("Missing segment file for '{}', treating cache as incomplete", id);
                         return Optional.empty();
@@ -234,20 +234,20 @@ public class ProjectGraphCacheStore {
             }
         }
         return tryLoadLegacySingleFile(key).map(g -> {
-            Map<String, AstGraphService.ProjectGraph> m = new LinkedHashMap<>();
+            Map<String, GraphRawBuilder.ProjectGraphRaw> m = new LinkedHashMap<>();
             m.put(GraphSegmentIds.MAIN, g);
             return m;
         });
     }
 
-    public Optional<AstGraphService.ProjectGraph> tryLoadSegment(ProjectKey key, String segmentId) {
+    public Optional<GraphRawBuilder.ProjectGraphRaw> tryLoadSegment(ProjectKey key, String segmentId) {
         if (!properties.isSerializationEnabled()) {
             return Optional.empty();
         }
         return loadSegmentFile(key, segmentId);
     }
 
-    private Optional<AstGraphService.ProjectGraph> loadSegmentFile(ProjectKey key, String segmentId) {
+    private Optional<GraphRawBuilder.ProjectGraphRaw> loadSegmentFile(ProjectKey key, String segmentId) {
         if (GraphSegmentIds.isDepSegment(segmentId)) {
             Path globalGraph = depGraphFile(segmentId);
             if (Files.isRegularFile(globalGraph)) {
@@ -267,7 +267,7 @@ public class ProjectGraphCacheStore {
         return readGraphJson(f, segmentId);
     }
 
-    private Optional<AstGraphService.ProjectGraph> readGraphJson(Path f, String segmentId) {
+    private Optional<GraphRawBuilder.ProjectGraphRaw> readGraphJson(Path f, String segmentId) {
         try (InputStream in = Files.newInputStream(f)) {
             return Optional.of(ProjectGraphSerialization.read(in));
         } catch (IOException e) {
@@ -276,7 +276,7 @@ public class ProjectGraphCacheStore {
         }
     }
 
-    public Optional<AstGraphService.ProjectGraph> tryLoadLegacySingleFile(ProjectKey key) {
+    public Optional<GraphRawBuilder.ProjectGraphRaw> tryLoadLegacySingleFile(ProjectKey key) {
         if (!properties.isSerializationEnabled()) {
             return Optional.empty();
         }
@@ -296,7 +296,7 @@ public class ProjectGraphCacheStore {
     // Save
     // ------------------------------------------------------------------
 
-    public void savePartitioned(ProjectKey key, Map<String, AstGraphService.ProjectGraph> segments) throws IOException {
+    public void savePartitioned(ProjectKey key, Map<String, GraphRawBuilder.ProjectGraphRaw> segments) throws IOException {
         if (!properties.isSerializationEnabled() || segments == null || segments.isEmpty()) {
             return;
         }
@@ -304,7 +304,7 @@ public class ProjectGraphCacheStore {
         Files.createDirectories(bundle);
 
         List<String> ids = new ArrayList<>(segments.keySet());
-        for (Map.Entry<String, AstGraphService.ProjectGraph> e : segments.entrySet()) {
+        for (Map.Entry<String, GraphRawBuilder.ProjectGraphRaw> e : segments.entrySet()) {
             if (GraphSegmentIds.isDepSegment(e.getKey())) {
                 saveDepSegmentGlobal(e.getKey(), e.getValue(), key);
             } else {
@@ -323,8 +323,8 @@ public class ProjectGraphCacheStore {
     }
 
     private void saveDepSegmentGlobal(String segId,
-                                       AstGraphService.ProjectGraph graph,
-                                       ProjectKey key) throws IOException {
+                                      GraphRawBuilder.ProjectGraphRaw graph,
+                                      ProjectKey key) throws IOException {
         Path dir = depSegmentDir(segId);
         Path graphFile = dir.resolve(GRAPH_FILE);
         if (Files.isRegularFile(graphFile)) {
@@ -343,7 +343,7 @@ public class ProjectGraphCacheStore {
     }
 
     private void saveLocalSegment(Path bundle, String segId,
-                                   AstGraphService.ProjectGraph graph) throws IOException {
+                                  GraphRawBuilder.ProjectGraphRaw graph) throws IOException {
         Path f = localSegmentFile(bundle, segId);
         atomicWrite(bundle, f.getFileName().toString(), tmp -> {
             try (OutputStream out = Files.newOutputStream(tmp)) {

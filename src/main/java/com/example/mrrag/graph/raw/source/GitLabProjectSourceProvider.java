@@ -1,4 +1,4 @@
-package com.example.mrrag.service.source;
+package com.example.mrrag.graph.raw.source;
 
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;

@@ -1,4 +1,4 @@
-package com.example.mrrag.service.loader;
+package com.example.mrrag.graph.raw.loader;
 
 import lombok.extern.slf4j.Slf4j;
 

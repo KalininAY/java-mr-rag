@@ -1,4 +1,6 @@
-package com.example.mrrag.service.source;
+package com.example.mrrag.graph.raw.source;
+
+import com.example.mrrag.graph.GraphBuilder;
 
 import java.util.List;
 
@@ -7,7 +9,7 @@ import java.util.List;
  *
  * <p>Implementations are responsible only for <em>obtaining</em> the files;
  * all AST analysis is performed by
- * {@link com.example.mrrag.service.graph.GraphBuildService}.
+ * {@link GraphBuilder}.
  *
  * <h2>Built-in implementations</h2>
  * <ul>
