@@ -1,10 +1,9 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.EdgeKindConfig;
-import com.example.mrrag.commons.source.LocalCloneProjectSourceProvider;
-import com.example.mrrag.commons.source.ProjectSource;
-import com.example.mrrag.commons.source.ProjectSourceProvider;
-import com.example.mrrag.commons.source.VirtualSource;
+import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
+import com.example.mrrag.app.source.ProjectSourceProvider;
+import com.example.mrrag.app.source.ProjectSource;
 import com.example.mrrag.graph.model.*;
 import com.example.mrrag.graph.raw.*;
 import lombok.extern.slf4j.Slf4j;
@@ -198,7 +197,7 @@ public class GraphBuilderImpl implements GraphBuilder {
     }
 
     // ------------------------------------------------------------------
-    // Backward-compat: VirtualSource-based entry point (kept for old callers)
+    // Backward-compat: ProjectSource-based entry point (kept for old callers)
     // ------------------------------------------------------------------
 
     /**
@@ -206,7 +205,7 @@ public class GraphBuilderImpl implements GraphBuilder {
      *     that supplies virtual sources (e.g. GitLab API).
      */
     @Deprecated
-    public ProjectGraph buildGraphFromVirtualSources(List<VirtualSource> sources) throws Exception {
+    public ProjectGraph buildGraphFromProjectSources(List<ProjectSource> sources) throws Exception {
         List<ProjectSource> mapped = sources.stream()
                 .map(s -> new ProjectSource(s.path(), s.content()))
                 .toList();

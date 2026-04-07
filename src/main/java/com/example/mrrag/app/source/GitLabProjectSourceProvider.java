@@ -1,7 +1,6 @@
 package com.example.mrrag.app.source;
 
-import com.example.mrrag.commons.source.ProjectSource;
-import com.example.mrrag.commons.source.ProjectSourceProvider;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
 import org.gitlab4j.api.GitLabApiException;
@@ -49,6 +48,7 @@ import java.util.List;
 public class GitLabProjectSourceProvider implements ProjectSourceProvider {
 
     private final GitLabApi gitLabApi;
+    @Getter
     private final long      projectId;
     /** Branch name, tag name, or full / abbreviated commit SHA. */
     private final String    ref;
@@ -59,17 +59,10 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
         this.ref       = ref;
     }
 
-    public long getProjectId() { return projectId; }
-    public String getRef()     { return ref; }
-
     /**
      * Returns a stable cache key in the format {@code "gitlab:<id>@<ref>"}.
      * Example: {@code "gitlab:123@main"} or {@code "gitlab:123@a1b2c3d4"}.
      */
-    @Override
-    public String projectId() {
-        return "gitlab:" + projectId + "@" + ref;
-    }
 
     @Override
     public List<ProjectSource> getSources() throws GitLabApiException, IOException {

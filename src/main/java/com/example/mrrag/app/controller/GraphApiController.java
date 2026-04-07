@@ -6,7 +6,7 @@ import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.app.source.GitLabProjectSourceProvider;
-import com.example.mrrag.commons.source.ProjectSourceProvider;
+import com.example.mrrag.app.source.ProjectSourceProvider;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.ExampleObject;

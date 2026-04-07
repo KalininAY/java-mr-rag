@@ -1,8 +1,8 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.app.source.GitLabProjectSourceProvider;
-import com.example.mrrag.commons.source.LocalCloneProjectSourceProvider;
-import com.example.mrrag.commons.source.ProjectSourceProvider;
+import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
+import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.GraphEdge;
 import com.example.mrrag.graph.model.GraphNode;
@@ -23,7 +23,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * <h2>Build modes</h2>
  * <ul>
  *   <li>{@link #buildIndex(Path)} — local clone (original behaviour).</li>
- *   <li>{@link #buildIndexFromRef(long, String)} — no-clone via GitLab API.</li>
  *   <li>{@link #buildIndexFromProvider(ProjectSourceProvider)} — generic: supply
  *       any {@link ProjectSourceProvider} implementation.</li>
  * </ul>
@@ -54,18 +53,6 @@ public class JavaIndexService {
     }
 
     /**
-     * Build from GitLab API without cloning.
-     *
-     * <p>{@code ref} accepts a branch name, tag, or <strong>commit SHA</strong>.
-     *
-     * @param projectId numeric GitLab project id
-     * @param ref       branch, tag, or commit SHA
-     */
-    public ProjectIndex buildIndexFromRef(long projectId, String ref) throws Exception {
-        return buildIndexFromProvider(new GitLabProjectSourceProvider(gitLabApi, projectId, ref));
-    }
-
-    /**
      * Generic build path: delegate source loading to any {@link ProjectSourceProvider}.
      *
      * <pre>{@code
@@ -76,7 +63,7 @@ public class JavaIndexService {
     public ProjectIndex buildIndexFromProvider(ProjectSourceProvider provider) throws Exception {
         log.info("Building index via provider: {}", provider.getClass().getSimpleName());
         ProjectGraph graph = graphService.buildGraph(provider);
-        return project(graph, null);
+        return project(graph);
     }
 
     public void invalidate(Path projectRoot) {
@@ -112,7 +99,7 @@ public class JavaIndexService {
     // Projection: ProjectGraph → ProjectIndex
     // ------------------------------------------------------------------
 
-    private ProjectIndex project(ProjectGraph g, Path root) {
+    private ProjectIndex project(ProjectGraph g) {
         ProjectIndex idx = new ProjectIndex();
 
         for (GraphNode node : g.nodes.values()) {

@@ -1,7 +1,6 @@
-package com.example.mrrag.service.graph;
+package com.example.mrrag.graph;
 
-import com.example.mrrag.service.AstGraphService.GraphNode;
-import com.example.mrrag.service.AstGraphService.ProjectGraph;
+import com.example.mrrag.graph.model.ProjectGraph;
 import spoon.reflect.code.*;
 import spoon.reflect.declaration.*;
 import spoon.reflect.reference.*;
@@ -11,7 +10,7 @@ import java.util.Map;
 
 /**
  * Utility class containing stateless helper methods extracted from
- * {@link com.example.mrrag.service.AstGraphService} to keep the main
+ * to keep the main
  * service class focused on orchestration rather than low-level details.
  *
  * <h2>Responsibilities</h2>
@@ -305,8 +304,6 @@ public final class AstGraphUtils {
 
     /**
      * Translate a path from a GitLab diff into the graph-relative path.
-     * See {@link AstGraphI#normalizeFilePath(String, ProjectGraph)} for the
-     * full contract.
      */
     public static String normalizeFilePath(String diffPath, ProjectGraph graph) {
         if (diffPath == null || diffPath.isBlank()) return diffPath;

@@ -1,4 +1,4 @@
-package com.example.mrrag.commons.source;
+package com.example.mrrag.app.source;
 
 import lombok.extern.slf4j.Slf4j;
 
