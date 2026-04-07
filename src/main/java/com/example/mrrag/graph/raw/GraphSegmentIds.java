@@ -1,7 +1,6 @@
 package com.example.mrrag.graph.raw;
 
-import com.example.mrrag.graph.raw.MavenArtifactCoordinates;
-import com.example.mrrag.graph.GraphRawBuilder;
+import com.example.mrrag.graph.GraphBuilder;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -11,7 +10,7 @@ import java.util.HexFormat;
 import java.util.Optional;
 
 /**
- * Identifies a shard of a {@link GraphRawBuilder.ProjectGraphRaw}: project sources ({@link #MAIN})
+ * Identifies a shard of a {@link GraphBuilder.ProjectGraph}: project sources ({@link #MAIN})
  * or a dependency {@code *-sources.jar}.
  *
  * <h3>Dep segment ID format</h3>

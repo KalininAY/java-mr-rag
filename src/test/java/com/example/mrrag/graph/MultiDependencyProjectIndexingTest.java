@@ -212,7 +212,7 @@ class MultiDependencyProjectIndexingTest {
         copyTree(fixtureRoot(), projectRoot);
 
         AstGraphService service = buildService(ws.resolve("cache"));
-        GraphRawBuilder.ProjectGraphRaw graph = service.buildGraph(projectRoot);
+        GraphBuilder.ProjectGraph graph = service.buildGraph(projectRoot);
 
         assertThat(graph.nodes).isNotEmpty();
         Set<String> nodeIds = graph.nodes.keySet();
@@ -228,7 +228,7 @@ class MultiDependencyProjectIndexingTest {
         copyTree(fixtureRoot(), projectRoot);
 
         AstGraphService service = buildService(ws.resolve("cache"));
-        GraphRawBuilder.ProjectGraphRaw graph = service.buildGraph(projectRoot);
+        GraphBuilder.ProjectGraph graph = service.buildGraph(projectRoot);
 
         String userServiceId = graph.nodes.keySet().stream()
                 .filter(id -> id.equals("com.example.multi.service.UserService"))
@@ -237,7 +237,7 @@ class MultiDependencyProjectIndexingTest {
                 .as("com.example.multi.service.UserService must be a graph node")
                 .isNotNull();
 
-        var declares     = graph.outgoing(userServiceId, GraphRawBuilder.EdgeKind.DECLARES);
+        var declares     = graph.outgoing(userServiceId, GraphBuilderImpl.EdgeKind.DECLARES);
         var declaredNames = declares.stream().map(e -> e.callee()).toList();
         assertThat(declaredNames).as("must declare getProfile").anyMatch(id -> id.contains("getProfile"));
         assertThat(declaredNames).as("must declare evict").anyMatch(id -> id.contains("evict"));
@@ -258,7 +258,7 @@ class MultiDependencyProjectIndexingTest {
         var segments = store.tryLoadAllSegments(key);
 
         assertThat(segments).as("Segment cache must be present").isPresent();
-        Map<String, GraphRawBuilder.ProjectGraphRaw> parts = segments.get();
+        Map<String, GraphBuilder.ProjectGraph> parts = segments.get();
 
         assertThat(parts).containsKey(GraphSegmentIds.MAIN);
 
@@ -284,12 +284,12 @@ class MultiDependencyProjectIndexingTest {
         AstGraphService service = buildService(cacheDir);
         ProjectKey key = service.projectKey(projectRoot);
 
-        GraphRawBuilder.ProjectGraphRaw first = service.buildGraph(key);
+        GraphBuilder.ProjectGraph first = service.buildGraph(key);
         assertThat(first.nodes).isNotEmpty();
 
         service.invalidate(key);
 
-        GraphRawBuilder.ProjectGraphRaw second = service.buildGraph(key);
+        GraphBuilder.ProjectGraph second = service.buildGraph(key);
         assertThat(second.nodes.keySet())
                 .as("Reloaded graph must contain the same nodes")
                 .containsAll(first.nodes.keySet());
@@ -300,9 +300,8 @@ class MultiDependencyProjectIndexingTest {
     // ---------------------------------------------------------------
 
     private static AstGraphService buildService(Path cacheDir) {
-        return new AstGraphService(new GraphRawBuilder(
+        return new AstGraphService(new GraphBuilderImpl(
                 allEdgesEnabled(),
-                cacheProperties(cacheDir),
                 buildStore(cacheDir)));
     }
 

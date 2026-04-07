@@ -1,7 +1,7 @@
 package com.example.mrrag.graph.raw;
 
 import com.example.mrrag.app.config.GraphCacheProperties;
-import com.example.mrrag.graph.GraphRawBuilder;
+import com.example.mrrag.graph.GraphBuilder;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -29,7 +29,7 @@ import java.util.Optional;
 import java.util.stream.Stream;
 
 /**
- * Persists {@link GraphRawBuilder.ProjectGraphRaw} as JSON files on disk.
+ * Persists {@link GraphBuilder.ProjectGraph} as JSON files on disk.
  *
  * <h3>Storage layout</h3>
  * <pre>
@@ -207,7 +207,7 @@ public class ProjectGraphCacheStore {
     // Load
     // ------------------------------------------------------------------
 
-    public Optional<Map<String, GraphRawBuilder.ProjectGraphRaw>> tryLoadAllSegments(ProjectKey key) {
+    public Optional<Map<String, GraphBuilder.ProjectGraph>> tryLoadAllSegments(ProjectKey key) {
         if (!properties.isSerializationEnabled()) {
             return Optional.empty();
         }
@@ -216,9 +216,9 @@ public class ProjectGraphCacheStore {
         if (Files.isRegularFile(manifest)) {
             try {
                 SegmentManifest man = MAPPER.readValue(manifest.toFile(), SegmentManifest.class);
-                Map<String, GraphRawBuilder.ProjectGraphRaw> out = new LinkedHashMap<>();
+                Map<String, GraphBuilder.ProjectGraph> out = new LinkedHashMap<>();
                 for (String id : man.segments) {
-                    Optional<GraphRawBuilder.ProjectGraphRaw> g = loadSegmentFile(key, id);
+                    Optional<GraphBuilder.ProjectGraph> g = loadSegmentFile(key, id);
                     if (g.isEmpty()) {
                         log.warn("Missing segment file for '{}', treating cache as incomplete", id);
                         return Optional.empty();
@@ -233,20 +233,20 @@ public class ProjectGraphCacheStore {
             }
         }
         return tryLoadLegacySingleFile(key).map(g -> {
-            Map<String, GraphRawBuilder.ProjectGraphRaw> m = new LinkedHashMap<>();
+            Map<String, GraphBuilder.ProjectGraph> m = new LinkedHashMap<>();
             m.put(GraphSegmentIds.MAIN, g);
             return m;
         });
     }
 
-    public Optional<GraphRawBuilder.ProjectGraphRaw> tryLoadSegment(ProjectKey key, String segmentId) {
+    public Optional<GraphBuilder.ProjectGraph> tryLoadSegment(ProjectKey key, String segmentId) {
         if (!properties.isSerializationEnabled()) {
             return Optional.empty();
         }
         return loadSegmentFile(key, segmentId);
     }
 
-    private Optional<GraphRawBuilder.ProjectGraphRaw> loadSegmentFile(ProjectKey key, String segmentId) {
+    private Optional<GraphBuilder.ProjectGraph> loadSegmentFile(ProjectKey key, String segmentId) {
         if (GraphSegmentIds.isDepSegment(segmentId)) {
             Path globalGraph = depGraphFile(segmentId);
             if (Files.isRegularFile(globalGraph)) {
@@ -266,7 +266,7 @@ public class ProjectGraphCacheStore {
         return readGraphJson(f, segmentId);
     }
 
-    private Optional<GraphRawBuilder.ProjectGraphRaw> readGraphJson(Path f, String segmentId) {
+    private Optional<GraphBuilder.ProjectGraph> readGraphJson(Path f, String segmentId) {
         try (InputStream in = Files.newInputStream(f)) {
             return Optional.of(ProjectGraphSerialization.read(in));
         } catch (IOException e) {
@@ -275,7 +275,7 @@ public class ProjectGraphCacheStore {
         }
     }
 
-    public Optional<GraphRawBuilder.ProjectGraphRaw> tryLoadLegacySingleFile(ProjectKey key) {
+    public Optional<GraphBuilder.ProjectGraph> tryLoadLegacySingleFile(ProjectKey key) {
         if (!properties.isSerializationEnabled()) {
             return Optional.empty();
         }
@@ -295,7 +295,7 @@ public class ProjectGraphCacheStore {
     // Save
     // ------------------------------------------------------------------
 
-    public void savePartitioned(ProjectKey key, Map<String, GraphRawBuilder.ProjectGraphRaw> segments) throws IOException {
+    public void savePartitioned(ProjectKey key, Map<String, GraphBuilder.ProjectGraph> segments) throws IOException {
         if (!properties.isSerializationEnabled() || segments == null || segments.isEmpty()) {
             return;
         }
@@ -303,7 +303,7 @@ public class ProjectGraphCacheStore {
         Files.createDirectories(bundle);
 
         List<String> ids = new ArrayList<>(segments.keySet());
-        for (Map.Entry<String, GraphRawBuilder.ProjectGraphRaw> e : segments.entrySet()) {
+        for (Map.Entry<String, GraphBuilder.ProjectGraph> e : segments.entrySet()) {
             if (GraphSegmentIds.isDepSegment(e.getKey())) {
                 saveDepSegmentGlobal(e.getKey(), e.getValue(), key);
             } else {
@@ -322,7 +322,7 @@ public class ProjectGraphCacheStore {
     }
 
     private void saveDepSegmentGlobal(String segId,
-                                      GraphRawBuilder.ProjectGraphRaw graph,
+                                      GraphBuilder.ProjectGraph graph,
                                       ProjectKey key) throws IOException {
         Path dir = depSegmentDir(segId);
         Path graphFile = dir.resolve(GRAPH_FILE);
@@ -342,7 +342,7 @@ public class ProjectGraphCacheStore {
     }
 
     private void saveLocalSegment(Path bundle, String segId,
-                                  GraphRawBuilder.ProjectGraphRaw graph) throws IOException {
+                                  GraphBuilder.ProjectGraph graph) throws IOException {
         Path f = localSegmentFile(bundle, segId);
         atomicWrite(bundle, f.getFileName().toString(), tmp -> {
             try (OutputStream out = Files.newOutputStream(tmp)) {

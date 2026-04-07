@@ -14,13 +14,13 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class ProjectGraphRawPartitionerTest {
+class ProjectGraphPartitionerTest {
 
     @Test
     void mainOnlyWhenNoSourcesJars() {
-        var g = new GraphRawBuilder.ProjectGraphRaw();
-        g.addNode(new GraphRawBuilder.GraphNode(
-                "com.app.Foo", GraphRawBuilder.NodeKind.CLASS, "Foo",
+        var g = new GraphBuilder.ProjectGraph();
+        g.addNode(new GraphBuilderImpl.GraphNode(
+                "com.app.Foo", GraphBuilderImpl.NodeKind.CLASS, "Foo",
                 "src/main/java/com/app/Foo.java", 1, 2, "", ""));
         Path root = Path.of("/tmp/proj");
         var parts = ProjectGraphPartitioner.partition(g, root, List.of());
@@ -45,12 +45,12 @@ class ProjectGraphRawPartitionerTest {
                 "test-fingerprint");
 
         // main segment only
-        GraphRawBuilder.ProjectGraphRaw mainGraph = new GraphRawBuilder.ProjectGraphRaw();
-        mainGraph.addNode(new GraphRawBuilder.GraphNode(
-                "com.app.Foo", GraphRawBuilder.NodeKind.CLASS, "Foo",
+        GraphBuilder.ProjectGraph mainGraph = new GraphBuilder.ProjectGraph();
+        mainGraph.addNode(new GraphBuilderImpl.GraphNode(
+                "com.app.Foo", GraphBuilderImpl.NodeKind.CLASS, "Foo",
                 "src/main/java/com/app/Foo.java", 1, 2, "", ""));
 
-        Map<String, GraphRawBuilder.ProjectGraphRaw> segments = Map.of(
+        Map<String, GraphBuilder.ProjectGraph> segments = Map.of(
                 GraphSegmentIds.MAIN, mainGraph);
         store.savePartitioned(key, segments);
 

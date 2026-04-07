@@ -1,4 +1,4 @@
-package com.example.mrrag.app.integration;
+package com.example.mrrag.app.service;
 
 import com.example.mrrag.review.spi.MergeRequestCheckoutPort;
 import lombok.RequiredArgsConstructor;

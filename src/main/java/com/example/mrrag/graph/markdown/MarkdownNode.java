@@ -1,7 +1,7 @@
-package com.example.mrrag.graph.linked;
+package com.example.mrrag.graph.markdown;
 
-import com.example.mrrag.graph.GraphRawBuilder.GraphNode;
-import com.example.mrrag.graph.GraphRawBuilder.NodeKind;
+import com.example.mrrag.graph.GraphBuilder.GraphNode;
+import com.example.mrrag.graph.GraphBuilder.NodeKind;
 
 import java.lang.reflect.Field;
 import java.util.*;
@@ -15,14 +15,14 @@ import java.util.stream.Collectors;
  *
  * <p>Renamed from {@code GraphNodeView} (was in {@code com.example.mrrag.view}).
  */
-public abstract class LinkedNode {
+public abstract class MarkdownNode {
 
     private final GraphNode node;
     private Map<String, List<Integer>> callerSiteLinesMap;
-    private final List<LinkedNode> declaredBy = new ArrayList<>();
-    private final List<LinkedClassNode> annotatedBy = new ArrayList<>();
+    private final List<MarkdownNode> declaredBy = new ArrayList<>();
+    private final List<MarkdownClassNode> annotatedBy = new ArrayList<>();
 
-    protected LinkedNode(GraphNode node) {
+    protected MarkdownNode(GraphNode node) {
         this.node = node;
     }
 
@@ -40,11 +40,11 @@ public abstract class LinkedNode {
 
     // -- Structural links --
 
-    public List<LinkedNode>      getDeclaredBy()  { return declaredBy; }
-    public List<LinkedClassNode> getAnnotatedBy() { return annotatedBy; }
+    public List<MarkdownNode>      getDeclaredBy()  { return declaredBy; }
+    public List<MarkdownClassNode> getAnnotatedBy() { return annotatedBy; }
 
-    public void addDeclaredBy(LinkedNode owner)          { declaredBy.add(owner); }
-    public void addAnnotatedBy(LinkedClassNode annotation) { annotatedBy.add(annotation); }
+    public void addDeclaredBy(MarkdownNode owner)          { declaredBy.add(owner); }
+    public void addAnnotatedBy(MarkdownClassNode annotation) { annotatedBy.add(annotation); }
 
     public void recordCallerInvocationSite(String callerId, int line) {
         if (callerId == null || line <= 0) return;
@@ -57,7 +57,7 @@ public abstract class LinkedNode {
         return callerSiteLinesMap.getOrDefault(callerId, List.of());
     }
 
-    protected List<LinkedNode> outgoingCallees() { return List.of(); }
+    protected List<MarkdownNode> outgoingCallees() { return List.of(); }
 
     protected List<Integer> edgeLinesTo(String targetId) { return List.of(); }
 
@@ -83,7 +83,7 @@ public abstract class LinkedNode {
                 // skip
             } else if (value instanceof Collection<?> col) {
                 appendGroupedCollection(sb, col, this, field.getName());
-            } else if (value instanceof LinkedNode view) {
+            } else if (value instanceof MarkdownNode view) {
                 appendGroupedCollection(sb, List.of(view), this, field.getName());
             } else if (value instanceof Map) {
                 // skip internal edge-line maps
@@ -115,13 +115,13 @@ public abstract class LinkedNode {
     }
 
     private static void appendGroupedCollection(StringBuilder sb, Collection<?> col,
-                                                LinkedNode owner, String contextFieldName) {
+                                                MarkdownNode owner, String contextFieldName) {
         Map<String, List<String>> sections = new LinkedHashMap<>();
         for (Object element : col) {
-            if (element instanceof LinkedNode view) {
-                LinkedNode displayView = view;
-                if ("instantiates".equals(contextFieldName) && view instanceof LinkedClassNode cls) {
-                    LinkedNode ctor = resolveInstantiationConstructor(owner, cls);
+            if (element instanceof MarkdownNode view) {
+                MarkdownNode displayView = view;
+                if ("instantiates".equals(contextFieldName) && view instanceof MarkdownClassNode cls) {
+                    MarkdownNode ctor = resolveInstantiationConstructor(owner, cls);
                     if (ctor != null) displayView = ctor;
                 }
                 String id = normalizeId(displayView.getId());
@@ -151,8 +151,8 @@ public abstract class LinkedNode {
         }
     }
 
-    private static void appendProjectElementLines(List<String> bodyLines, LinkedNode view,
-                                                  LinkedNode owner, String contextFieldName) {
+    private static void appendProjectElementLines(List<String> bodyLines, MarkdownNode view,
+                                                  MarkdownNode owner, String contextFieldName) {
         String decl = view.getDeclaration();
         String text = (decl != null && !decl.isBlank()) ? decl : view.getContent();
         if (text == null || text.isBlank()) { bodyLines.add(view.getStartLine() + "|(empty)"); return; }
@@ -170,16 +170,16 @@ public abstract class LinkedNode {
     }
 
     private static String buildLinesAnnotation(Collection<?> col, String sectionKey,
-                                               LinkedNode owner, String contextFieldName) {
+                                               MarkdownNode owner, String contextFieldName) {
         int spaceIdx = sectionKey.indexOf("] ");
         if (spaceIdx < 0) return "";
         String normalizedId = sectionKey.substring(spaceIdx + 2);
-        LinkedNode targetView = null;
+        MarkdownNode targetView = null;
         for (Object element : col) {
-            if (element instanceof LinkedNode v) {
-                LinkedNode match = v;
-                if ("instantiates".equals(contextFieldName) && v instanceof LinkedClassNode cls) {
-                    LinkedNode ctor = resolveInstantiationConstructor(owner, cls);
+            if (element instanceof MarkdownNode v) {
+                MarkdownNode match = v;
+                if ("instantiates".equals(contextFieldName) && v instanceof MarkdownClassNode cls) {
+                    MarkdownNode ctor = resolveInstantiationConstructor(owner, cls);
                     if (ctor != null) match = ctor;
                 }
                 if (normalizeId(match.getId()).equals(normalizedId)) { targetView = match; break; }
@@ -192,12 +192,12 @@ public abstract class LinkedNode {
         return " Lines:[" + joined + "]";
     }
 
-    private static LinkedNode resolveInstantiationConstructor(LinkedNode owner, LinkedClassNode cls) {
+    private static MarkdownNode resolveInstantiationConstructor(MarkdownNode owner, MarkdownClassNode cls) {
         List<Integer> classLines = owner.edgeLinesTo(cls.getId());
         if (classLines.isEmpty()) return null;
         Set<Integer> classLineSet = new HashSet<>(classLines);
         String classId = cls.getId();
-        for (LinkedNode c : owner.outgoingCallees()) {
+        for (MarkdownNode c : owner.outgoingCallees()) {
             if (c.getKind() != NodeKind.CONSTRUCTOR) continue;
             String nid = normalizeId(c.getId());
             if (!nid.startsWith(classId + "#")) continue;
@@ -210,7 +210,7 @@ public abstract class LinkedNode {
 
     private static List<Field> collectFields(Class<?> clazz) {
         List<Field> fields = new ArrayList<>();
-        for (Class<?> c = clazz; c != null && c != LinkedNode.class; c = c.getSuperclass()) {
+        for (Class<?> c = clazz; c != null && c != MarkdownNode.class; c = c.getSuperclass()) {
             fields.addAll(0, Arrays.asList(c.getDeclaredFields()));
         }
         return fields;

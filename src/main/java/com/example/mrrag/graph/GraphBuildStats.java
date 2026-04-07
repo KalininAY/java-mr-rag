@@ -1,7 +1,7 @@
 package com.example.mrrag.graph;
 
-import com.example.mrrag.graph.GraphRawBuilder.EdgeKind;
-import com.example.mrrag.graph.GraphRawBuilder.NodeKind;
+import com.example.mrrag.graph.GraphBuilder.EdgeKind;
+import com.example.mrrag.graph.GraphBuilder.NodeKind;
 
 import java.util.Map;
 

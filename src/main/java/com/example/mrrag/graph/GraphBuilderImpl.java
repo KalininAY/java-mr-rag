@@ -1,7 +1,6 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.EdgeKindConfig;
-import com.example.mrrag.app.config.GraphCacheProperties;
 import com.example.mrrag.commons.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.commons.source.ProjectSource;
 import com.example.mrrag.commons.source.ProjectSourceProvider;
@@ -42,83 +41,13 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Slf4j
 @Component
-public class GraphRawBuilder implements GraphBuilder {
-
-    // ------------------------------------------------------------------
-    // Public model
-    // ------------------------------------------------------------------
-
-    public enum NodeKind {
-        CLASS, INTERFACE, CONSTRUCTOR, METHOD, FIELD, VARIABLE,
-        LAMBDA, ANNOTATION, TYPE_PARAM, ANNOTATION_ATTRIBUTE
-    }
-
-    public enum EdgeKind {
-        DECLARES, EXTENDS, IMPLEMENTS,
-        INVOKES, INSTANTIATES, INSTANTIATES_ANONYMOUS, REFERENCES_METHOD,
-        READS_FIELD, WRITES_FIELD,
-        READS_LOCAL_VAR, WRITES_LOCAL_VAR,
-        THROWS, ANNOTATED_WITH, REFERENCES_TYPE, OVERRIDES,
-        HAS_TYPE_PARAM, HAS_BOUND, ANNOTATION_ATTR
-    }
-
-    public record GraphNode(
-            String id, NodeKind kind, String simpleName,
-            String filePath, int startLine, int endLine,
-            String sourceSnippet, String declarationSnippet) {}
-
-    public record GraphEdge(
-            String caller, EdgeKind kind, String callee,
-            String filePath, int line) {}
-
-    public static class ProjectGraphRaw {
-        public final Map<String, GraphNode>       nodes        = new LinkedHashMap<>();
-        public final Map<String, List<GraphEdge>> edgesFrom    = new LinkedHashMap<>();
-        public final Map<String, List<GraphEdge>> edgesTo      = new LinkedHashMap<>();
-        public final Map<String, List<GraphNode>> bySimpleName = new LinkedHashMap<>();
-        public final Map<String, List<GraphNode>> byLine       = new LinkedHashMap<>();
-        public final Map<String, List<GraphNode>> byFile       = new LinkedHashMap<>();
-
-        public Set<String> allFilePaths() { return byFile.keySet(); }
-
-        public void addNode(GraphNode n) {
-            nodes.put(n.id(), n);
-            bySimpleName.computeIfAbsent(n.simpleName(), k -> new ArrayList<>()).add(n);
-            byLine.computeIfAbsent(n.filePath() + "#" + n.startLine(), k -> new ArrayList<>()).add(n);
-            byFile.computeIfAbsent(n.filePath(), k -> new ArrayList<>()).add(n);
-        }
-
-        public void addEdge(GraphEdge e) {
-            edgesFrom.computeIfAbsent(e.caller(), k -> new ArrayList<>()).add(e);
-            edgesTo.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(e);
-        }
-
-        public List<GraphEdge> outgoing(String id)              { return edgesFrom.getOrDefault(id, List.of()); }
-        public List<GraphEdge> incoming(String id)              { return edgesTo.getOrDefault(id, List.of()); }
-        public List<GraphEdge> outgoing(String id, EdgeKind k)  { return outgoing(id).stream().filter(e -> e.kind() == k).toList(); }
-        public List<GraphEdge> incoming(String id, EdgeKind k)  { return incoming(id).stream().filter(e -> e.kind() == k).toList(); }
-
-        public List<GraphNode> nodesAtLine(String relPath, int line) {
-            return byFile.getOrDefault(relPath, List.of()).stream()
-                    .filter(n -> n.startLine() <= line && n.endLine() >= line)
-                    .toList();
-        }
-
-        /** Reconstruct a {@link ProjectGraphRaw} from flat node/edge lists (used by deserialization). */
-        public static ProjectGraphRaw reconstruct(List<GraphNode> nodes, List<GraphEdge> edges) {
-            ProjectGraphRaw g = new ProjectGraphRaw();
-            for (GraphNode n : nodes) g.addNode(n);
-            for (GraphEdge e : edges) g.addEdge(e);
-            return g;
-        }
-    }
+public class GraphBuilderImpl implements GraphBuilder {
 
     // ------------------------------------------------------------------
     // Dependencies & cache
     // ------------------------------------------------------------------
 
     private final EdgeKindConfig          edgeConfig;
-    private final GraphCacheProperties    cacheProps;
     private final ProjectGraphCacheStore cacheStore;
 
     /**
@@ -126,8 +55,8 @@ public class GraphRawBuilder implements GraphBuilder {
      * {@link #buildGraph(ProjectSourceProvider)} is intentionally cache-free
      * — lifetime is controlled by the caller.
      */
-    private final Map<Path, ProjectGraphRaw>        localCache   = new ConcurrentHashMap<>();
-    private final Map<ProjectKey, ProjectGraphRaw>  keyCache     = new ConcurrentHashMap<>();
+    private final Map<Path, ProjectGraph>        localCache   = new ConcurrentHashMap<>();
+    private final Map<ProjectKey, ProjectGraph>  keyCache     = new ConcurrentHashMap<>();
 
     /**
      * Primary Spring constructor — injects cache support.
@@ -135,17 +64,15 @@ public class GraphRawBuilder implements GraphBuilder {
      * is present for tests; without it Spring cannot determine which one to use.
      */
     @Autowired
-    public GraphRawBuilder(EdgeKindConfig edgeConfig,
-                           GraphCacheProperties cacheProps,
-                           ProjectGraphCacheStore cacheStore) {
+    public GraphBuilderImpl(EdgeKindConfig edgeConfig,
+                            ProjectGraphCacheStore cacheStore) {
         this.edgeConfig  = edgeConfig;
-        this.cacheProps  = cacheProps;
         this.cacheStore  = cacheStore;
     }
 
     /** Minimal constructor for callers that do not need disk-cache support. */
-    public GraphRawBuilder(EdgeKindConfig edgeConfig) {
-        this(edgeConfig, null, null);
+    public GraphBuilderImpl(EdgeKindConfig edgeConfig) {
+        this(edgeConfig, null);
     }
 
     // ------------------------------------------------------------------
@@ -173,9 +100,9 @@ public class GraphRawBuilder implements GraphBuilder {
      *   <li>Falls back to a full Spoon build from source.</li>
      * </ol>
      */
-    public ProjectGraphRaw buildGraph(ProjectKey key) throws Exception {
+    public ProjectGraph buildGraph(ProjectKey key) throws Exception {
         // 1. In-memory cache
-        ProjectGraphRaw cached = keyCache.get(key);
+        ProjectGraph cached = keyCache.get(key);
         if (cached != null) {
             log.debug("buildGraph(ProjectKey): in-memory cache hit for {}", key);
             return cached;
@@ -185,8 +112,8 @@ public class GraphRawBuilder implements GraphBuilder {
         if (cacheStore != null) {
             var loaded = cacheStore.tryLoadAllSegments(key);
             if (loaded.isPresent()) {
-                Map<String, ProjectGraphRaw> segments = loaded.get();
-                ProjectGraphRaw main = segments.getOrDefault(GraphSegmentIds.MAIN, new ProjectGraphRaw());
+                Map<String, ProjectGraph> segments = loaded.get();
+                ProjectGraph main = segments.getOrDefault(GraphSegmentIds.MAIN, new ProjectGraph());
                 keyCache.put(key, main);
                 log.debug("buildGraph(ProjectKey): disk cache hit for {}", key);
                 return main;
@@ -195,12 +122,12 @@ public class GraphRawBuilder implements GraphBuilder {
 
         // 3. Full build
         log.info("buildGraph(ProjectKey): building from source for {}", key.projectRoot());
-        ProjectGraphRaw graph = buildGraph(new LocalCloneProjectSourceProvider(key.projectRoot()));
+        ProjectGraph graph = buildGraph(new LocalCloneProjectSourceProvider(key.projectRoot()));
         keyCache.put(key, graph);
 
         // Persist to disk cache
         if (cacheStore != null) {
-            Map<String, ProjectGraphRaw> segments = new LinkedHashMap<>();
+            Map<String, ProjectGraph> segments = new LinkedHashMap<>();
             segments.put(GraphSegmentIds.MAIN, graph);
             try {
                 cacheStore.savePartitioned(key, segments);
@@ -230,7 +157,7 @@ public class GraphRawBuilder implements GraphBuilder {
      * Build a symbol graph from any {@link ProjectSourceProvider}.
      */
     @Override
-    public ProjectGraphRaw buildGraph(ProjectSourceProvider provider) throws Exception {
+    public ProjectGraph buildGraph(ProjectSourceProvider provider) throws Exception {
         log.info("Building AST graph via provider: {}", provider.getClass().getSimpleName());
         List<ProjectSource> sources = provider.getSources();
         log.info("Provider supplied {} .java files", sources.size());
@@ -251,7 +178,7 @@ public class GraphRawBuilder implements GraphBuilder {
     // GraphBuildService — path normalisation
     // ------------------------------------------------------------------
 
-    public String normalizeFilePath(String diffPath, ProjectGraphRaw graph) {
+    public String normalizeFilePath(String diffPath, ProjectGraph graph) {
         if (diffPath == null || diffPath.isBlank()) return diffPath;
         String norm = diffPath.replace('\\', '/');
         for (String known : graph.allFilePaths()) {
@@ -278,7 +205,7 @@ public class GraphRawBuilder implements GraphBuilder {
      *     that supplies virtual sources (e.g. GitLab API).
      */
     @Deprecated
-    public ProjectGraphRaw buildGraphFromVirtualSources(List<VirtualSource> sources) throws Exception {
+    public ProjectGraph buildGraphFromVirtualSources(List<VirtualSource> sources) throws Exception {
         List<ProjectSource> mapped = sources.stream()
                 .map(s -> new ProjectSource(s.path(), s.content()))
                 .toList();
@@ -291,7 +218,7 @@ public class GraphRawBuilder implements GraphBuilder {
 
     /**
      * Builds a Spoon {@link CtModel} from the provided sources, then
-     * translates it into a {@link ProjectGraphRaw}.
+     * translates it into a {@link ProjectGraph}.
      *
      * <p>All {@link ProjectSource} entries are fed to Spoon as
      * {@link VirtualFile} objects, so no temporary directory is needed
@@ -299,7 +226,7 @@ public class GraphRawBuilder implements GraphBuilder {
      *
      * @param classpathRoot when non-null (e.g. local clone), try Gradle/Maven compile classpath for Spoon
      */
-    private ProjectGraphRaw doBuildGraphFromSources(List<ProjectSource> sources, Path classpathRoot) {
+    private ProjectGraph doBuildGraphFromSources(List<ProjectSource> sources, Path classpathRoot) {
         // Build source-lines map for snippet extraction
         Map<String, String[]> sourceLines = new ConcurrentHashMap<>();
         for (ProjectSource src : sources) {
@@ -340,7 +267,7 @@ public class GraphRawBuilder implements GraphBuilder {
             model = launcher.getModel();
             if (model == null) {
                 log.error("Spoon returned null model — returning empty graph");
-                return new ProjectGraphRaw();
+                return new ProjectGraph();
             }
         }
 
@@ -354,10 +281,10 @@ public class GraphRawBuilder implements GraphBuilder {
     // ------------------------------------------------------------------
 
     @SuppressWarnings("unchecked")
-    private ProjectGraphRaw doBuildGraphFromModel(CtModel model,
-                                                  Map<String, String[]> sourceLines,
-                                                  String root) {
-        var graph = new ProjectGraphRaw();
+    private ProjectGraph doBuildGraphFromModel(CtModel model,
+                                               Map<String, String[]> sourceLines,
+                                               String root) {
+        var graph = new ProjectGraph();
 
         // ── 1. Type nodes ────────────────────────────────────────────────────────
         model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {

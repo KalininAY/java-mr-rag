@@ -1,6 +1,6 @@
 package com.example.mrrag.app.config;
 
-import com.example.mrrag.graph.GraphRawBuilder;
+import com.example.mrrag.graph.GraphBuilderImpl;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
@@ -25,7 +25,7 @@ import org.springframework.stereotype.Component;
  * }
  * }</pre>
  *
- * @see GraphRawBuilder.EdgeKind
+ * @see GraphBuilderImpl.EdgeKind
  */
 @Component
 public class EdgeKindConfig {
@@ -51,7 +51,7 @@ public class EdgeKindConfig {
      * @param kind тип ребра; не должен быть {@code null}
      * @return {@code true}, если ребро включено; {@code false} иначе
      */
-    public boolean isEnabled(GraphRawBuilder.EdgeKind kind) {
+    public boolean isEnabled(GraphBuilderImpl.EdgeKind kind) {
         return env.getProperty(
                 "graph.edge." + kind.name() + ".enabled",
                 Boolean.class,

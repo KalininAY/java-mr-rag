@@ -1,9 +1,9 @@
 package com.example.mrrag.app.controller;
 
 import com.example.mrrag.graph.AstGraphService;
-import com.example.mrrag.graph.GraphRawBuilder.GraphNode;
-import com.example.mrrag.graph.GraphRawBuilder.ProjectGraphRaw;
-import com.example.mrrag.graph.linked.LinkedGraphBuilder;
+import com.example.mrrag.graph.GraphBuilder.GraphNode;
+import com.example.mrrag.graph.GraphBuilder.ProjectGraph;
+import com.example.mrrag.graph.markdown.MarkdownGraphBuilder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -33,7 +33,7 @@ import java.util.stream.Collectors;
 public class GraphDebugController {
 
     private final AstGraphService graphService;
-    private final LinkedGraphBuilder linkedGraphBuilder;
+    private final MarkdownGraphBuilder linkedGraphBuilder;
 
     // ------------------------------------------------------------------
     // GET /debug/graph/stats?repoDir=/tmp/repo-123/source
@@ -42,7 +42,7 @@ public class GraphDebugController {
     @GetMapping("/stats")
     public Map<String, Object> stats(@RequestParam String repoDir) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraphRaw graph = graphService.buildGraph(root);
+        ProjectGraph graph = graphService.buildGraph(root);
 
         var build = linkedGraphBuilder.build(graph);
         String s = build.byId("bugbusters.modules.extensions.allure.model.AllureStep#findPlaceFrom()").toMarkdown();
@@ -73,7 +73,7 @@ public class GraphDebugController {
     public Map<String, Object> file(@RequestParam String repoDir,
                                     @RequestParam String diffPath) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraphRaw graph = graphService.buildGraph(root);
+        ProjectGraph graph = graphService.buildGraph(root);
 
         String normalized = graphService.normalizeFilePath(diffPath, graph);
         List<GraphNode> nodes = graph.nodesAtLine(normalized, -1);
@@ -104,7 +104,7 @@ public class GraphDebugController {
                                     @RequestParam String diffPath,
                                     @RequestParam int line) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraphRaw graph = graphService.buildGraph(root);
+        ProjectGraph graph = graphService.buildGraph(root);
 
         String normalized = graphService.normalizeFilePath(diffPath, graph);
         List<GraphNode> enclosing = graph.nodesAtLine(normalized, line);

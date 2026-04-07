@@ -1,14 +1,15 @@
-package com.example.mrrag.app.integration;
+package com.example.mrrag.app.service;
 
+import com.example.mrrag.graph.GraphBuilder;
+import com.example.mrrag.graph.GraphBuilder.ProjectGraph;
 import com.example.mrrag.review.model.ChangedLine;
 import com.example.mrrag.review.model.ChangeGroup;
 import com.example.mrrag.review.model.EnrichmentSnippet;
 import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
 import com.example.mrrag.graph.AstGraphService;
-import com.example.mrrag.graph.GraphRawBuilder;
-import com.example.mrrag.graph.GraphRawBuilder.GraphEdge;
-import com.example.mrrag.graph.GraphRawBuilder.GraphNode;
-import com.example.mrrag.graph.GraphRawBuilder.ProjectGraphRaw;
+import com.example.mrrag.graph.GraphBuilderImpl;
+import com.example.mrrag.graph.GraphBuilder.GraphEdge;
+import com.example.mrrag.graph.GraphBuilder.GraphNode;
 import com.example.mrrag.graph.JavaIndexService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -67,8 +68,8 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
             Path sourceRepoDir,
             Path targetRepoDir
     ) throws Exception {
-        ProjectGraphRaw sourceGraph = graphService.buildGraph(sourceRepoDir);
-        ProjectGraphRaw targetGraph = graphService.buildGraph(targetRepoDir);
+        ProjectGraph sourceGraph = graphService.buildGraph(sourceRepoDir);
+        ProjectGraph targetGraph = graphService.buildGraph(targetRepoDir);
 
         for (ChangeGroup group : groups) {
             enrichGroup(group, sourceGraph, targetGraph, sourceRepoDir, targetRepoDir);
@@ -82,8 +83,8 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
 
     private void enrichGroup(
             ChangeGroup group,
-            ProjectGraphRaw sourceGraph,
-            ProjectGraphRaw targetGraph,
+            ProjectGraph sourceGraph,
+            ProjectGraph targetGraph,
             Path sourceRepoDir,
             Path targetRepoDir
     ) {
@@ -106,7 +107,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
 
     private void strategyEdgesAtChangedLines(
             List<ChangedLine> lines,
-            ProjectGraphRaw graph,
+            ProjectGraph graph,
             Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
@@ -156,7 +157,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
 
     private void strategyDeletedDeclarations(
             List<ChangedLine> deleted,
-            ProjectGraphRaw targetGraph,
+            ProjectGraph targetGraph,
             List<EnrichmentSnippet> snippets
     ) {
         for (ChangedLine cl : deleted) {
@@ -183,7 +184,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
                 };
 
                 List<String> usageLines = usageEdges.stream()
-                        .filter(e -> e.kind() != GraphRawBuilder.EdgeKind.DECLARES)
+                        .filter(e -> e.kind() != GraphBuilderImpl.EdgeKind.DECLARES)
                         .limit(10)
                         .map(e -> e.filePath() + ":" + e.line())
                         .distinct()
@@ -207,7 +208,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
 
     private void strategyContainingMethod(
             List<ChangedLine> all,
-            ProjectGraphRaw graph,
+            ProjectGraph graph,
             Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
@@ -223,7 +224,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
         int    line = first.lineNumber() > 0 ? first.lineNumber() : first.oldLineNumber();
 
         graph.nodesAtLine(file, line).stream()
-                .filter(n -> n.kind() == GraphRawBuilder.NodeKind.METHOD)
+                .filter(n -> n.kind() == GraphBuilderImpl.NodeKind.METHOD)
                 .min(Comparator.comparingInt(n -> n.endLine() - n.startLine()))
                 .ifPresent(method -> {
                     if (full(snippets)) return;
