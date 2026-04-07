@@ -63,16 +63,11 @@ public class JavaIndexService {
 
     /**
      * Generic build path: delegate source loading to any {@link ProjectSourceProvider}.
-     *
-     * <pre>{@code
-     * ProjectSourceProvider p = new LocalCloneProjectSourceProvider(myPath);
-     * ProjectIndex idx = javaIndexService.buildIndexFromProvider(p);
-     * }</pre>
      */
     public ProjectIndex buildIndexFromProvider(ProjectSourceProvider provider) throws Exception {
         log.info("Building index via provider: {}", provider.getClass().getSimpleName());
         AstGraphService.ProjectGraph graph = graphService.buildGraph(provider);
-        return project(graph, null);
+        return project(graph);
     }
 
     public void invalidate(Path projectRoot) {
@@ -105,72 +100,75 @@ public class JavaIndexService {
     }
 
     // ------------------------------------------------------------------
-    // Projection: ProjectGraph → ProjectIndex
+    // Projection: ProjectGraph -> ProjectIndex
     // ------------------------------------------------------------------
 
-    private ProjectIndex project(AstGraphService.ProjectGraph g, Path root) {
+    /**
+     * Projects a {@link AstGraphService.ProjectGraph} into a flat {@link ProjectIndex}
+     * suitable for line-based lookups.
+     *
+     * <p>Maps the new graph model (byFile/edges with public fields) onto the
+     * index data structures used by {@link ContextEnricher} and the REST API.
+     */
+    private ProjectIndex project(AstGraphService.ProjectGraph graph) {
         ProjectIndex idx = new ProjectIndex();
 
-        for (AstGraphService.GraphNode node : g.nodes.values()) {
-            switch (node.kind()) {
-                case METHOD -> {
-                    String sig = extractSignatureFromId(node.id());
-                    MethodInfo m = new MethodInfo(node.simpleName(), node.id(), node.filePath(),
-                            node.startLine(), node.endLine(), sig, List.of(), null);
-                    idx.methods.put(node.id(), m);
-                    idx.methodsByFile.computeIfAbsent(node.filePath(), k -> new ArrayList<>()).add(m);
-                }
-                case FIELD -> {
-                    FieldInfo f = new FieldInfo(node.simpleName(), node.id(), node.filePath(),
-                            node.startLine(), "");
-                    idx.fields.put(node.id(), f);
-                    idx.fieldsByName.computeIfAbsent(node.simpleName(), k -> new ArrayList<>()).add(f);
-                }
-                case VARIABLE -> {
-                    VariableInfo v = new VariableInfo(node.simpleName(), node.filePath(), node.startLine(), "");
-                    idx.variables.computeIfAbsent(node.filePath() + "#" + node.simpleName(),
-                            k -> new ArrayList<>()).add(v);
-                }
-                default -> {}
-            }
-        }
-
-        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
-            for (AstGraphService.GraphEdge e : edges) {
-                if (e.kind() == AstGraphService.EdgeKind.INVOKES) {
-                    CallSite cs = new CallSite(simpleNameFromId(e.callee()), e.filePath(),
-                            e.line(), e.callee(), List.of());
-                    idx.callSites.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(cs);
+        // --- Nodes ---
+        for (List<AstGraphService.GraphNode> fileNodes : graph.byFile.values()) {
+            for (AstGraphService.GraphNode node : fileNodes) {
+                switch (node.kind) {
+                    case METHOD -> {
+                        String sig = extractSignatureFromId(node.id);
+                        MethodInfo m = new MethodInfo(
+                                node.name, node.id, node.filePath,
+                                node.lineStart, node.lineEnd, sig, List.of(), null);
+                        idx.methods.put(node.id, m);
+                        idx.methodsByFile
+                                .computeIfAbsent(node.filePath, k -> new ArrayList<>())
+                                .add(m);
+                    }
+                    case FIELD -> {
+                        FieldInfo f = new FieldInfo(
+                                node.name, node.id, node.filePath, node.lineStart, "");
+                        idx.fields.put(node.id, f);
+                        idx.fieldsByName
+                                .computeIfAbsent(node.name, k -> new ArrayList<>())
+                                .add(f);
+                    }
+                    default -> { /* CLASS, INTERFACE, ENUM, ANNOTATION_TYPE, CONSTRUCTOR — not indexed */ }
                 }
             }
         }
 
-        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
-            for (AstGraphService.GraphEdge e : edges) {
-                if (e.kind() == AstGraphService.EdgeKind.READS_FIELD
-                        || e.kind() == AstGraphService.EdgeKind.WRITES_FIELD) {
-                    FieldAccess fa = new FieldAccess(simpleNameFromFieldId(e.callee()),
-                            e.filePath(), e.line(), e.callee());
-                    idx.fieldAccesses.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(fa);
-                    idx.fieldAccessesByName.computeIfAbsent(fa.fieldName(), k -> new ArrayList<>()).add(fa);
-                }
+        // --- Edges ---
+        for (AstGraphService.GraphEdge e : graph.edges) {
+            if (e.kind == AstGraphService.EdgeKind.CALLS) {
+                String calledId   = e.to.id;
+                String callerFile = e.from.filePath;
+                int    callerLine = e.from.lineStart;
+                CallSite cs = new CallSite(
+                        simpleNameFromId(calledId), callerFile,
+                        callerLine, calledId, List.of());
+                idx.callSites
+                        .computeIfAbsent(calledId, k -> new ArrayList<>())
+                        .add(cs);
+            } else if (e.kind == AstGraphService.EdgeKind.USES_FIELD) {
+                String fieldId   = e.to.id;
+                String fieldName = simpleNameFromFieldId(fieldId);
+                FieldAccess fa   = new FieldAccess(
+                        fieldName, e.from.filePath, e.from.lineStart, fieldId);
+                idx.fieldAccesses
+                        .computeIfAbsent(fieldId, k -> new ArrayList<>())
+                        .add(fa);
+                idx.fieldAccessesByName
+                        .computeIfAbsent(fieldName, k -> new ArrayList<>())
+                        .add(fa);
             }
         }
 
-        for (List<AstGraphService.GraphEdge> edges : g.edgesFrom.values()) {
-            for (AstGraphService.GraphEdge e : edges) {
-                if (e.kind() == AstGraphService.EdgeKind.READS_LOCAL_VAR
-                        || e.kind() == AstGraphService.EdgeKind.WRITES_LOCAL_VAR) {
-                    String name = simpleNameFromVarId(e.callee());
-                    NameUsage nu = new NameUsage(name, e.filePath(), e.line());
-                    idx.nameUsages.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(nu);
-                    idx.nameUsagesBySimpleName.computeIfAbsent(name, k -> new ArrayList<>()).add(nu);
-                }
-            }
-        }
-
-        log.info("Projected index: {} methods, {} fields, {} variables, {} call-site keys",
-                idx.methods.size(), idx.fields.size(), idx.variables.size(), idx.callSites.size());
+        log.info("Projected index: {} methods, {} fields, {} call-site keys, {} field-access keys",
+                idx.methods.size(), idx.fields.size(),
+                idx.callSites.size(), idx.fieldAccesses.size());
         return idx;
     }
 
@@ -179,17 +177,20 @@ public class JavaIndexService {
     // ------------------------------------------------------------------
 
     private static String extractSignatureFromId(String id) {
-        int h = id.lastIndexOf('#'); return h >= 0 ? id.substring(h + 1) : id;
+        int h = id.lastIndexOf('#');
+        return h >= 0 ? id.substring(h + 1) : id;
     }
+
     private static String simpleNameFromId(String id) {
-        int h = id.lastIndexOf('#'); String sig = h >= 0 ? id.substring(h + 1) : id;
-        int p = sig.indexOf('('); return p >= 0 ? sig.substring(0, p) : sig;
+        int h = id.lastIndexOf('#');
+        String sig = h >= 0 ? id.substring(h + 1) : id;
+        int p = sig.indexOf('(');
+        return p >= 0 ? sig.substring(0, p) : sig;
     }
+
     private static String simpleNameFromFieldId(String id) {
-        int d = id.lastIndexOf('.'); return d >= 0 ? id.substring(d + 1) : id;
-    }
-    private static String simpleNameFromVarId(String id) {
-        int c = id.lastIndexOf(':'); return c >= 0 ? id.substring(c + 1) : id;
+        int d = id.lastIndexOf('.');
+        return d >= 0 ? id.substring(d + 1) : id;
     }
 
     // ------------------------------------------------------------------
@@ -198,36 +199,40 @@ public class JavaIndexService {
 
     public Optional<MethodInfo> findContainingMethod(ProjectIndex index, String relPath, int line) {
         return index.methodsByFile.getOrDefault(relPath, List.of()).stream()
-                .filter(m -> line >= m.startLine() && line <= m.endLine()).findFirst();
+                .filter(m -> line >= m.startLine() && line <= m.endLine())
+                .findFirst();
     }
+
     public List<CallSite> findCallSites(ProjectIndex index, String methodKey) {
         return index.callSites.getOrDefault(methodKey, List.of());
     }
-    public List<NameUsage> findUsages(ProjectIndex index, String resolvedKey) {
-        return index.nameUsages.getOrDefault(resolvedKey, List.of());
-    }
-    public List<NameUsage> findUsagesByName(ProjectIndex index, String simpleName) {
-        return index.nameUsagesBySimpleName.getOrDefault(simpleName, List.of());
-    }
+
     public Optional<MethodInfo> findMethod(ProjectIndex index, String qualifiedSignature) {
         return Optional.ofNullable(index.methods.get(qualifiedSignature));
     }
+
     public List<MethodInfo> findMethodsInRange(ProjectIndex index, String relPath, int from, int to) {
         return index.methodsByFile.getOrDefault(relPath, List.of()).stream()
-                .filter(m -> m.startLine() <= to && m.endLine() >= from).toList();
+                .filter(m -> m.startLine() <= to && m.endLine() >= from)
+                .toList();
     }
+
     public List<FieldInfo> findFieldsByName(ProjectIndex index, String name) {
         return index.fieldsByName.getOrDefault(name, List.of());
     }
+
     public List<FieldAccess> findFieldAccesses(ProjectIndex index, String fieldKey) {
         return index.fieldAccesses.getOrDefault(fieldKey, List.of());
     }
+
     public List<FieldAccess> findFieldAccessesByName(ProjectIndex index, String fieldName) {
         return index.fieldAccessesByName.getOrDefault(fieldName, List.of());
     }
+
     public List<CallSite> findCallSitesWithArgument(ProjectIndex index, String methodKey, String argName) {
         return findCallSites(index, methodKey).stream()
-                .filter(cs -> cs.argumentTexts().stream().anyMatch(a -> a.contains(argName))).toList();
+                .filter(cs -> cs.argumentTexts().stream().anyMatch(a -> a.contains(argName)))
+                .toList();
     }
 
     // ------------------------------------------------------------------
@@ -235,26 +240,24 @@ public class JavaIndexService {
     // ------------------------------------------------------------------
 
     public static class ProjectIndex {
-        public final Map<String, MethodInfo>           methods             = new LinkedHashMap<>();
-        public final Map<String, List<MethodInfo>>     methodsByFile       = new LinkedHashMap<>();
-        public final Map<String, FieldInfo>            fields              = new LinkedHashMap<>();
-        public final Map<String, List<FieldInfo>>      fieldsByName        = new LinkedHashMap<>();
-        public final Map<String, List<VariableInfo>>   variables           = new LinkedHashMap<>();
-        public final Map<String, List<CallSite>>       callSites           = new LinkedHashMap<>();
-        public final Map<String, List<FieldAccess>>    fieldAccesses       = new LinkedHashMap<>();
-        public final Map<String, List<FieldAccess>>    fieldAccessesByName = new LinkedHashMap<>();
-        public final Map<String, List<NameUsage>>      nameUsages          = new LinkedHashMap<>();
-        public final Map<String, List<NameUsage>>      nameUsagesBySimpleName = new LinkedHashMap<>();
+        public final Map<String, MethodInfo>        methods             = new LinkedHashMap<>();
+        public final Map<String, List<MethodInfo>>  methodsByFile       = new LinkedHashMap<>();
+        public final Map<String, FieldInfo>         fields              = new LinkedHashMap<>();
+        public final Map<String, List<FieldInfo>>   fieldsByName        = new LinkedHashMap<>();
+        public final Map<String, List<CallSite>>    callSites           = new LinkedHashMap<>();
+        public final Map<String, List<FieldAccess>> fieldAccesses       = new LinkedHashMap<>();
+        public final Map<String, List<FieldAccess>> fieldAccessesByName = new LinkedHashMap<>();
     }
 
     public record MethodInfo(String name, String qualifiedKey, String filePath,
             int startLine, int endLine, String signature,
             List<String> parameters, String bodyHash) {}
+
     public record FieldInfo(String name, String resolvedKey, String filePath,
             int declarationLine, String type) {}
-    public record VariableInfo(String name, String filePath, int declarationLine, String type) {}
+
     public record CallSite(String methodName, String filePath, int line,
             String resolvedKey, List<String> argumentTexts) {}
+
     public record FieldAccess(String fieldName, String filePath, int line, String resolvedKey) {}
-    public record NameUsage(String name, String filePath, int line) {}
 }
