@@ -5,6 +5,13 @@ spring:
 server:
   port: 8080
 
+springdoc:
+  swagger-ui:
+    path: /docs
+    disable-swagger-default-url: true
+  api-docs:
+    path: /docs/api-docs
+
 app:
   gitlab:
     url: ${GITLAB_URL:https://gitlab.com}
