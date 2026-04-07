@@ -349,6 +349,10 @@ public final class AstGraphUtils {
                 ? abs.substring(root.length()).replaceFirst("^[/\\\\]", "") : abs;
     }
 
+    public static String relPath(Path root, String abs) {
+        return relPath(root.toString(), abs);
+    }
+
     public static int[] lines(CtElement el) {
         try { var p = el.getPosition(); if (p.isValidPosition()) return new int[]{ p.getLine(), p.getEndLine() }; }
         catch (Exception ignored) {}
