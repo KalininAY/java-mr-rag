@@ -2,6 +2,7 @@ package com.example.mrrag.review;
 
 import com.example.mrrag.app.service.AstGraphService;
 import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
+import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
@@ -50,6 +51,8 @@ public class ReviewService {
 
         Path sourceRepoDir = null;
         Path targetRepoDir = null;
+        ProjectSourceProvider sourceProvider = null;
+        ProjectSourceProvider targetProvider = null;
         try {
             log.info("Cloning source branch: {}", request.sourceBranch());
             sourceRepoDir = mergeRequestCheckout.checkoutBranch(
@@ -59,11 +62,14 @@ public class ReviewService {
             targetRepoDir = mergeRequestCheckout.checkoutBranch(
                     request.projectId(), request.mrIid(), request.targetBranch(), "to");
 
+            sourceProvider = new LocalCloneProjectSourceProvider(sourceRepoDir);
+            targetProvider = new LocalCloneProjectSourceProvider(targetRepoDir);
+
             log.info("Building AST graphs...");
             ProjectGraph sourceGraph = astGraphService.buildGraph(
-                    new LocalCloneProjectSourceProvider(sourceRepoDir));
+                    sourceProvider);
             ProjectGraph targetGraph = astGraphService.buildGraph(
-                    new LocalCloneProjectSourceProvider(targetRepoDir));
+                    targetProvider);
 
             log.info("Fetching MR diffs...");
             List<Diff> rawDiffs = mergeRequestCheckout.getMrDiffs(request.projectId(), request.mrIid());
@@ -97,10 +103,10 @@ public class ReviewService {
             );
 
         } finally {
-            if (sourceRepoDir != null)
-                astGraphService.invalidate(new LocalCloneProjectSourceProvider(sourceRepoDir));
-            if (targetRepoDir != null)
-                astGraphService.invalidate(new LocalCloneProjectSourceProvider(targetRepoDir));
+            if (sourceProvider != null)
+                astGraphService.invalidate(sourceProvider.projectKey());
+            if (targetProvider != null)
+                astGraphService.invalidate(targetProvider.projectKey());
             mergeRequestCheckout.cleanup(sourceRepoDir);
             mergeRequestCheckout.cleanup(targetRepoDir);
         }
