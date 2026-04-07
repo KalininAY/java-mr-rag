@@ -1,9 +1,9 @@
 package com.example.mrrag.controller;
 
 import com.example.mrrag.model.GraphBuildStats;
-import com.example.mrrag.service.AstGraphService.EdgeKind;
-import com.example.mrrag.service.AstGraphService.NodeKind;
-import com.example.mrrag.service.AstGraphService.ProjectGraph;
+import com.example.mrrag.model.graph.EdgeKind;
+import com.example.mrrag.model.graph.NodeKind;
+import com.example.mrrag.model.graph.ProjectGraph;
 import com.example.mrrag.service.graph.AstGraphI;
 import com.example.mrrag.service.source.LocalCloneSourcesProvider;
 import com.example.mrrag.service.source.SourcesProvider;
@@ -60,15 +60,17 @@ public class GraphIngestController {
 
     @Schema(description = "Запрос на клонирование репозитория и построение AST-графа")
     public record IngestRequest(
-            @Schema(description = "HTTPS-URL Git-репозитория", example = "https://gitlab.example.com/org/repo.git", requiredMode = Schema.RequiredMode.REQUIRED)
+            @Schema(description = "HTTPS-URL Git-репозитория", example = "https://gitlab.example.com/org/repo.git",
+                    requiredMode = Schema.RequiredMode.REQUIRED)
             String  repoUrl,
-            @Schema(description = "Ветка или тег для клонирования. Если не указана — используется ветка по умолчанию", example = "feature/my-branch")
+            @Schema(description = "Ветка или тег. Если не указана — используется ветка по умолчанию", example = "feature/my-branch")
             String  branch,
-            @Schema(description = "SHA коммита для checkout после клонирования (полный или сокращённый, от 7 символов). Имеет приоритет над состоянием ветки", example = "a1b2c3d4")
+            @Schema(description = "SHA коммита для checkout (полный или сокращённый, от 7 символов)", example = "a1b2c3d4")
             String  commit,
-            @Schema(description = "Персональный токен доступа GitLab (PAT). Если не указан — используется токен из конфигурации приложения", example = "glpat-xxxxxxxxxxxx")
+            @Schema(description = "Токен GitLab (PAT). Если не указан — используется токен из конфигурации", example = "glpat-xxxxxxxxxxxx")
             String  gitToken,
-            @Schema(description = "true — удалить существующий клон и повторить клонирование", example = "false", defaultValue = "false")
+            @Schema(description = "true — удалить существующий клон и повторить клонирование",
+                    example = "false", defaultValue = "false")
             Boolean force
     ) {}
 
@@ -80,11 +82,8 @@ public class GraphIngestController {
         summary = "Клонировать репозиторий и построить граф",
         description = """
             Клонирует Git-репозиторий в персистентную директорию рабочего пространства
-            (${app.workspace.dir}/repos/<slug>/<branch>) с помощью JGit (без внешнего процесса git),
+            (${app.workspace.dir}/repos/<slug>/<branch>) с помощью JGit,
             затем строит AST-граф символов Java-проекта.
-            Если директория уже существует — переиспользует клон (не клонирует повторно),
-            если только не передан флаг force=true.
-            При указании commit выполняется detached-HEAD checkout на точный коммит.
             """,
         requestBody = @RequestBody(
             required = true,
@@ -92,44 +91,36 @@ public class GraphIngestController {
                 mediaType = MediaType.APPLICATION_JSON_VALUE,
                 schema = @Schema(implementation = IngestRequest.class),
                 examples = {
-                    @ExampleObject(
-                        name = "Минимальный запрос",
+                    @ExampleObject(name = "Минимальный запрос",
                         value = """
                             {
                               "repoUrl": "https://gitlab.example.com/org/repo.git"
-                            }"""
-                    ),
-                    @ExampleObject(
-                        name = "С веткой и токеном",
+                            }"""),
+                    @ExampleObject(name = "С веткой и токеном",
                         value = """
                             {
                               "repoUrl": "https://gitlab.example.com/org/repo.git",
                               "branch": "feature/my-branch",
                               "gitToken": "glpat-xxxxxxxxxxxx",
                               "force": false
-                            }"""
-                    ),
-                    @ExampleObject(
-                        name = "С конкретным коммитом",
+                            }"""),
+                    @ExampleObject(name = "С конкретным коммитом",
                         value = """
                             {
                               "repoUrl": "https://gitlab.example.com/org/repo.git",
                               "branch": "main",
                               "commit": "a1b2c3d",
                               "force": true
-                            }"""
-                    )
+                            }""")
                 }
             )
         ),
         responses = {
-            @ApiResponse(
-                responseCode = "200",
-                description = "Граф успешно построен. Возвращает статистику: количество узлов/рёбер, время клонирования и сборки.",
-                content = @Content(schema = @Schema(implementation = GraphBuildStats.class))
-            ),
-            @ApiResponse(responseCode = "400", description = "Некорректный запрос: repoUrl не указан или пуст"),
-            @ApiResponse(responseCode = "500", description = "Ошибка клонирования (недоступный репозиторий, неверный токен) или построения графа")
+            @ApiResponse(responseCode = "200",
+                description = "Граф успешно построен.",
+                content = @Content(schema = @Schema(implementation = GraphBuildStats.class))),
+            @ApiResponse(responseCode = "400", description = "Некорректный запрос: repoUrl не указан"),
+            @ApiResponse(responseCode = "500", description = "Ошибка клонирования или построения графа")
         }
     )
     @PostMapping(
@@ -137,7 +128,8 @@ public class GraphIngestController {
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public GraphBuildStats ingest(@org.springframework.web.bind.annotation.RequestBody IngestRequest request) throws Exception {
+    public GraphBuildStats ingest(
+            @org.springframework.web.bind.annotation.RequestBody IngestRequest request) throws Exception {
 
         long wallStart = System.currentTimeMillis();
 
@@ -151,7 +143,7 @@ public class GraphIngestController {
                          ? request.branch() : "default";
         String commit  = request.commit();
 
-        Path cloneDir  = resolveCloneDir(repoUrl, branch);
+        Path cloneDir = resolveCloneDir(repoUrl, branch);
         boolean exists = Files.isDirectory(cloneDir);
 
         if (forceReclone && exists) {
@@ -191,18 +183,18 @@ public class GraphIngestController {
 
         Map<NodeKind, Long> nodesByKind = Arrays.stream(NodeKind.values())
                 .collect(Collectors.toMap(k -> k,
-                        k -> graph.nodes.values().stream().filter(n -> n.kind() == k).count()));
+                        k -> graph.byFile.values().stream()
+                                .flatMap(java.util.List::stream)
+                                .filter(n -> n.kind == k).count()));
         Map<EdgeKind, Long> edgesByKind = Arrays.stream(EdgeKind.values())
                 .collect(Collectors.toMap(k -> k,
-                        k -> graph.edgesFrom.values().stream()
-                                .flatMap(java.util.List::stream)
-                                .filter(e -> e.kind() == k).count()));
-        long totalEdges = graph.edgesFrom.values().stream().mapToLong(java.util.List::size).sum();
+                        k -> graph.edges.stream().filter(e -> e.kind == k).count()));
 
         return new GraphBuildStats(
                 repoUrl, cloneDir.toString(),
                 cloneMs, buildMs, totalMs,
-                graph.nodes.size(), totalEdges,
+                graph.byFile.values().stream().mapToLong(java.util.List::size).sum(),
+                graph.edges.size(),
                 nodesByKind, edgesByKind,
                 graph.byFile.size());
     }
@@ -229,7 +221,6 @@ public class GraphIngestController {
                     new UsernamePasswordCredentialsProvider("oauth2", token));
         }
         cmd.setProgressMonitor(new Slf4jProgressMonitor());
-
         log.info("JGit clone: {} branch={} → {}", repoUrl,
                 branch != null ? branch : "<default>", targetDir);
 
@@ -237,7 +228,6 @@ public class GraphIngestController {
             if (commitSha != null && !commitSha.isBlank()) {
                 log.info("Checking out commit {}", commitSha);
                 git.checkout().setName(commitSha).call();
-                log.info("Checked out commit {}", commitSha);
             }
             log.debug("JGit done, HEAD={}", git.getRepository().resolve("HEAD"));
         }
@@ -267,27 +257,17 @@ public class GraphIngestController {
     // -----------------------------------------------------------------------
 
     private static final class Slf4jProgressMonitor extends BatchingProgressMonitor {
-
-        @Override
-        protected void onUpdate(String taskName, int workCurr, Duration d) {
-            log.debug("[jgit] {} {}", taskName, workCurr);
+        @Override protected void onUpdate(String t, int w, Duration d) {
+            log.debug("[jgit] {} {}", t, w);
         }
-
-        @Override
-        protected void onEndTask(String taskName, int workCurr, Duration d) {
-            log.info("[jgit] {} done ({})", taskName, workCurr);
+        @Override protected void onEndTask(String t, int w, Duration d) {
+            log.info("[jgit] {} done ({})", t, w);
         }
-
-        @Override
-        protected void onUpdate(String taskName, int workCurr, int workTotal,
-                                int percentDone, Duration d) {
-            log.debug("[jgit] {} {}/{} ({}%)", taskName, workCurr, workTotal, percentDone);
+        @Override protected void onUpdate(String t, int wc, int wt, int pct, Duration d) {
+            log.debug("[jgit] {} {}/{} ({}%)", t, wc, wt, pct);
         }
-
-        @Override
-        protected void onEndTask(String taskName, int workCurr, int workTotal,
-                                 int percentDone, Duration d) {
-            log.info("[jgit] {} done {}/{}", taskName, workCurr, workTotal);
+        @Override protected void onEndTask(String t, int wc, int wt, int pct, Duration d) {
+            log.info("[jgit] {} done {}/{}", t, wc, wt);
         }
     }
 }

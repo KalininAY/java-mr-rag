@@ -1,7 +1,7 @@
 package com.example.mrrag.service.graph;
 
+import com.example.mrrag.model.graph.ProjectGraph;
 import com.example.mrrag.service.dto.ProjectSourceDto;
-import com.example.mrrag.service.AstGraphService.ProjectGraph;
 
 /**
  * Primary contract for building an AST symbol graph.
@@ -11,8 +11,8 @@ import com.example.mrrag.service.AstGraphService.ProjectGraph;
  *
  * <h2>Graph model types</h2>
  * <ul>
- *   <li>{@link com.example.mrrag.service.AstGraphService.NodeKind} — CLASS, INTERFACE, METHOD, etc.</li>
- *   <li>{@link com.example.mrrag.service.AstGraphService.EdgeKind} — DECLARES, INVOKES, EXTENDS, etc.</li>
+ *   <li>{@link com.example.mrrag.model.graph.NodeKind} — CLASS, INTERFACE, METHOD, etc.</li>
+ *   <li>{@link com.example.mrrag.model.graph.EdgeKind} — DECLARES, INVOKES, EXTENDS, etc.</li>
  *   <li>{@link ProjectGraph} — fully indexed graph with nodes and edges.</li>
  * </ul>
  */
@@ -20,12 +20,6 @@ public interface AstGraphI {
 
     /**
      * Build (or return a cached) symbol graph from a {@link ProjectSourceDto}.
-     *
-     * <p>The DTO provides all data required for graph construction:
-     * source files, optional classpath root, and project identity.
-     * The caller decides how to create the DTO — from a local clone
-     * ({@link com.example.mrrag.service.source.SourcesProvider}) or
-     * via GitLab API.
      *
      * @param dto fully populated project source DTO
      * @return fully populated (or partial) {@link ProjectGraph}
@@ -43,9 +37,6 @@ public interface AstGraphI {
 
     /**
      * Translate a path from a GitLab diff into the graph-relative path.
-     *
-     * <p>Handles mono-repo prefixes, back-slash normalisation, and partial
-     * suffix matching against all paths stored in {@code graph}.
      *
      * @param diffPath path as reported by GitLab
      * @param graph    the target graph whose known paths are used for matching
