@@ -1,5 +1,8 @@
 package com.example.mrrag.app.source;
 
+import com.example.mrrag.graph.raw.ProjectFingerprint;
+import com.example.mrrag.graph.raw.ProjectKey;
+
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
@@ -36,5 +39,30 @@ public interface ProjectSourceProvider {
      */
     default Optional<Path> localProjectRoot() {
         return Optional.empty();
+    }
+
+    /**
+     * Returns a stable cache key that uniquely identifies this project <em>version</em>.
+     *
+     * <p>The default implementation covers the most common case:
+     * a local checkout where {@link #localProjectRoot()} is present.
+     * Fingerprint is computed via {@link ProjectFingerprint#compute(Path)} —
+     * it prefers the git HEAD SHA and falls back to a content hash of build files.
+     *
+     * <p>Providers that source code remotely (e.g. directly from GitLab API)
+     * <strong>must override</strong> this method and return a key whose
+     * {@code fingerprint} reflects the exact ref/commit being analysed,
+     * e.g. {@code new ProjectKey(virtualRoot, "git:" + commitSha)}.
+     *
+     * @return a {@link ProjectKey} that can be used as a map/cache key
+     * @throws IllegalStateException if the provider cannot produce a key
+     *         (e.g. a purely in-memory provider with no stable identity)
+     */
+    default ProjectKey projectKey() {
+        return localProjectRoot()
+                .map(root -> new ProjectKey(root, ProjectFingerprint.compute(root)))
+                .orElseThrow(() -> new IllegalStateException(
+                        "Provider " + getClass().getSimpleName() +
+                        " has no localProjectRoot — override projectKey() explicitly"));
     }
 }
