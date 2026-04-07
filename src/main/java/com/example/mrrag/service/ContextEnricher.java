@@ -20,12 +20,11 @@ import java.util.*;
  * (filePath, lineNumber) — never from text parsing or token matching.
  *
  * <ol>
- *   <li>For each changed line: look up all outgoing edges at that line in the
- *       source graph ({@code edgesFrom} where {@code edge.filePath==file} and
- *       {@code edge.line==lineNo}).</li>
- *   <li>Follow the edge to its target node to find the declaration.</li>
- *   <li>Read the declaration from the actual source file using the node's
- *       {@code filePath / startLine / endLine}.</li>
+ *   <li>For each changed line: look up nodes whose line range covers the line
+ *       ({@code byFile} lookup, then range filter).</li>
+ *   <li>Follow outgoing edges to find called/used declarations.</li>
+ *   <li>Read the declaration from the actual source file using the node’s
+ *       {@code filePath / lineStart / lineEnd}.</li>
  * </ol>
  *
  * <p>File paths from GitLab diffs may include a module prefix
@@ -39,7 +38,7 @@ import java.util.*;
 @RequiredArgsConstructor
 public class ContextEnricher {
 
-    private final AstGraphService graphService;
+    private final AstGraphService  graphService;
     private final JavaIndexService indexService;
 
     @Value("${app.enrichment.maxSnippetsPerGroup:12}")
@@ -81,7 +80,6 @@ public class ContextEnricher {
     ) {
         List<EnrichmentSnippet> snippets = group.enrichments();
 
-        List<ChangedLine> added   = filterByType(group, ChangedLine.LineType.ADD);
         List<ChangedLine> deleted = filterByType(group, ChangedLine.LineType.DELETE);
         List<ChangedLine> all     = group.changedLines();
 
@@ -93,7 +91,7 @@ public class ContextEnricher {
     }
 
     // -----------------------------------------------------------------------
-    // Strategy 1: edges at changed lines → declarations
+    // Strategy 1: nodes at changed lines → outgoing edges → declarations
     // -----------------------------------------------------------------------
 
     private void strategyEdgesAtChangedLines(
@@ -108,36 +106,28 @@ public class ContextEnricher {
             if (cl.type() == ChangedLine.LineType.CONTEXT) continue;
             if (full(snippets)) break;
 
-            // Normalize the diff path to the format used inside the graph
             String file = graphService.normalizeFilePath(cl.filePath(), graph);
             int    line = cl.lineNumber() > 0 ? cl.lineNumber() : cl.oldLineNumber();
             if (line <= 0) continue;
 
-            List<AstGraphService.GraphNode> enclosing = graph.nodesAtLine(file, line);
+            List<AstGraphService.GraphNode> enclosing = nodesAtLine(graph, file, line);
 
             for (AstGraphService.GraphNode enc : enclosing) {
                 if (full(snippets)) break;
 
-                for (AstGraphService.GraphEdge edge : graph.outgoing(enc.id())) {
+                for (AstGraphService.GraphEdge edge : outgoing(graph, enc)) {
                     if (full(snippets)) break;
-                    // Edge must originate from this file at this exact line
-                    if (!file.equals(edge.filePath()) || edge.line() != line) continue;
 
-                    String targetId = edge.callee();
+                    String targetId = edge.to.id;
                     if (seenDecl.contains(targetId)) continue;
                     seenDecl.add(targetId);
 
-                    AstGraphService.GraphNode target = graph.nodes.get(targetId);
-                    if (target == null) continue;
+                    AstGraphService.GraphNode target = edge.to;
 
-                    switch (edge.kind()) {
-                        case INVOKES ->
-                                emitMethodDeclaration(target, repoDir, snippets);
-                        case READS_FIELD, WRITES_FIELD ->
-                                emitFieldDeclaration(target, repoDir, snippets);
-                        case READS_LOCAL_VAR, WRITES_LOCAL_VAR ->
-                                emitVariableDeclaration(target, repoDir, snippets);
-                        default -> {}
+                    switch (edge.kind) {
+                        case CALLS      -> emitMethodDeclaration(target, repoDir, snippets);
+                        case USES_FIELD -> emitFieldDeclaration(target, repoDir, snippets);
+                        default         -> { /* structural edges — skip */ }
                     }
                 }
             }
@@ -156,41 +146,39 @@ public class ContextEnricher {
         for (ChangedLine cl : deleted) {
             if (full(snippets)) break;
 
-            // Normalize to graph-relative path
             String file    = graphService.normalizeFilePath(cl.filePath(), targetGraph);
             int    oldLine = cl.oldLineNumber();
             if (oldLine <= 0) continue;
 
-            List<AstGraphService.GraphNode> declared =
-                    targetGraph.byLine.getOrDefault(file + "#" + oldLine, List.of());
+            List<AstGraphService.GraphNode> declared = nodesAtLine(targetGraph, file, oldLine);
 
             for (AstGraphService.GraphNode decl : declared) {
                 if (full(snippets)) break;
 
-                List<AstGraphService.GraphEdge> usageEdges = targetGraph.incoming(decl.id());
-                if (usageEdges.isEmpty()) continue;
+                if (decl.kind != AstGraphService.NodeKind.METHOD
+                        && decl.kind != AstGraphService.NodeKind.FIELD) continue;
 
-                EnrichmentSnippet.SnippetType type = switch (decl.kind()) {
-                    case METHOD    -> EnrichmentSnippet.SnippetType.METHOD_CALLERS;
-                    case FIELD     -> EnrichmentSnippet.SnippetType.FIELD_USAGES;
-                    case VARIABLE  -> EnrichmentSnippet.SnippetType.VARIABLE_USAGES;
-                    default        -> EnrichmentSnippet.SnippetType.VARIABLE_USAGES;
-                };
+                List<AstGraphService.GraphEdge> usageEdges = incoming(targetGraph, decl);
 
-                // Filter out DECLARES edges (structural parent→child) —
-                // only real usage edges (INVOKES, READS_FIELD, etc.) are interesting
+                // Filter structural edges (HAS_MEMBER = class→member relationship)
                 List<String> usageLines = usageEdges.stream()
-                        .filter(e -> e.kind() != AstGraphService.EdgeKind.DECLARES)
+                        .filter(e -> e.kind != AstGraphService.EdgeKind.HAS_MEMBER)
                         .limit(10)
-                        .map(e -> e.filePath() + ":" + e.line())
+                        .map(e -> e.from.filePath + ":" + e.from.lineStart)
                         .distinct()
                         .toList();
 
                 if (usageLines.isEmpty()) continue;
 
+                EnrichmentSnippet.SnippetType type = switch (decl.kind) {
+                    case METHOD -> EnrichmentSnippet.SnippetType.METHOD_CALLERS;
+                    case FIELD  -> EnrichmentSnippet.SnippetType.FIELD_USAGES;
+                    default     -> EnrichmentSnippet.SnippetType.VARIABLE_USAGES;
+                };
+
                 snippets.add(new EnrichmentSnippet(
                         type,
-                        decl.filePath(), decl.startLine(), decl.endLine(), decl.simpleName(),
+                        decl.filePath, decl.lineStart, decl.lineEnd, decl.name,
                         usageLines,
                         describeDeletedUsages(decl, usageLines.size())
                 ));
@@ -212,27 +200,26 @@ public class ContextEnricher {
 
         ChangedLine first = all.stream()
                 .filter(l -> l.type() != ChangedLine.LineType.CONTEXT)
-                .filter(l -> (l.lineNumber() > 0 || l.oldLineNumber() > 0))
+                .filter(l -> l.lineNumber() > 0 || l.oldLineNumber() > 0)
                 .findFirst().orElse(null);
         if (first == null) return;
 
-        // Normalize path for graph lookup
         String file = graphService.normalizeFilePath(first.filePath(), graph);
         int    line = first.lineNumber() > 0 ? first.lineNumber() : first.oldLineNumber();
 
-        graph.nodesAtLine(file, line).stream()
-                .filter(n -> n.kind() == AstGraphService.NodeKind.METHOD)
-                .min(Comparator.comparingInt(n -> n.endLine() - n.startLine()))
+        nodesAtLine(graph, file, line).stream()
+                .filter(n -> n.kind == AstGraphService.NodeKind.METHOD)
+                .min(Comparator.comparingInt(n -> n.lineEnd - n.lineStart))
                 .ifPresent(method -> {
                     if (full(snippets)) return;
-                    int end = Math.min(method.endLine(), method.startLine() + maxSnippetLines - 1);
-                    List<String> lines = readLines(repoDir, method.filePath(), method.startLine(), end);
+                    int end = Math.min(method.lineEnd, method.lineStart + maxSnippetLines - 1);
+                    List<String> lines = readLines(repoDir, method.filePath, method.lineStart, end);
                     if (lines.isEmpty()) return;
                     snippets.add(new EnrichmentSnippet(
                             EnrichmentSnippet.SnippetType.METHOD_BODY,
-                            method.filePath(), method.startLine(), end, method.simpleName(),
+                            method.filePath, method.lineStart, end, method.name,
                             lines,
-                            "Body of enclosing method '" + method.simpleName() + "'"
+                            "Body of enclosing method '" + method.name + "'"
                     ));
                 });
     }
@@ -245,15 +232,15 @@ public class ContextEnricher {
             AstGraphService.GraphNode node, Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
-        List<String> sigLines = readUntilOpenBrace(repoDir, node.filePath(),
-                node.startLine(), node.endLine());
+        List<String> sigLines = readUntilOpenBrace(repoDir, node.filePath,
+                node.lineStart, node.lineEnd);
         if (sigLines.isEmpty()) return;
-        int sigEnd = node.startLine() + sigLines.size() - 1;
+        int sigEnd = node.lineStart + sigLines.size() - 1;
         snippets.add(new EnrichmentSnippet(
                 EnrichmentSnippet.SnippetType.METHOD_DECLARATION,
-                node.filePath(), node.startLine(), sigEnd, node.simpleName(),
+                node.filePath, node.lineStart, sigEnd, node.name,
                 sigLines,
-                "Declaration of method '" + node.simpleName() + "' called on changed line"
+                "Declaration of method '" + node.name + "' called on changed line"
         ));
     }
 
@@ -261,30 +248,48 @@ public class ContextEnricher {
             AstGraphService.GraphNode node, Path repoDir,
             List<EnrichmentSnippet> snippets
     ) {
-        List<String> lines = readLines(repoDir, node.filePath(),
-                node.startLine(), node.endLine());
+        List<String> lines = readLines(repoDir, node.filePath, node.lineStart, node.lineEnd);
         if (lines.isEmpty()) return;
         snippets.add(new EnrichmentSnippet(
                 EnrichmentSnippet.SnippetType.FIELD_DECLARATION,
-                node.filePath(), node.startLine(), node.endLine(), node.simpleName(),
+                node.filePath, node.lineStart, node.lineEnd, node.name,
                 lines,
-                "Declaration of field '" + node.simpleName() + "' accessed on changed line"
+                "Declaration of field '" + node.name + "' accessed on changed line"
         ));
     }
 
-    private void emitVariableDeclaration(
-            AstGraphService.GraphNode node, Path repoDir,
-            List<EnrichmentSnippet> snippets
+    // -----------------------------------------------------------------------
+    // Graph traversal helpers (replace removed ProjectGraph methods)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Returns all nodes in {@code graph} whose file matches {@code file}
+     * and whose line range [{@code lineStart} … {@code lineEnd}] covers {@code line}.
+     */
+    private static List<AstGraphService.GraphNode> nodesAtLine(
+            AstGraphService.ProjectGraph graph, String file, int line
     ) {
-        List<String> lines = readLines(repoDir, node.filePath(),
-                node.startLine(), node.endLine());
-        if (lines.isEmpty()) return;
-        snippets.add(new EnrichmentSnippet(
-                EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION,
-                node.filePath(), node.startLine(), node.endLine(), node.simpleName(),
-                lines,
-                "Declaration of variable '" + node.simpleName() + "' used on changed line"
-        ));
+        return graph.byFile.getOrDefault(file, List.of()).stream()
+                .filter(n -> n.lineStart <= line && n.lineEnd >= line)
+                .toList();
+    }
+
+    /** Returns all edges whose {@code from} node is {@code node}. */
+    private static List<AstGraphService.GraphEdge> outgoing(
+            AstGraphService.ProjectGraph graph, AstGraphService.GraphNode node
+    ) {
+        return graph.edges.stream()
+                .filter(e -> e.from.id.equals(node.id))
+                .toList();
+    }
+
+    /** Returns all edges whose {@code to} node is {@code node}. */
+    private static List<AstGraphService.GraphEdge> incoming(
+            AstGraphService.ProjectGraph graph, AstGraphService.GraphNode node
+    ) {
+        return graph.edges.stream()
+                .filter(e -> e.to.id.equals(node.id))
+                .toList();
     }
 
     // -----------------------------------------------------------------------
@@ -297,9 +302,12 @@ public class ContextEnricher {
         Path file = repoDir.resolve(relPath);
         if (!Files.exists(file)) return List.of();
         List<String> all;
-        try { all = Files.readAllLines(file); }
-        catch (IOException e) { log.warn("Cannot read {}: {}", file, e.getMessage()); return List.of(); }
-
+        try {
+            all = Files.readAllLines(file);
+        } catch (IOException e) {
+            log.warn("Cannot read {}: {}", file, e.getMessage());
+            return List.of();
+        }
         List<String> result = new ArrayList<>();
         for (int i = from - 1; i < Math.min(all.size(), maxLine); i++) {
             String l = all.get(i);
@@ -339,16 +347,17 @@ public class ContextEnricher {
     }
 
     private void trim(List<EnrichmentSnippet> snippets) {
-        while (snippets.size() > maxSnippetsPerGroup) snippets.remove(snippets.size() - 1);
+        while (snippets.size() > maxSnippetsPerGroup) {
+            snippets.remove(snippets.size() - 1);
+        }
     }
 
     private String describeDeletedUsages(AstGraphService.GraphNode decl, int count) {
-        String kind = switch (decl.kind()) {
-            case METHOD   -> "method";
-            case FIELD    -> "field";
-            case VARIABLE -> "variable";
-            default       -> "symbol";
+        String kind = switch (decl.kind) {
+            case METHOD -> "method";
+            case FIELD  -> "field";
+            default     -> "symbol";
         };
-        return decl.simpleName() + " (" + kind + ") is deleted but referenced in " + count + " place(s)";
+        return decl.name + " (" + kind + ") is deleted but referenced in " + count + " place(s)";
     }
 }
