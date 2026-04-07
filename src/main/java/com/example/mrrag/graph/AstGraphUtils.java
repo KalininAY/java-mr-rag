@@ -291,7 +291,7 @@ public final class AstGraphUtils {
         try {
             var pos = el.getPosition();
             if (pos.isValidPosition()) {
-                if (pos.getFile() != null) return pos.getFile().getAbsolutePath();
+                if (pos.getFile() != null) return pos.getFile().getPath().replace("\\", "/");
                 var cu = pos.getCompilationUnit();
                 if (cu != null) {
                     String f = cu.getFile() != null ? cu.getFile().getPath()
