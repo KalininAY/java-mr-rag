@@ -18,13 +18,13 @@ import java.util.List;
  * Orchestrates the full review pipeline:
  * <ol>
  *   <li>Fetch MR from GitLab</li>
- *   <li>Clone source branch  → &lt;project&gt;-mr&lt;id&gt;/from-&lt;branch&gt;-&lt;ts&gt;</li>
- *   <li>Clone target branch  → &lt;project&gt;-mr&lt;id&gt;/to-&lt;branch&gt;-&lt;ts&gt;</li>
- *   <li>Build AST graphs for both clones via {@link AstGraphService}</li>
+ *   <li>Clone source branch → &lt;project&gt;-mr&lt;id&gt;/from-&lt;branch&gt;-&lt;ts&gt;</li>
+ *   <li>Clone target branch → &lt;project&gt;-mr&lt;id&gt;/to-&lt;branch&gt;-&lt;ts&gt;</li>
+ *   <li>Build AST graphs for both branches</li>
  *   <li>Parse git diff</li>
  *   <li>Filter MOVED symbols ({@link SemanticDiffFilter})</li>
  *   <li>Group remaining changes by AST code block ({@link ChangeGrouper})</li>
- *   <li>Enrich groups ({@link ChangeGroupEnrichmentPort})</li>
+ *   <li>Enrich groups with context snippets</li>
  *   <li>Cleanup both temp dirs</li>
  *   <li>Return {@link ReviewContext}</li>
  * </ol>
@@ -35,14 +35,13 @@ import java.util.List;
 public class ReviewService {
 
     private final MergeRequestCheckoutPort mergeRequestCheckout;
-    private final AstGraphService          graphService;
+    private final AstGraphService          astGraphService;
     private final DiffParser               diffParser;
     private final SemanticDiffFilter       semanticDiffFilter;
     private final ChangeGrouper            changeGrouper;
     private final ChangeGroupEnrichmentPort changeGroupEnrichment;
 
     public ReviewContext buildReviewContext(ReviewRequest request) throws Exception {
-
         log.info("Building review context for project={} mrIid={}",
                 request.projectId(), request.mrIid());
 
@@ -60,8 +59,8 @@ public class ReviewService {
                     request.projectId(), request.mrIid(), request.targetBranch(), "to");
 
             log.info("Building AST graphs...");
-            ProjectGraph sourceGraph = graphService.buildGraph(sourceRepoDir);
-            ProjectGraph targetGraph = graphService.buildGraph(targetRepoDir);
+            ProjectGraph sourceGraph = astGraphService.buildGraph(sourceRepoDir);
+            ProjectGraph targetGraph = astGraphService.buildGraph(targetRepoDir);
 
             log.info("Fetching MR diffs...");
             List<Diff> rawDiffs = mergeRequestCheckout.getMrDiffs(request.projectId(), request.mrIid());
@@ -88,19 +87,15 @@ public class ReviewService {
                     groups.size(), totalSnippets, totalSnippetLines);
 
             return new ReviewContext(
-                    request.projectId(),
-                    request.mrIid(),
-                    request.sourceBranch(),
-                    request.targetBranch(),
-                    mr.getTitle(),
-                    mr.getDescription(),
-                    groups,
-                    stats
+                    request.projectId(), request.mrIid(),
+                    request.sourceBranch(), request.targetBranch(),
+                    mr.getTitle(), mr.getDescription(),
+                    groups, stats
             );
 
         } finally {
-            graphService.invalidate(sourceRepoDir);
-            graphService.invalidate(targetRepoDir);
+            astGraphService.invalidate(sourceRepoDir);
+            astGraphService.invalidate(targetRepoDir);
             mergeRequestCheckout.cleanup(sourceRepoDir);
             mergeRequestCheckout.cleanup(targetRepoDir);
         }

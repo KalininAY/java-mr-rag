@@ -21,7 +21,7 @@ import java.nio.file.Path;
 import java.util.*;
 
 /**
- * Enriches ChangeGroups with contextual snippets derived from the AST graph.
+ * Enriches ChangeGroups with contextual snippets.
  *
  * <p><b>Design principle:</b> Every strategy starts from a graph query by
  * (filePath, lineNumber) — never from text parsing or token matching.
@@ -55,7 +55,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
     private int maxSnippetLines;
 
     // -----------------------------------------------------------------------
-    // ChangeGroupEnrichmentPort
+    // Public API
     // -----------------------------------------------------------------------
 
     @Override

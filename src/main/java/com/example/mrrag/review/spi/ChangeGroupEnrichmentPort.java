@@ -7,7 +7,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 /**
- * Enriches change groups with contextual snippets using the AST graph.
+ * Enriches change groups with contextual snippets using AST graph data.
  * Implemented in {@code app} layer by
  * {@link com.example.mrrag.app.service.ContextEnricher}.
  */

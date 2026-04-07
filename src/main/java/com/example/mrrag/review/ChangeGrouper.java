@@ -1,8 +1,9 @@
 package com.example.mrrag.review;
 
+import com.example.mrrag.graph.GraphQueryService;
+import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
-import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.review.model.ChangedLine;
 import com.example.mrrag.review.model.ChangeGroup;
 import lombok.RequiredArgsConstructor;
@@ -14,18 +15,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 /**
- * Groups changed lines into cohesive {@link ChangeGroup}s.
+ * Groups changed lines into cohesive ChangeGroups.
  *
  * <p>Two-phase grouping:
  * <ol>
- *   <li><b>Code-block grouping (intra-file)</b> – changed lines inside the same
- *       method body are grouped together using {@link ProjectGraph#nodesAtLine};
- *       lines outside any method body each form their own group.
- *       Purely structural lines (lone braces, commented-out structural lines) are
- *       dropped first, and mirror pairs (DELETE x / ADD {@code // x}) are collapsed
- *       into a single group.</li>
- *   <li><b>Cross-file AST merge</b> – groups from different files are merged when
- *       they share resolved symbol references via Union-Find on qualified node IDs.</li>
+ *   <li><b>Code-block grouping (intra-file)</b> – changed lines inside the
+ *       same method body are grouped together; lines outside any method each
+ *       form their own group.  Uses the AST graph rather than arbitrary
+ *       line-distance heuristics.  Purely structural lines (lone braces,
+ *       try/catch/finally keywords) are dropped first, and mirror-comment
+ *       pairs (DELETE x / ADD {@code // x}) are collapsed into one group.</li>
+ *   <li><b>Cross-file AST merge</b> – groups from different files are merged
+ *       when they share resolved symbol references (method declared in A
+ *       called in B, etc.) via Union-Find on qualified node/edge IDs.</li>
  * </ol>
  */
 @Slf4j
@@ -33,6 +35,7 @@ import java.util.regex.Pattern;
 @RequiredArgsConstructor
 public class ChangeGrouper {
 
+    private final GraphQueryService graphQuery;
     private final AtomicInteger groupCounter = new AtomicInteger(0);
 
     private static final Pattern STRUCTURAL_CONTENT = Pattern.compile(
@@ -46,26 +49,24 @@ public class ChangeGrouper {
     // Public API
     // -----------------------------------------------------------------------
 
-    /** Group without AST context (structural grouping only). */
+    /** Group without AST graph (line-distance fallback). */
     public List<ChangeGroup> group(List<ChangedLine> lines) {
         return group(lines, null);
     }
 
     /**
-     * Group using the AST graph for method-container resolution.
+     * Group using AST graph for method-container lookup and cross-file merge.
      *
-     * @param lines changed lines from the diff parser
-     * @param graph AST graph of the source branch; may be {@code null} (degrades gracefully)
+     * @param lines changed lines from the diff parser / SemanticDiffFilter
+     * @param graph AST graph of the source branch (may be {@code null} for fallback)
      */
     public List<ChangeGroup> group(List<ChangedLine> lines, ProjectGraph graph) {
-        // Step 1: drop structural-only lines
         List<ChangedLine> meaningful = lines.stream()
                 .filter(l -> l.type() == ChangedLine.LineType.CONTEXT || !isStructural(l.content()))
                 .toList();
         int dropped = lines.size() - meaningful.size();
         if (dropped > 0) log.debug("Structural-line filter: dropped {}", dropped);
 
-        // Step 2: merge mirror pairs (DELETE x + ADD "// x")
         List<ChangedLine> merged = mergeMirrorCommentPairs(meaningful);
         int mirrorMerged = meaningful.size() - merged.size();
         if (mirrorMerged > 0) log.debug("Mirror-comment merge: collapsed {} lines into pairs", mirrorMerged);
@@ -148,13 +149,14 @@ public class ChangeGrouper {
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
         for (ChangedLine l : lines) byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
         List<ChangeGroup> result = new ArrayList<>();
-        for (var entry : byFile.entrySet()) result.addAll(groupByCodeBlock(entry.getKey(), entry.getValue(), graph));
+        for (var entry : byFile.entrySet()) {
+            result.addAll(groupByCodeBlock(entry.getKey(), entry.getValue(), graph));
+        }
         return result;
     }
 
-    private List<ChangeGroup> groupByCodeBlock(
-            String file, List<ChangedLine> lines, ProjectGraph graph
-    ) {
+    private List<ChangeGroup> groupByCodeBlock(String file, List<ChangedLine> lines,
+                                                ProjectGraph graph) {
         Map<Integer, List<ChangedLine>> buckets = new LinkedHashMap<>();
         int outOfMethodCounter = -1;
 
@@ -163,9 +165,8 @@ public class ChangeGrouper {
             Integer bucketKey;
 
             if (graph != null && lineNo > 0) {
-                bucketKey = findMethodContainer(graph, file, lineNo)
-                        .map(GraphNode::startLine)
-                        .orElse(outOfMethodCounter--);
+                Optional<GraphNode> container = graphQuery.findContainingMethod(graph, file, lineNo);
+                bucketKey = container.map(GraphNode::startLine).orElse(outOfMethodCounter--);
             } else {
                 bucketKey = outOfMethodCounter--;
             }
@@ -181,21 +182,12 @@ public class ChangeGrouper {
         return groups;
     }
 
-    /**
-     * Finds the smallest enclosing METHOD node at the given file+line in the graph.
-     */
-    private Optional<GraphNode> findMethodContainer(ProjectGraph graph, String file, int lineNo) {
-        return graph.nodesAtLine(file, lineNo).stream()
-                .filter(n -> n.kind() == NodeKind.METHOD || n.kind() == NodeKind.CONSTRUCTOR)
-                .min(Comparator.comparingInt(n -> n.endLine() - n.startLine()));
-    }
-
     private int effectiveLine(ChangedLine l) {
         return l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber();
     }
 
     // -----------------------------------------------------------------------
-    // Phase 2: cross-file AST merge via Union-Find on node IDs
+    // Phase 2: cross-file AST merge via Union-Find
     // -----------------------------------------------------------------------
 
     private List<ChangeGroup> semanticMerge(List<ChangeGroup> groups, ProjectGraph graph) {
@@ -216,8 +208,9 @@ public class ChangeGrouper {
         }
 
         Map<Integer, List<ChangeGroup>> clusters = new LinkedHashMap<>();
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i++) {
             clusters.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(groups.get(i));
+        }
 
         List<ChangeGroup> result = new ArrayList<>();
         for (List<ChangeGroup> cluster : clusters.values()) {
@@ -229,39 +222,14 @@ public class ChangeGrouper {
         return result;
     }
 
-    /**
-     * Builds the set of qualified node IDs referenced by changed lines in this group.
-     * Used for cross-file Union-Find merging.
-     */
     private Set<String> buildAstKeys(ChangeGroup group, ProjectGraph graph) {
-        Set<String> result = new HashSet<>();
-        String file = group.primaryFile();
-
-        Set<Integer> changedLineNos = new HashSet<>();
+        Set<Integer> changedLines = new HashSet<>();
         for (ChangedLine l : group.changedLines()) {
             if (l.type() == ChangedLine.LineType.CONTEXT) continue;
-            if (l.lineNumber()    > 0) changedLineNos.add(l.lineNumber());
-            if (l.oldLineNumber() > 0) changedLineNos.add(l.oldLineNumber());
+            if (l.lineNumber()    > 0) changedLines.add(l.lineNumber());
+            if (l.oldLineNumber() > 0) changedLines.add(l.oldLineNumber());
         }
-        if (changedLineNos.isEmpty()) return result;
-
-        // Nodes declared exactly at a changed line
-        for (int lineNo : changedLineNos) {
-            graph.nodesAtLine(file, lineNo).stream()
-                    .map(GraphNode::id)
-                    .forEach(result::add);
-        }
-
-        // Callees invoked from changed lines (via outgoing edges)
-        for (int lineNo : changedLineNos) {
-            graph.nodesAtLine(file, lineNo).stream()
-                    .flatMap(n -> graph.outgoing(n.id()).stream())
-                    .filter(e -> e.filePath().equals(file) && changedLineNos.contains(e.line()))
-                    .map(e -> e.callee())
-                    .forEach(result::add);
-        }
-
-        return result;
+        return graphQuery.astKeysForLines(graph, group.primaryFile(), changedLines);
     }
 
     private ChangeGroup mergeCluster(List<ChangeGroup> cluster) {
@@ -276,16 +244,9 @@ public class ChangeGrouper {
         return new ChangeGroup(id, primary, allLines, new ArrayList<>());
     }
 
-    // -----------------------------------------------------------------------
     // Union-Find
-    // -----------------------------------------------------------------------
-
     private int find(int[] parent, int i) {
-        while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; }
-        return i;
+        while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i;
     }
-
-    private void union(int[] parent, int a, int b) {
-        parent[find(parent, a)] = find(parent, b);
-    }
+    private void union(int[] parent, int a, int b) { parent[find(parent, a)] = find(parent, b); }
 }
