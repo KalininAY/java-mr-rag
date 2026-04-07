@@ -1,6 +1,7 @@
 package com.example.mrrag.review;
 
 import com.example.mrrag.app.service.AstGraphService;
+import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
@@ -34,11 +35,11 @@ import java.util.List;
 @RequiredArgsConstructor
 public class ReviewService {
 
-    private final MergeRequestCheckoutPort mergeRequestCheckout;
-    private final AstGraphService          astGraphService;
-    private final DiffParser               diffParser;
-    private final SemanticDiffFilter       semanticDiffFilter;
-    private final ChangeGrouper            changeGrouper;
+    private final MergeRequestCheckoutPort  mergeRequestCheckout;
+    private final AstGraphService           astGraphService;
+    private final DiffParser                diffParser;
+    private final SemanticDiffFilter        semanticDiffFilter;
+    private final ChangeGrouper             changeGrouper;
     private final ChangeGroupEnrichmentPort changeGroupEnrichment;
 
     public ReviewContext buildReviewContext(ReviewRequest request) throws Exception {
@@ -59,8 +60,10 @@ public class ReviewService {
                     request.projectId(), request.mrIid(), request.targetBranch(), "to");
 
             log.info("Building AST graphs...");
-            ProjectGraph sourceGraph = astGraphService.buildGraph(sourceRepoDir);
-            ProjectGraph targetGraph = astGraphService.buildGraph(targetRepoDir);
+            ProjectGraph sourceGraph = astGraphService.buildGraph(
+                    new LocalCloneProjectSourceProvider(sourceRepoDir));
+            ProjectGraph targetGraph = astGraphService.buildGraph(
+                    new LocalCloneProjectSourceProvider(targetRepoDir));
 
             log.info("Fetching MR diffs...");
             List<Diff> rawDiffs = mergeRequestCheckout.getMrDiffs(request.projectId(), request.mrIid());
@@ -94,8 +97,10 @@ public class ReviewService {
             );
 
         } finally {
-            astGraphService.invalidate(sourceRepoDir);
-            astGraphService.invalidate(targetRepoDir);
+            if (sourceRepoDir != null)
+                astGraphService.invalidate(new LocalCloneProjectSourceProvider(sourceRepoDir));
+            if (targetRepoDir != null)
+                astGraphService.invalidate(new LocalCloneProjectSourceProvider(targetRepoDir));
             mergeRequestCheckout.cleanup(sourceRepoDir);
             mergeRequestCheckout.cleanup(targetRepoDir);
         }
