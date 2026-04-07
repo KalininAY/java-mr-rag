@@ -8,6 +8,13 @@ import com.example.mrrag.service.graph.AstGraphI;
 import com.example.mrrag.service.source.GitLabSourcesProvider;
 import com.example.mrrag.service.source.SourcesProvider;
 import com.example.mrrag.service.dto.ProjectSourceDto;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.ExampleObject;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.parameters.RequestBody;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
@@ -20,22 +27,12 @@ import java.util.stream.Collectors;
 
 /**
  * REST endpoint for <strong>no-clone</strong> graph building via GitLab API.
- *
- * <pre>
- * POST /api/graph/ingest-ref
- * Content-Type: application/json
- *
- * {
- *   "projectId" : 123,
- *   "ref"       : "main",        // branch, tag, or commit SHA
- *   "gitToken"  : "glpat-xxx"   // optional; falls back to app.gitlab.token
- * }
- * </pre>
  */
 @Slf4j
 @RestController
 @RequestMapping("/api/graph")
 @RequiredArgsConstructor
+@Tag(name = "Граф (GitLab API)", description = "Построение AST-графа напрямую через GitLab API без клонирования репозитория")
 public class GraphApiController {
 
     private final AstGraphI  graphService;
@@ -45,9 +42,13 @@ public class GraphApiController {
     // DTO
     // -----------------------------------------------------------------------
 
+    @Schema(description = "Запрос на построение графа по ref через GitLab API (без клонирования)")
     public record IngestRefRequest(
+            @Schema(description = "Числовой идентификатор проекта в GitLab", example = "123", requiredMode = Schema.RequiredMode.REQUIRED)
             Long   projectId,
+            @Schema(description = "Ветка, тег или полный/сокращённый SHA коммита", example = "main", requiredMode = Schema.RequiredMode.REQUIRED)
             String ref,
+            @Schema(description = "Персональный токен доступа GitLab (PAT). Если не указан — используется токен из конфигурации приложения", example = "glpat-xxxxxxxxxxxx")
             String gitToken
     ) {}
 
@@ -55,12 +56,45 @@ public class GraphApiController {
     // Endpoint
     // -----------------------------------------------------------------------
 
+    @Operation(
+        summary = "Построить граф по ref (без клонирования)",
+        description = """
+            Загружает исходные файлы Java-проекта через GitLab Repository Files API и строит
+            AST-граф символов (узлы + рёбра). Клонирование не выполняется — файлы читаются
+            напрямую из GitLab. Подходит для быстрого анализа без дискового пространства.
+            """,
+        requestBody = @RequestBody(
+            required = true,
+            content = @Content(
+                mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = IngestRefRequest.class),
+                examples = @ExampleObject(
+                    name = "Пример запроса",
+                    value = """
+                        {
+                          "projectId": 123,
+                          "ref": "main",
+                          "gitToken": "glpat-xxxxxxxxxxxx"
+                        }"""
+                )
+            )
+        ),
+        responses = {
+            @ApiResponse(
+                responseCode = "200",
+                description = "Граф успешно построен. Возвращает статистику узлов и рёбер.",
+                content = @Content(schema = @Schema(implementation = GraphBuildStats.class))
+            ),
+            @ApiResponse(responseCode = "400", description = "Некорректный запрос: не указан projectId или ref"),
+            @ApiResponse(responseCode = "500", description = "Ошибка при обращении к GitLab API или построении графа")
+        }
+    )
     @PostMapping(
             value    = "/ingest-ref",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public GraphBuildStats ingestRef(@RequestBody IngestRefRequest req) throws Exception {
+    public GraphBuildStats ingestRef(@org.springframework.web.bind.annotation.RequestBody IngestRefRequest req) throws Exception {
 
         if (req.projectId() == null)
             throw new IllegalArgumentException("projectId must not be null");
