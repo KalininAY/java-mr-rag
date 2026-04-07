@@ -2,6 +2,7 @@ package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.EdgeKindConfig;
 import com.example.mrrag.app.config.GraphCacheProperties;
+import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.raw.GradleCompileClasspathResolver;
@@ -35,14 +36,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("integration")
 class MultiDependencyProjectIndexingTest {
 
-    // ---------------------------------------------------------------
-    // Workspace root  (build/mr-rag-workspace relative to repo root)
-    // ---------------------------------------------------------------
-
-    /**
-     * Returns {@code <repoRoot>/build/mr-rag-workspace}, creating it if absent.
-     * Each test gets a named sub-directory so runs don't stomp on each other.
-     */
     private static Path workspaceDir(String testName) throws IOException {
         Path dir = findRepoRoot()
                 .resolve("build")
@@ -51,10 +44,6 @@ class MultiDependencyProjectIndexingTest {
         Files.createDirectories(dir);
         return dir;
     }
-
-    // ---------------------------------------------------------------
-    // Helpers
-    // ---------------------------------------------------------------
 
     private static Path fixtureRoot() throws URISyntaxException {
         URL url = MultiDependencyProjectIndexingTest.class
@@ -66,18 +55,7 @@ class MultiDependencyProjectIndexingTest {
 
     /**
      * Copies the fixture into {@code destDir} and injects the Gradle wrapper
-     * (gradlew script + gradle/wrapper/gradle-wrapper.jar + gradle-wrapper.properties)
      * so that {@link GradleCompileClasspathResolver} can invoke it.
-     *
-     * <p>The wrapper JAR is resolved in priority order:
-     * <ol>
-     *   <li>Repo root {@code gradle/wrapper/gradle-wrapper.jar} (present when commited)</li>
-     *   <li>Any {@code gradle-wrapper.jar} found under
-     *       {@code ~/.gradle/wrapper/dists/} (downloaded by a previous wrapper run)</li>
-     * </ol>
-     * If neither source is available the wrapper scripts are still copied, and
-     * {@link GradleCompileClasspathResolver} will fall back to the system {@code gradle}
-     * executable automatically.
      */
     private static Path prepareProjectDir(Path destDir) throws IOException, URISyntaxException {
         Files.createDirectories(destDir);
@@ -85,7 +63,6 @@ class MultiDependencyProjectIndexingTest {
 
         Path repoRoot = findRepoRoot();
 
-        // Copy gradlew / gradlew.bat scripts
         for (String name : new String[]{"gradlew", "gradlew.bat"}) {
             Path src = repoRoot.resolve(name);
             if (Files.exists(src)) {
@@ -95,25 +72,20 @@ class MultiDependencyProjectIndexingTest {
             }
         }
 
-        // Prepare gradle/wrapper/ directory
         Path wrapperDst = destDir.resolve("gradle").resolve("wrapper");
         Files.createDirectories(wrapperDst);
 
-        // Copy gradle-wrapper.properties from repo root wrapper dir
         Path wrapperSrc = repoRoot.resolve("gradle").resolve("wrapper");
         if (Files.isDirectory(wrapperSrc)) {
             copyTree(wrapperSrc, wrapperDst);
         }
 
-        // Resolve gradle-wrapper.jar
         Path jarDst = wrapperDst.resolve("gradle-wrapper.jar");
         if (!Files.exists(jarDst)) {
-            // 1. Try repo root
             Path jarFromRepo = wrapperSrc.resolve("gradle-wrapper.jar");
             if (Files.exists(jarFromRepo)) {
                 Files.copy(jarFromRepo, jarDst, StandardCopyOption.REPLACE_EXISTING);
             } else {
-                // 2. Search ~/.gradle/wrapper/dists/ for any gradle-wrapper.jar
                 findWrapperJarInGradleHome().ifPresent(found -> {
                     try {
                         Files.copy(found, jarDst, StandardCopyOption.REPLACE_EXISTING);
@@ -127,19 +99,11 @@ class MultiDependencyProjectIndexingTest {
         return destDir;
     }
 
-    /**
-     * Searches {@code ~/.gradle/wrapper/dists} for any {@code gradle-wrapper.jar}
-     * cached by a previous Gradle wrapper invocation on this machine.
-     */
     private static Optional<Path> findWrapperJarInGradleHome() {
         Path gradleHome = Path.of(System.getProperty("user.home"), ".gradle", "wrapper", "dists");
-        if (!Files.isDirectory(gradleHome)) {
-            return Optional.empty();
-        }
+        if (!Files.isDirectory(gradleHome)) return Optional.empty();
         try (var walk = Files.walk(gradleHome, 6)) {
-            return walk
-                    .filter(p -> p.getFileName().toString().equals("gradle-wrapper.jar"))
-                    .findFirst();
+            return walk.filter(p -> p.getFileName().toString().equals("gradle-wrapper.jar")).findFirst();
         } catch (IOException e) {
             return Optional.empty();
         }
@@ -171,14 +135,6 @@ class MultiDependencyProjectIndexingTest {
         } catch (UnsupportedOperationException | IOException ignored) {}
     }
 
-    /**
-     * Locates the repository root by walking up from the compiled test-classes directory.
-     *
-     * <p>Uses {@code getLocation().toURI()} instead of {@code getLocation().getPath()}
-     * to correctly handle Windows paths like {@code D:\PROJS\...}, which
-     * {@code getPath()} returns as {@code /D:/PROJS/...} — an invalid Windows path
-     * that triggers {@link java.nio.file.InvalidPathException}.
-     */
     private static Path findRepoRoot() {
         try {
             Path candidate = Path.of(
@@ -213,8 +169,9 @@ class MultiDependencyProjectIndexingTest {
         Files.createDirectories(projectRoot);
         copyTree(fixtureRoot(), projectRoot);
 
-        AstGraphService service = buildService(ws.resolve("cache"));
-        ProjectGraph graph = service.buildGraph(projectRoot);
+        AstGraphService service  = buildService(ws.resolve("cache"));
+        var             provider = new LocalCloneProjectSourceProvider(projectRoot);
+        ProjectGraph    graph    = service.buildGraph(provider);
 
         assertThat(graph.nodes).isNotEmpty();
         Set<String> nodeIds = graph.nodes.keySet();
@@ -229,8 +186,9 @@ class MultiDependencyProjectIndexingTest {
         Files.createDirectories(projectRoot);
         copyTree(fixtureRoot(), projectRoot);
 
-        AstGraphService service = buildService(ws.resolve("cache"));
-        ProjectGraph graph = service.buildGraph(projectRoot);
+        AstGraphService service  = buildService(ws.resolve("cache"));
+        var             provider = new LocalCloneProjectSourceProvider(projectRoot);
+        ProjectGraph    graph    = service.buildGraph(provider);
 
         String userServiceId = graph.nodes.keySet().stream()
                 .filter(id -> id.equals("com.example.multi.service.UserService"))
@@ -252,12 +210,13 @@ class MultiDependencyProjectIndexingTest {
         Path projectRoot = prepareProjectDir(ws.resolve("project"));
         Path cacheDir    = ws.resolve("cache");
 
-        AstGraphService service = buildService(cacheDir);
-        ProjectKey key = service.projectKey(projectRoot);
-        service.buildGraph(key);
+        AstGraphService service  = buildService(cacheDir);
+        var             provider = new LocalCloneProjectSourceProvider(projectRoot);
+        ProjectKey      key      = provider.projectKey();
+        service.buildGraph(provider);
 
-        ProjectGraphCacheStore store = buildStore(cacheDir);
-        var segments = store.tryLoadAllSegments(key);
+        ProjectGraphCacheStore store    = buildStore(cacheDir);
+        var                    segments = store.tryLoadAllSegments(key);
 
         assertThat(segments).as("Segment cache must be present").isPresent();
         Map<String, ProjectGraph> parts = segments.get();
@@ -283,15 +242,17 @@ class MultiDependencyProjectIndexingTest {
         copyTree(fixtureRoot(), projectRoot);
         Path cacheDir = ws.resolve("cache");
 
-        AstGraphService service = buildService(cacheDir);
-        ProjectKey key = service.projectKey(projectRoot);
+        AstGraphService service  = buildService(cacheDir);
+        var             provider = new LocalCloneProjectSourceProvider(projectRoot);
+        ProjectKey      key      = provider.projectKey();
 
-        ProjectGraph first = service.buildGraph(key);
+        ProjectGraph first = service.buildGraph(provider);
         assertThat(first.nodes).isNotEmpty();
 
         service.invalidate(key);
 
-        ProjectGraph second = service.buildGraph(key);
+        // second call: build a fresh provider for the same path
+        ProjectGraph second = service.buildGraph(new LocalCloneProjectSourceProvider(projectRoot));
         assertThat(second.nodes.keySet())
                 .as("Reloaded graph must contain the same nodes")
                 .containsAll(first.nodes.keySet());

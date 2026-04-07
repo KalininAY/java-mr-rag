@@ -1,6 +1,5 @@
 package com.example.mrrag.graph;
 
-import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.model.GraphNode;
@@ -9,17 +8,16 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.nio.file.Path;
-
 /**
- * Spring façade over {@link GraphBuilderImpl}: project-key helpers, cache delegation,
- * and path normalization for review/diff flows. All graph data types live on
- * {@link GraphBuilderImpl} ({@link GraphNode}, {@link ProjectGraph}, …).
+ * Spring façade over {@link GraphBuilderImpl}.
  *
- * <p>{@link ProjectKey} is now created by the {@link ProjectSourceProvider} itself
- * (via {@link ProjectSourceProvider#projectKey()}). For callers that only have a
- * {@link Path}, a temporary {@link LocalCloneProjectSourceProvider} is used to
- * produce the key — no duplication of fingerprint logic.
+ * <p>The single entry point for graph construction is
+ * {@link #buildGraph(ProjectSourceProvider)} — callers are responsible for
+ * instantiating the appropriate {@link ProjectSourceProvider} (e.g.
+ * {@code new LocalCloneProjectSourceProvider(path)} or
+ * {@code new GitLabProjectSourceProvider(api, id, ref)}).
+ * The provider both supplies the source files <em>and</em> owns the
+ * {@link ProjectKey} that drives cache lookups.
  */
 @Slf4j
 @Service
@@ -32,42 +30,26 @@ public class AstGraphService {
     // Build
     // ------------------------------------------------------------------
 
-    /** Build (or return cached) graph for a local project directory. */
-    public ProjectGraph buildGraph(Path projectRoot) throws Exception {
-        return delegate.buildGraph(new LocalCloneProjectSourceProvider(projectRoot));
-    }
-
-    /** Build (or return cached) graph using an arbitrary source provider. */
+    /**
+     * Build (or return cached) {@link ProjectGraph} for the given provider.
+     * The cache key is obtained from {@link ProjectSourceProvider#projectKey()}.
+     */
     public ProjectGraph buildGraph(ProjectSourceProvider provider) throws Exception {
         return delegate.buildGraph(provider);
-    }
-
-    // ------------------------------------------------------------------
-    // ProjectKey helpers
-    // ------------------------------------------------------------------
-
-    /**
-     * Returns the cache key for a local project directory.
-     * Equivalent to {@code new LocalCloneProjectSourceProvider(root).projectKey()}.
-     */
-    public ProjectKey projectKey(Path projectRoot) {
-        return new LocalCloneProjectSourceProvider(projectRoot).projectKey();
     }
 
     // ------------------------------------------------------------------
     // Invalidation
     // ------------------------------------------------------------------
 
+    /** Evict all caches for the given provider (uses {@link ProjectSourceProvider#projectKey()}). */
     public void invalidate(ProjectSourceProvider provider) {
         delegate.invalidate(provider);
     }
 
+    /** Evict all caches by explicit key (e.g. after a key was stored separately). */
     public void invalidate(ProjectKey key) {
         delegate.invalidate(key);
-    }
-
-    public void invalidate(Path projectRoot) {
-        delegate.invalidate(projectRoot);
     }
 
     // ------------------------------------------------------------------
