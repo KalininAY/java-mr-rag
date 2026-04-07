@@ -21,6 +21,9 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
 
+    // OpenAPI / Swagger UI — available at /swagger-ui.html (alias /docs via springdoc config)
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.6'
+
     // GitLab API
     implementation 'org.gitlab4j:gitlab4j-api:6.0.0'
 
