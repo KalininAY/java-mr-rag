@@ -1,5 +1,6 @@
 package com.example.mrrag;
 
+import com.example.mrrag.graph.GraphQueryService;
 import com.example.mrrag.review.model.ChangedLine;
 import com.example.mrrag.review.model.ChangeGroup;
 import com.example.mrrag.review.ChangeGrouper;
@@ -11,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class ChangeGrouperTest {
 
-    private final ChangeGrouper grouper = new ChangeGrouper();
+    private final ChangeGrouper grouper = new ChangeGrouper(new GraphQueryService());
 
     @Test
     void singleFileContiguousChangesOneGroup() {

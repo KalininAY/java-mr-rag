@@ -25,7 +25,8 @@ class ProjectGraphSerializationTest {
                 "src/main/java/com/example/Foo.java",
                 1, 5,
                 "class Foo {}",
-                "class Foo {}"
+                "class Foo {}",
+                null
         );
         GraphEdge e = new GraphEdge(
                 "com.example.Foo",
