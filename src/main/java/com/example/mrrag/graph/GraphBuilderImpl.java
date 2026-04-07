@@ -235,26 +235,23 @@ public class GraphBuilderImpl implements GraphBuilder {
         }
 
         Launcher launcher = new Launcher();
-        if (classpathRoot != null) {
-            ClasspathResolver.tryResolve(classpathRoot).ifPresentOrElse(
-                    r -> {
-                        launcher.getEnvironment().setNoClasspath(false);
-                        launcher.getEnvironment().setSourceClasspath(r.entries());
-                        log.info("Spoon using {} compileClasspath ({} entries) for {}",
-                                r.source(), r.entries().length, classpathRoot);
-                    },
-                    () -> {
-                        launcher.getEnvironment().setNoClasspath(true);
-                        log.debug("Spoon noClasspath mode for {} (Gradle/Maven classpath not available)",
-                                classpathRoot);
-                    });
-        } else {
-            launcher.getEnvironment().setNoClasspath(true);
-        }
+        ClasspathResolver.tryResolve(classpathRoot).ifPresentOrElse(
+                r -> {
+                    launcher.getEnvironment().setNoClasspath(false);
+                    launcher.getEnvironment().setSourceClasspath(r.entries());
+                    log.info("Spoon using {} compileClasspath ({} entries) for {}",
+                            r.source(), r.entries().length, classpathRoot);
+                },
+                () -> {
+                    launcher.getEnvironment().setNoClasspath(true);
+                    log.debug("Spoon noClasspath mode for {} (Gradle/Maven classpath not available)",
+                            classpathRoot);
+                });
         launcher.getEnvironment().setCommentEnabled(false);
         launcher.getEnvironment().setAutoImports(false);
-        try { launcher.getEnvironment().setIgnoreDuplicateDeclarations(true); }
-        catch (NoSuchMethodError ignored) {}
+        try {
+            launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
+        } catch (NoSuchMethodError ignored) {}
 
         for (ProjectSource src : sources) {
             launcher.addInputResource(new VirtualFile(src.content(), src.path()));

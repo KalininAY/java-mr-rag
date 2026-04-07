@@ -29,6 +29,9 @@ public final class ClasspathResolver {
      * @return non-empty classpath and metadata, or empty
      */
     public static Optional<Result> tryResolve(Path projectRoot) {
+        if (projectRoot == null)
+            return Optional.empty();
+
         Path abs = projectRoot.toAbsolutePath().normalize();
 
         Optional<String[]> gradleCp = GradleCompileClasspathResolver.tryResolve(projectRoot);
