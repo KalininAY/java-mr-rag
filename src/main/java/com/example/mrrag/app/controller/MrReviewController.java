@@ -5,6 +5,12 @@ import com.example.mrrag.review.model.ChangeGroupMarkdown;
 import com.example.mrrag.review.model.ReviewContext;
 import com.example.mrrag.review.model.ReviewRequest;
 import com.example.mrrag.review.ReviewService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
@@ -14,11 +20,28 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/review")
+@Tag(name = "Ревью MR", description = "Построение контекста ревью для Merge Request в GitLab с обогащением через AST-граф")
 public class MrReviewController {
 
     private final ReviewService reviewService;
 
-    /** Full review context as JSON. */
+    @Operation(
+        summary = "Построить контекст ревью по запросу",
+        description = """
+            Принимает явно заданные параметры MR (projectId, mrIid, ветки и т.д.) и строит
+            полный контекст ревью: список групп изменений, обогащённых AST-контекстом из графа.
+            Возвращает структурированный JSON с информацией об изменениях и их зависимостях.
+            """,
+        responses = {
+            @ApiResponse(
+                responseCode = "200",
+                description = "Контекст ревью успешно построен",
+                content = @Content(schema = @Schema(implementation = ReviewContext.class))
+            ),
+            @ApiResponse(responseCode = "400", description = "Некорректный запрос"),
+            @ApiResponse(responseCode = "500", description = "Ошибка при обращении к GitLab или построении графа")
+        }
+    )
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
                  produces = MediaType.APPLICATION_JSON_VALUE)
     public ReviewContext review(@RequestBody ReviewRequest request) throws Exception {
@@ -27,7 +50,26 @@ public class MrReviewController {
         return reviewContext;
     }
 
-    /** Auto-detect branches from GitLab MR metadata, return JSON. */
+    @Operation(
+        summary = "Построить контекст ревью по ID проекта и MR",
+        description = """
+            Автоматически определяет исходную и целевую ветки MR из метаданных GitLab
+            по номеру проекта и IID мёрж-реквеста, затем строит полный контекст ревью.
+            """,
+        parameters = {
+            @Parameter(name = "projectId", description = "Числовой ID проекта в GitLab", example = "123", required = true),
+            @Parameter(name = "mrIid",     description = "IID мёрж-реквеста (внутренний номер MR внутри проекта)", example = "42", required = true)
+        },
+        responses = {
+            @ApiResponse(
+                responseCode = "200",
+                description = "Контекст ревью успешно построен",
+                content = @Content(schema = @Schema(implementation = ReviewContext.class))
+            ),
+            @ApiResponse(responseCode = "404", description = "Проект или MR не найден"),
+            @ApiResponse(responseCode = "500", description = "Ошибка при обращении к GitLab или построении графа")
+        }
+    )
     @GetMapping(value = "/{projectId}/{mrIid}",
                 produces = MediaType.APPLICATION_JSON_VALUE)
     public ReviewContext review(@PathVariable long projectId,
@@ -37,11 +79,24 @@ public class MrReviewController {
         return reviewContext;
     }
 
-    /**
-     * Returns all ChangeGroups rendered as Markdown — convenient for human inspection.
-     *
-     * <pre>GET /api/review/{projectId}/{mrIid}/markdown</pre>
-     */
+    @Operation(
+        summary = "Контекст ревью в формате Markdown",
+        description = """
+            Возвращает все группы изменений MR в виде Markdown-текста.
+            Удобно для быстрой инспекции результата ревью в человекочитаемом формате
+            без разбора JSON-структуры.
+            """,
+        parameters = {
+            @Parameter(name = "projectId", description = "Числовой ID проекта в GitLab", example = "123", required = true),
+            @Parameter(name = "mrIid",     description = "IID мёрж-реквеста", example = "42", required = true)
+        },
+        responses = {
+            @ApiResponse(responseCode = "200", description = "Markdown-представление контекста ревью",
+                content = @Content(mediaType = MediaType.TEXT_PLAIN_VALUE, schema = @Schema(type = "string"))),
+            @ApiResponse(responseCode = "404", description = "Проект или MR не найден"),
+            @ApiResponse(responseCode = "500", description = "Ошибка при обращении к GitLab или построении графа")
+        }
+    )
     @GetMapping(value = "/{projectId}/{mrIid}/markdown",
                 produces = MediaType.TEXT_PLAIN_VALUE)
     public String reviewMarkdown(@PathVariable long projectId,

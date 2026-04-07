@@ -2,6 +2,12 @@ package com.example.mrrag.app.controller;
 
 import com.example.mrrag.app.config.AppConfig;
 import com.example.mrrag.app.logging.InMemoryLogAppender;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Controller;
@@ -11,16 +17,10 @@ import java.util.List;
 
 /**
  * Log viewer endpoints.
- *
- * <pre>
- *   GET  /logs              — HTML page
- *   POST /logs/register     — register consumer, returns current max id
- *   POST /logs/unregister   — unregister consumer
- *   GET  /logs/since?after= — new entries since id
- * </pre>
  */
 @Controller
 @RequestMapping("/logs")
+@Tag(name = "Логи", description = "Просмотр логов приложения в реальном времени через long-polling")
 public class LogController {
 
     @Autowired
@@ -29,6 +29,12 @@ public class LogController {
         return InMemoryLogAppender.getInstance();
     }
 
+    @Operation(
+        summary = "HTML-страница просмотра логов",
+        description = "Возвращает HTML-страницу с live-просмотром логов приложения. Обновляется автоматически через polling каждую секунду.",
+        responses = @ApiResponse(responseCode = "200", description = "HTML-страница",
+            content = @Content(mediaType = MediaType.TEXT_HTML_VALUE, schema = @Schema(type = "string")))
+    )
     @GetMapping(produces = MediaType.TEXT_HTML_VALUE)
     @ResponseBody
     public String logsPage() {
@@ -134,18 +140,39 @@ public class LogController {
                 """;
     }
 
+    @Operation(
+        summary = "Зарегистрировать потребителя логов",
+        description = "Регистрирует нового потребителя логов и возвращает текущий максимальный ID записи. Используется как стартовый ID для последующих запросов /logs/since.",
+        responses = @ApiResponse(responseCode = "200", description = "Текущий максимальный ID записи лога",
+            content = @Content(mediaType = MediaType.TEXT_PLAIN_VALUE, schema = @Schema(type = "integer", example = "42")))
+    )
     @PostMapping(value = "/register", produces = MediaType.TEXT_PLAIN_VALUE)
     @ResponseBody
     public String register() {
         return String.valueOf(appender().registerConsumer());
     }
 
+    @Operation(
+        summary = "Снять регистрацию потребителя логов",
+        description = "Снимает регистрацию текущего потребителя. Вызывается при закрытии страницы.",
+        responses = @ApiResponse(responseCode = "200", description = "Потребитель успешно снят с регистрации")
+    )
     @PostMapping("/unregister")
     @ResponseBody
     public void unregister() {
         appender().unregisterConsumer();
     }
 
+    @Operation(
+        summary = "Получить новые записи лога",
+        description = "Возвращает все записи лога с ID строго больше указанного. Используется для инкрементального обновления страницы логов.",
+        parameters = @Parameter(
+            name = "after",
+            description = "ID последней полученной записи. Вернутся только записи с ID > after",
+            example = "42"
+        ),
+        responses = @ApiResponse(responseCode = "200", description = "Список новых записей лога")
+    )
     @GetMapping(value = "/since", produces = MediaType.APPLICATION_JSON_VALUE)
     @ResponseBody
     public List<InMemoryLogAppender.LogEntry> since(
