@@ -60,6 +60,15 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
     public long getProjectId() { return projectId; }
     public String getRef()     { return ref; }
 
+    /**
+     * Returns a stable cache key in the format {@code "gitlab:<id>@<ref>"}.
+     * Example: {@code "gitlab:123@main"} or {@code "gitlab:123@a1b2c3d4"}.
+     */
+    @Override
+    public String projectId() {
+        return "gitlab:" + projectId + "@" + ref;
+    }
+
     @Override
     public List<ProjectSource> getSources() throws GitLabApiException, IOException {
         log.info("Fetching .java tree from GitLab: projectId={}, ref={}", projectId, ref);
