@@ -78,7 +78,10 @@ public class GraphQueryService {
 
     /**
      * Returns the set of FIELD node IDs that exist in both graphs with the same
-     * type (stored in {@link GraphNode#signature()}) but at a different position.
+     * declaration snippet (type signature) but at a different position.
+     *
+     * <p>Uses {@link GraphNode#declarationSnippet()} as a proxy for the field type,
+     * since {@code GraphNode} does not carry a dedicated {@code signature} field.
      */
     public Set<String> findMovedFieldIds(ProjectGraph source, ProjectGraph target) {
         Set<String> moved = new HashSet<>();
@@ -86,8 +89,8 @@ public class GraphQueryService {
             if (sn.kind() != NodeKind.FIELD) continue;
             GraphNode tn = target.nodes.get(sn.id());
             if (tn == null) continue;
-            String sSig = sn.signature() != null ? sn.signature() : "";
-            String tSig = tn.signature() != null ? tn.signature() : "";
+            String sSig = sn.declarationSnippet() != null ? sn.declarationSnippet() : "";
+            String tSig = tn.declarationSnippet() != null ? tn.declarationSnippet() : "";
             if (!sSig.equals(tSig)) continue;                            // type changed
             if (sn.filePath().equals(tn.filePath()) && sn.startLine() == tn.startLine()) continue;
             moved.add(sn.id());

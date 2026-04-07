@@ -108,6 +108,7 @@ public final class ProjectGraphSerialization {
         }
 
         GraphNode toGraphNode() {
+            // Pass null for bodyHash — compact constructor recomputes it from snippets
             return new GraphNode(
                     id,
                     NodeKind.valueOf(kind),
@@ -116,7 +117,8 @@ public final class ProjectGraphSerialization {
                     startLine,
                     endLine,
                     sourceSnippet != null ? sourceSnippet : "",
-                    declarationSnippet != null ? declarationSnippet : ""
+                    declarationSnippet != null ? declarationSnippet : "",
+                    null
             );
         }
     }

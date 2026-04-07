@@ -242,7 +242,8 @@ public class MarkdownGraphBuilder {
             stubKind = NodeKind.CLASS;
         }
 
-        GraphNode stub = new GraphNode(id, stubKind, simpleNameOf(id), "external", -1, -1, "", "");
+        // GraphNode requires 9 args — pass null for bodyHash (compact constructor computes it)
+        GraphNode stub = new GraphNode(id, stubKind, simpleNameOf(id), "external", -1, -1, "", "", null);
         MarkdownNode stubView = switch (stubKind) {
             case METHOD      -> new MarkdownMethodNode(stub);
             case CONSTRUCTOR -> new MarkdownConstructorNode(stub);
