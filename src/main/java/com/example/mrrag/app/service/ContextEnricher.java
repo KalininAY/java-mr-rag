@@ -10,7 +10,6 @@ import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
 import com.example.mrrag.graph.AstGraphService;
 import com.example.mrrag.graph.model.GraphEdge;
 import com.example.mrrag.graph.model.GraphNode;
-import com.example.mrrag.graph.JavaIndexService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,7 +21,7 @@ import java.nio.file.Path;
 import java.util.*;
 
 /**
- * Enriches ChangeGroups with contextual snippets.
+ * Enriches ChangeGroups with contextual snippets derived from the AST graph.
  *
  * <p><b>Design principle:</b> Every strategy starts from a graph query by
  * (filePath, lineNumber) — never from text parsing or token matching.
@@ -48,7 +47,6 @@ import java.util.*;
 public class ContextEnricher implements ChangeGroupEnrichmentPort {
 
     private final AstGraphService graphService;
-    private final JavaIndexService indexService;
 
     @Value("${app.enrichment.maxSnippetsPerGroup:12}")
     private int maxSnippetsPerGroup;
@@ -57,20 +55,17 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
     private int maxSnippetLines;
 
     // -----------------------------------------------------------------------
-    // Public API
+    // ChangeGroupEnrichmentPort
     // -----------------------------------------------------------------------
 
     @Override
     public List<ChangeGroup> enrich(
             List<ChangeGroup> groups,
-            JavaIndexService.ProjectIndex sourceIndex,
-            JavaIndexService.ProjectIndex targetIndex,
+            ProjectGraph sourceGraph,
+            ProjectGraph targetGraph,
             Path sourceRepoDir,
             Path targetRepoDir
     ) throws Exception {
-        ProjectGraph sourceGraph = graphService.buildGraph(sourceRepoDir);
-        ProjectGraph targetGraph = graphService.buildGraph(targetRepoDir);
-
         for (ChangeGroup group : groups) {
             enrichGroup(group, sourceGraph, targetGraph, sourceRepoDir, targetRepoDir);
         }
@@ -90,7 +85,6 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
     ) {
         List<EnrichmentSnippet> snippets = group.enrichments();
 
-        List<ChangedLine> added   = filterByType(group, ChangedLine.LineType.ADD);
         List<ChangedLine> deleted = filterByType(group, ChangedLine.LineType.DELETE);
         List<ChangedLine> all     = group.changedLines();
 
