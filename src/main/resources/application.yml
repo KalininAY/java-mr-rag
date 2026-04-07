@@ -8,6 +8,9 @@ server:
 springdoc:
   swagger-ui:
     path: /docs
+    disable-swagger-default-url: true
+  api-docs:
+    path: /docs/api-docs
 
 app:
   gitlab:
