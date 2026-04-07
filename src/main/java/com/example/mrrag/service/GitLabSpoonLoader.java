@@ -1,7 +1,7 @@
 package com.example.mrrag.service;
 
-import com.example.mrrag.service.loader.GitLabSourceLoader;
-import com.example.mrrag.service.loader.VirtualSource;
+import com.example.mrrag.service.source.GitLabProjectSourceProvider;
+import com.example.mrrag.service.source.ProjectSource;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
@@ -19,12 +19,11 @@ import java.util.List;
  * Builds a Spoon {@link CtModel} for any GitLab project ref (branch / tag / commit SHA)
  * <strong>without cloning the repository</strong>.
  *
- * <p>Source fetching is delegated to {@link GitLabSourceLoader} (implements
- * {@link com.example.mrrag.service.loader.JavaSourceLoader}), so the two concerns
- * — transport and Spoon model building — are cleanly separated.
+ * <p>Source fetching is delegated to {@link GitLabProjectSourceProvider},
+ * so the two concerns — transport and Spoon model building — are cleanly separated.
  *
- * @deprecated Prefer injecting {@link com.example.mrrag.service.loader.JavaSourceLoader}
- *     directly and calling {@link AstGraphService#buildGraphFromVirtualSources}.  This class
+ * @deprecated Prefer injecting {@link com.example.mrrag.service.source.ProjectSourceProvider}
+ *     directly and calling {@link AstGraphService#buildGraph}. This class
  *     is kept for backward-compatibility with callers that used the old API.
  */
 @Slf4j
@@ -35,19 +34,6 @@ public class GitLabSpoonLoader {
     private final GitLabApi gitLabApi;
 
     // ------------------------------------------------------------------
-    // Backward-compat alias kept so existing code compiles without changes
-    // ------------------------------------------------------------------
-
-    /** @deprecated use {@link VirtualSource} from the {@code loader} package. */
-    @Deprecated
-    public record VirtualSource(String path, String content) {
-        /** Convert to the canonical loader record. */
-        public com.example.mrrag.service.loader.VirtualSource toLoaderRecord() {
-            return new com.example.mrrag.service.loader.VirtualSource(path, content);
-        }
-    }
-
-    // ------------------------------------------------------------------
     // Public API
     // ------------------------------------------------------------------
 
@@ -56,20 +42,22 @@ public class GitLabSpoonLoader {
      *
      * @param projectId numeric GitLab project id
      * @param ref       branch name, tag, or commit SHA
+     * @return list of in-memory sources
+     * @deprecated use {@link GitLabProjectSourceProvider#getSources()} directly
      */
-    public List<VirtualSource> fetchJavaSources(long projectId, String ref)
+    @Deprecated
+    public List<ProjectSource> fetchJavaSources(long projectId, String ref)
             throws GitLabApiException, IOException {
-
-        GitLabSourceLoader loader = new GitLabSourceLoader(gitLabApi, projectId, ref);
-        return loader.loadSources().stream()
-                .map(s -> new VirtualSource(s.path(), s.content()))
-                .toList();
+        return new GitLabProjectSourceProvider(gitLabApi, projectId, ref).getSources();
     }
 
     /**
-     * Builds a Spoon {@link CtModel} from a pre-fetched list of {@link VirtualSource}s.
+     * Builds a Spoon {@link CtModel} from a pre-fetched list of {@link ProjectSource}s.
+     *
+     * @deprecated use {@link AstGraphService#buildGraph} instead
      */
-    public CtModel buildModel(List<VirtualSource> sources) {
+    @Deprecated
+    public CtModel buildModel(List<ProjectSource> sources) {
         log.info("Building Spoon model from {} virtual sources", sources.size());
 
         Launcher launcher = new Launcher();
@@ -80,7 +68,7 @@ public class GitLabSpoonLoader {
             launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
         } catch (NoSuchMethodError ignored) { /* older Spoon */ }
 
-        for (VirtualSource src : sources) {
+        for (ProjectSource src : sources) {
             launcher.addInputResource(new VirtualFile(src.content(), src.path()));
         }
 
@@ -97,7 +85,12 @@ public class GitLabSpoonLoader {
         }
     }
 
-    /** Convenience: fetch + build in one call. */
+    /**
+     * Convenience: fetch + build in one call.
+     *
+     * @deprecated use {@link AstGraphService#buildGraph} instead
+     */
+    @Deprecated
     public CtModel fetchAndBuild(long projectId, String ref)
             throws GitLabApiException, IOException {
         return buildModel(fetchJavaSources(projectId, ref));
