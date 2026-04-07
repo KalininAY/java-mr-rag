@@ -1,6 +1,6 @@
 package com.example.mrrag.review;
 
-import com.example.mrrag.graph.AstGraphService;
+import com.example.mrrag.app.service.AstGraphService;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;

@@ -40,10 +40,6 @@ public class LocalCloneProjectSourceProvider implements ProjectSourceProvider {
         this.projectRoot = projectRoot;
     }
 
-    public Path getProjectRoot() {
-        return projectRoot;
-    }
-
     @Override
     public Optional<Path> localProjectRoot() {
         return Optional.of(projectRoot);

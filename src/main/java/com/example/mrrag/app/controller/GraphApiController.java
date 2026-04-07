@@ -1,7 +1,7 @@
 package com.example.mrrag.app.controller;
 
 import com.example.mrrag.graph.GraphBuildStats;
-import com.example.mrrag.graph.AstGraphService;
+import com.example.mrrag.app.service.AstGraphService;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;

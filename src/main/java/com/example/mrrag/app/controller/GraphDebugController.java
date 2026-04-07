@@ -1,13 +1,12 @@
 package com.example.mrrag.app.controller;
 
-import com.example.mrrag.graph.AstGraphService;
+import com.example.mrrag.app.service.AstGraphService;
+import com.example.mrrag.graph.AstGraphUtils;
 import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.markdown.MarkdownGraphBuilder;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.media.Content;
-import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -105,7 +104,7 @@ public class GraphDebugController {
         Path root = Path.of(repoDir);
         ProjectGraph graph = graphService.buildGraph(root);
 
-        String normalized = graphService.normalizeFilePath(diffPath, graph);
+        String normalized = AstGraphUtils.normalizeFilePath(diffPath, graph);
         List<GraphNode> nodes = graph.nodesAtLine(normalized, -1);
         List<GraphNode> byFile = graph.byFile.getOrDefault(normalized, List.of());
 
@@ -153,7 +152,7 @@ public class GraphDebugController {
         Path root = Path.of(repoDir);
         ProjectGraph graph = graphService.buildGraph(root);
 
-        String normalized = graphService.normalizeFilePath(diffPath, graph);
+        String normalized = AstGraphUtils.normalizeFilePath(diffPath, graph);
         List<GraphNode> enclosing = graph.nodesAtLine(normalized, line);
 
         List<Map<String, Object>> edgesAtLine = enclosing.stream()

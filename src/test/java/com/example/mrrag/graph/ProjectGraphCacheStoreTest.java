@@ -6,7 +6,7 @@ import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.raw.GraphSegmentIds;
 import com.example.mrrag.graph.raw.ProjectGraphCacheStore;
-import com.example.mrrag.graph.raw.ProjectKey;
+import com.example.mrrag.app.source.ProjectKey;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

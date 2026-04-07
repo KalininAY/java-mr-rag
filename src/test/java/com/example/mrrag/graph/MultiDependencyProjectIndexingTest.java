@@ -2,13 +2,14 @@ package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.EdgeKindConfig;
 import com.example.mrrag.app.config.GraphCacheProperties;
+import com.example.mrrag.app.service.AstGraphService;
 import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.raw.GradleCompileClasspathResolver;
 import com.example.mrrag.graph.raw.GraphSegmentIds;
 import com.example.mrrag.graph.raw.ProjectGraphCacheStore;
-import com.example.mrrag.graph.raw.ProjectKey;
+import com.example.mrrag.app.source.ProjectKey;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;

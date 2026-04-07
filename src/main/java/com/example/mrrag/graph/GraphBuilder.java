@@ -2,8 +2,7 @@ package com.example.mrrag.graph;
 
 import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.graph.model.ProjectGraph;
-
-import java.nio.file.Path;
+import com.example.mrrag.app.source.ProjectKey;
 
 /**
  * Primary contract for building an AST symbol graph.
@@ -29,8 +28,8 @@ public interface GraphBuilder {
     /**
      * Evict any cached graph for the given local clone directory.
      *
-     * @param projectRoot the clone root previously passed to
+     * @param key the clone root previously passed to
      */
-    void invalidate(Path projectRoot);
+    void invalidate(ProjectKey key);
 
 }

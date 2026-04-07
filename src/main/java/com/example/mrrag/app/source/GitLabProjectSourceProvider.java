@@ -1,6 +1,5 @@
 package com.example.mrrag.app.source;
 
-import com.example.mrrag.graph.raw.ProjectKey;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
@@ -83,7 +82,7 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
     }
 
     @Override
-    public List<ProjectSource> getSources() throws GitLabApiException, IOException {
+    public List<ProjectSource> getSources() throws GitLabApiException {
         log.info("Fetching .java tree from GitLab: projectId={}, ref={}", projectId, ref);
 
         List<TreeItem> tree = gitLabApi.getRepositoryApi()
