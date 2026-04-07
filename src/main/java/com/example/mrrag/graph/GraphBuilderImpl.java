@@ -38,6 +38,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * INSTANTIATES_ANONYMOUS, REFERENCES_METHOD, READS_FIELD, WRITES_FIELD,
  * READS_LOCAL_VAR, WRITES_LOCAL_VAR, THROWS, ANNOTATED_WITH,
  * REFERENCES_TYPE, OVERRIDES, HAS_TYPE_PARAM, HAS_BOUND, ANNOTATION_ATTR
+ *
+ * <p>{@link GraphNode#bodyHash()} is computed automatically inside the
+ * {@code GraphNode} compact constructor — no explicit hash argument is needed
+ * here; callers pass {@code null} and the record handles it.
  */
 @Slf4j
 @Component
@@ -50,24 +54,14 @@ public class GraphBuilderImpl implements GraphBuilder {
     private final EdgeKindConfig          edgeConfig;
     private final ProjectGraphCacheStore cacheStore;
 
-    /**
-     * Cache keyed by the {@link Path} of a local clone.
-     * {@link #buildGraph(ProjectSourceProvider)} is intentionally cache-free
-     * — lifetime is controlled by the caller.
-     */
-    private final Map<Path, ProjectGraph>        localCache   = new ConcurrentHashMap<>();
-    private final Map<ProjectKey, ProjectGraph>  keyCache     = new ConcurrentHashMap<>();
+    private final Map<Path, ProjectGraph>        localCache = new ConcurrentHashMap<>();
+    private final Map<ProjectKey, ProjectGraph>  keyCache   = new ConcurrentHashMap<>();
 
-    /**
-     * Primary Spring constructor — injects cache support.
-     * {@code @Autowired} is required because a second single-arg constructor
-     * is present for tests; without it Spring cannot determine which one to use.
-     */
     @Autowired
     public GraphBuilderImpl(EdgeKindConfig edgeConfig,
                             ProjectGraphCacheStore cacheStore) {
-        this.edgeConfig  = edgeConfig;
-        this.cacheStore  = cacheStore;
+        this.edgeConfig = edgeConfig;
+        this.cacheStore = cacheStore;
     }
 
     /** Minimal constructor for callers that do not need disk-cache support. */
@@ -79,53 +73,32 @@ public class GraphBuilderImpl implements GraphBuilder {
     // ProjectKey helpers
     // ------------------------------------------------------------------
 
-    /**
-     * Derives a stable {@link ProjectKey} for the given local project root
-     * by computing a {@link ProjectFingerprint}.
-     */
     public ProjectKey projectKey(Path projectRoot) {
         return new ProjectKey(projectRoot, ProjectFingerprint.compute(projectRoot));
     }
 
     // ------------------------------------------------------------------
-    // GraphBuildService — ProjectKey-based entry point
+    // ProjectKey-based entry point
     // ------------------------------------------------------------------
 
-    /**
-     * Build (or return cached) graph identified by {@link ProjectKey}.
-     *
-     * <ol>
-     *   <li>Returns the in-memory cached graph if present.</li>
-     *   <li>Tries to load from disk via {@link ProjectGraphCacheStore} (if configured).</li>
-     *   <li>Falls back to a full Spoon build from source.</li>
-     * </ol>
-     */
     public ProjectGraph buildGraph(ProjectKey key) throws Exception {
-        // 1. In-memory cache
         ProjectGraph cached = keyCache.get(key);
         if (cached != null) {
             log.debug("buildGraph(ProjectKey): in-memory cache hit for {}", key);
             return cached;
         }
-
-        // 2. Disk cache
         if (cacheStore != null) {
             var loaded = cacheStore.tryLoadAllSegments(key);
             if (loaded.isPresent()) {
-                Map<String, ProjectGraph> segments = loaded.get();
-                ProjectGraph main = segments.getOrDefault(GraphSegmentIds.MAIN, new ProjectGraph());
+                ProjectGraph main = loaded.get().getOrDefault(GraphSegmentIds.MAIN, new ProjectGraph());
                 keyCache.put(key, main);
                 log.debug("buildGraph(ProjectKey): disk cache hit for {}", key);
                 return main;
             }
         }
-
-        // 3. Full build
         log.info("buildGraph(ProjectKey): building from source for {}", key.projectRoot());
         ProjectGraph graph = buildGraph(new LocalCloneProjectSourceProvider(key.projectRoot()));
         keyCache.put(key, graph);
-
-        // Persist to disk cache
         if (cacheStore != null) {
             Map<String, ProjectGraph> segments = new LinkedHashMap<>();
             segments.put(GraphSegmentIds.MAIN, graph);
@@ -136,38 +109,25 @@ public class GraphBuilderImpl implements GraphBuilder {
                 log.warn("buildGraph(ProjectKey): failed to save cache for {}: {}", key, e.getMessage());
             }
         }
-
         return graph;
     }
 
-    /**
-     * Evicts the in-memory entry for the given {@link ProjectKey}.
-     * The disk cache is intentionally preserved.
-     */
     public void invalidate(ProjectKey key) {
         keyCache.remove(key);
         log.debug("invalidate(ProjectKey): evicted in-memory entry for {}", key);
     }
 
     // ------------------------------------------------------------------
-    // GraphBuildService — primary entry point
+    // Primary entry point
     // ------------------------------------------------------------------
 
-    /**
-     * Build a symbol graph from any {@link ProjectSourceProvider}.
-     */
     @Override
     public ProjectGraph buildGraph(ProjectSourceProvider provider) throws Exception {
         log.info("Building AST graph via provider: {}", provider.getClass().getSimpleName());
         List<ProjectSource> sources = provider.getSources();
         log.info("Provider supplied {} .java files", sources.size());
-        Path classpathRoot = provider.localProjectRoot().orElse(null);
-        return doBuildGraphFromSources(sources, classpathRoot);
+        return doBuildGraphFromSources(sources, provider.localProjectRoot().orElse(null));
     }
-
-    // ------------------------------------------------------------------
-    // GraphBuildService — legacy local-path shortcut
-    // ------------------------------------------------------------------
 
     @Override
     public void invalidate(Path projectRoot) {
@@ -175,7 +135,7 @@ public class GraphBuilderImpl implements GraphBuilder {
     }
 
     // ------------------------------------------------------------------
-    // GraphBuildService — path normalisation
+    // Path normalisation
     // ------------------------------------------------------------------
 
     public String normalizeFilePath(String diffPath, ProjectGraph graph) {
@@ -183,9 +143,9 @@ public class GraphBuilderImpl implements GraphBuilder {
         String norm = diffPath.replace('\\', '/');
         for (String known : graph.allFilePaths()) {
             String knownNorm = known.replace('\\', '/');
-            if (norm.equals(knownNorm))             return known;
-            if (norm.endsWith("/" + knownNorm))     return known;
-            if (knownNorm.endsWith("/" + norm))     return known;
+            if (norm.equals(knownNorm))          return known;
+            if (norm.endsWith("/" + knownNorm))  return known;
+            if (knownNorm.endsWith("/" + norm))  return known;
         }
         String[] parts = norm.split("/");
         for (int i = 1; i < parts.length; i++) {
@@ -197,37 +157,21 @@ public class GraphBuilderImpl implements GraphBuilder {
     }
 
     // ------------------------------------------------------------------
-    // Backward-compat: ProjectSource-based entry point (kept for old callers)
+    // Backward-compat
     // ------------------------------------------------------------------
 
-    /**
-     * @deprecated Prefer {@link #buildGraph(ProjectSourceProvider)} with a provider
-     *     that supplies virtual sources (e.g. GitLab API).
-     */
     @Deprecated
     public ProjectGraph buildGraphFromProjectSources(List<ProjectSource> sources) throws Exception {
-        List<ProjectSource> mapped = sources.stream()
-                .map(s -> new ProjectSource(s.path(), s.content()))
-                .toList();
-        return doBuildGraphFromSources(mapped, null);
+        return doBuildGraphFromSources(
+                sources.stream().map(s -> new ProjectSource(s.path(), s.content())).toList(),
+                null);
     }
 
     // ------------------------------------------------------------------
-    // Core graph construction
+    // Core: sources → Spoon model
     // ------------------------------------------------------------------
 
-    /**
-     * Builds a Spoon {@link CtModel} from the provided sources, then
-     * translates it into a {@link ProjectGraph}.
-     *
-     * <p>All {@link ProjectSource} entries are fed to Spoon as
-     * {@link VirtualFile} objects, so no temporary directory is needed
-     * regardless of whether the files came from a local clone or an API.
-     *
-     * @param classpathRoot when non-null (e.g. local clone), try Gradle/Maven compile classpath for Spoon
-     */
     private ProjectGraph doBuildGraphFromSources(List<ProjectSource> sources, Path classpathRoot) {
-        // Build source-lines map for snippet extraction
         Map<String, String[]> sourceLines = new ConcurrentHashMap<>();
         for (ProjectSource src : sources) {
             sourceLines.put(src.path(), src.content().split("\n", -1));
@@ -243,14 +187,12 @@ public class GraphBuilderImpl implements GraphBuilder {
                 },
                 () -> {
                     launcher.getEnvironment().setNoClasspath(true);
-                    log.debug("Spoon noClasspath mode for {} (Gradle/Maven classpath not available)",
-                            classpathRoot);
+                    log.debug("Spoon noClasspath mode (classpath unavailable) for {}", classpathRoot);
                 });
         launcher.getEnvironment().setCommentEnabled(false);
         launcher.getEnvironment().setAutoImports(false);
-        try {
-            launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
-        } catch (NoSuchMethodError ignored) {}
+        try { launcher.getEnvironment().setIgnoreDuplicateDeclarations(true); }
+        catch (NoSuchMethodError ignored) {}
 
         for (ProjectSource src : sources) {
             launcher.addInputResource(new VirtualFile(src.content(), src.path()));
@@ -267,14 +209,15 @@ public class GraphBuilderImpl implements GraphBuilder {
                 return new ProjectGraph();
             }
         }
-
-        // In virtual mode root is empty: sourceFile() already returns the
-        // repo-relative path, so relPath() returns it unchanged.
         return doBuildGraphFromModel(model, sourceLines, "");
     }
 
     // ------------------------------------------------------------------
-    // Model → graph (shared by all paths)
+    // Core: Spoon model → ProjectGraph
+    //
+    // NOTE: all new GraphNode(...) calls pass null as the last (bodyHash)
+    // argument — the GraphNode compact constructor recomputes it from
+    // sourceSnippet / declarationSnippet / id automatically.
     // ------------------------------------------------------------------
 
     @SuppressWarnings("unchecked")
@@ -285,15 +228,13 @@ public class GraphBuilderImpl implements GraphBuilder {
 
         // ── 1. Type nodes ────────────────────────────────────────────────────────
         model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
-            String id = qualifiedName(type);
-            if (id == null) return;
-            String file = relPath(root, sourceFile(type));
-            int[] ln = lines(type);
+            String id = qualifiedName(type); if (id == null) return;
+            String file = relPath(root, sourceFile(type)); int[] ln = lines(type);
             NodeKind kind = (type instanceof CtAnnotationType) ? NodeKind.ANNOTATION
                           : (type instanceof CtInterface)      ? NodeKind.INTERFACE
                           :                                      NodeKind.CLASS;
             graph.addNode(new GraphNode(id, kind, type.getSimpleName(), file, ln[0], ln[1],
-                    extractSource(sourceLines, file, ln[0], ln[1], type), ""));
+                    extractSource(sourceLines, file, ln[0], ln[1], type), "", null));
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
                 type.getAnnotations().forEach(ann -> graph.addEdge(new GraphEdge(
                         id, EdgeKind.ANNOTATED_WITH,
@@ -329,14 +270,16 @@ public class GraphBuilderImpl implements GraphBuilder {
                     String tpId = typeParamId(ownerId, tp); int[] tpLn = lines(tp);
                     graph.addNode(new GraphNode(tpId, NodeKind.TYPE_PARAM, tp.getSimpleName(),
                             file, tpLn[0], tpLn[1],
-                            extractSource(sourceLines, file, tpLn[0], tpLn[1], tp), ""));
+                            extractSource(sourceLines, file, tpLn[0], tpLn[1], tp), "", null));
                     graph.addEdge(new GraphEdge(ownerId, EdgeKind.HAS_TYPE_PARAM, tpId, file, ownerLn[0]));
                     if (edgeConfig.isEnabled(EdgeKind.HAS_BOUND)) {
                         CtTypeReference<?> sc = tp.getSuperclass();
                         if (sc != null && !sc.getQualifiedName().equals("java.lang.Object"))
-                            graph.addEdge(new GraphEdge(tpId, EdgeKind.HAS_BOUND, sc.getQualifiedName(), file, tpLn[0]));
+                            graph.addEdge(new GraphEdge(tpId, EdgeKind.HAS_BOUND,
+                                    sc.getQualifiedName(), file, tpLn[0]));
                         tp.getSuperInterfaces().forEach(b -> graph.addEdge(
-                                new GraphEdge(tpId, EdgeKind.HAS_BOUND, b.getQualifiedName(), file, tpLn[0])));
+                                new GraphEdge(tpId, EdgeKind.HAS_BOUND,
+                                        b.getQualifiedName(), file, tpLn[0])));
                     }
                 });
             });
@@ -347,7 +290,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             String id = typeMemberExecId(m); if (id == null) return;
             String file = relPath(root, sourceFile(m)); int[] ln = lines(m);
             graph.addNode(new GraphNode(id, NodeKind.METHOD, m.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], m), ""));
+                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], m), "", null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = qualifiedName(m.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
@@ -367,7 +310,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             String id = typeMemberExecId(c); if (id == null) return;
             String file = relPath(root, sourceFile(c)); int[] ln = lines(c);
             graph.addNode(new GraphNode(id, NodeKind.CONSTRUCTOR, c.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], c), ""));
+                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], c), "", null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = qualifiedName(c.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
@@ -380,7 +323,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             String id = fieldId(field); if (id == null) return;
             String file = relPath(root, sourceFile(field)); int[] ln = lines(field);
             graph.addNode(new GraphNode(id, NodeKind.FIELD, field.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], field), ""));
+                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], field), "", null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = qualifiedName(field.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
@@ -397,7 +340,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             String id = varId(v); if (id == null) return;
             String file = relPath(root, sourceFile(v)); int[] ln = lines(v);
             graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], v), ""));
+                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], v), "", null));
         });
 
         // ── 8. ANNOTATION_ATTRIBUTE nodes ─────────────────────────────────────────
@@ -412,7 +355,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                     String attrId = annoId + "#" + m.getSimpleName(); int[] ln = lines(m);
                     graph.addNode(new GraphNode(attrId, NodeKind.ANNOTATION_ATTRIBUTE,
                             m.getSimpleName(), file, ln[0], ln[1],
-                            extractSource(sourceLines, file, ln[0], ln[1], m), ""));
+                            extractSource(sourceLines, file, ln[0], ln[1], m), "", null));
                     graph.addEdge(new GraphEdge(annoId, EdgeKind.ANNOTATION_ATTR, attrId, file, ln[0]));
                 });
             });
@@ -423,11 +366,20 @@ public class GraphBuilderImpl implements GraphBuilder {
             String file = relPath(root, sourceFile(lambda)); int[] ln = lines(lambda);
             String id = "lambda@" + file + ":" + ln[0];
             graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb",
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], lambda), ""));
+                    file, ln[0], ln[1],
+                    extractSource(sourceLines, file, ln[0], ln[1], lambda), "", null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 CtMethod<?> em = lambda.getParent(CtMethod.class);
-                if (em != null) { String enc = typeMemberExecId(em); if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0])); }
-                else { CtConstructor<?> ec = lambda.getParent(CtConstructor.class); if (ec != null) { String enc = typeMemberExecId(ec); if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0])); } }
+                if (em != null) {
+                    String enc = typeMemberExecId(em);
+                    if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0]));
+                } else {
+                    CtConstructor<?> ec = lambda.getParent(CtConstructor.class);
+                    if (ec != null) {
+                        String enc = typeMemberExecId(ec);
+                        if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0]));
+                    }
+                }
             }
         });
 
@@ -448,9 +400,11 @@ public class GraphBuilderImpl implements GraphBuilder {
                         ? cc.getExecutable().getDeclaringType().getQualifiedName() : "?";
                 EdgeKind ek = (cc instanceof CtNewClass) ? EdgeKind.INSTANTIATES_ANONYMOUS : EdgeKind.INSTANTIATES;
                 if (edgeConfig.isEnabled(ek))
-                    graph.addEdge(new GraphEdge(callerId, ek, typeId, relPath(root, sourceFile(cc)), posLine(cc)));
+                    graph.addEdge(new GraphEdge(callerId, ek, typeId,
+                            relPath(root, sourceFile(cc)), posLine(cc)));
                 if (edgeConfig.isEnabled(EdgeKind.INVOKES))
-                    graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES, execRefId(cc.getExecutable(), cc),
+                    graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES,
+                            execRefId(cc.getExecutable(), cc),
                             relPath(root, sourceFile(cc)), posLine(cc)));
             });
 
@@ -473,7 +427,8 @@ public class GraphBuilderImpl implements GraphBuilder {
                         : "?." + ref.getSimpleName();
                 EdgeKind ek = (fa instanceof CtFieldWrite) ? EdgeKind.WRITES_FIELD : EdgeKind.READS_FIELD;
                 if (edgeConfig.isEnabled(ek))
-                    graph.addEdge(new GraphEdge(execId, ek, fId, relPath(root, sourceFile(fa)), posLine(fa)));
+                    graph.addEdge(new GraphEdge(execId, ek, fId,
+                            relPath(root, sourceFile(fa)), posLine(fa)));
             });
 
         // ── 14. READS_LOCAL_VAR / WRITES_LOCAL_VAR ───────────────────────────────
@@ -484,7 +439,8 @@ public class GraphBuilderImpl implements GraphBuilder {
                 String vId = varRefId(va.getVariable());
                 EdgeKind ek = (va instanceof CtVariableWrite) ? EdgeKind.WRITES_LOCAL_VAR : EdgeKind.READS_LOCAL_VAR;
                 if (edgeConfig.isEnabled(ek))
-                    graph.addEdge(new GraphEdge(execId, ek, vId, relPath(root, sourceFile(va)), posLine(va)));
+                    graph.addEdge(new GraphEdge(execId, ek, vId,
+                            relPath(root, sourceFile(va)), posLine(va)));
             });
 
         // ── 15. THROWS ────────────────────────────────────────────────────────────
@@ -551,66 +507,37 @@ public class GraphBuilderImpl implements GraphBuilder {
         try {
             CtType<?> decl = member.getDeclaringType();
             String owner = decl != null ? decl.getQualifiedName() : "?";
-            if (member instanceof CtConstructor<?>) {
+            if (member instanceof CtConstructor<?>)
                 return constructorExecutableId(owner, ((CtExecutable<?>) member).getSignature());
-            }
-            if (member instanceof CtExecutable<?> exec) {
+            if (member instanceof CtExecutable<?> exec)
                 return owner + "#" + exec.getSignature();
-            }
             return owner + "#" + member.getSimpleName();
-        } catch (Exception e) {
-            return null;
-        }
+        } catch (Exception e) { return null; }
     }
 
     private static String constructorExecutableId(String ownerQualified, String signature) {
-        if (signature == null || signature.isBlank()) {
-            return ownerQualified + "#<init>()";
-        }
+        if (signature == null || signature.isBlank()) return ownerQualified + "#<init>()";
         int open = signature.indexOf('(');
-        if (open < 0) {
-            return ownerQualified + "#<init>()";
-        }
-        return ownerQualified + "#<init>" + signature.substring(open);
+        return open < 0 ? ownerQualified + "#<init>()" : ownerQualified + "#<init>" + signature.substring(open);
     }
 
     private static String qualifiedExecutableOwner(CtExecutableReference<?> ref, CtElement useSite) {
         try {
             if (ref.getDeclaringType() != null) {
                 String q = ref.getDeclaringType().getQualifiedName();
-                if (isUsableQualifiedName(q)) {
-                    return q;
-                }
+                if (isUsableQualifiedName(q)) return q;
             }
-        } catch (Exception ignored) { }
+        } catch (Exception ignored) {}
         try {
             CtExecutable<?> decl = ref.getDeclaration();
             if (decl instanceof CtTypeMember tm && tm.getDeclaringType() != null) {
                 String q = tm.getDeclaringType().getQualifiedName();
-                if (isUsableQualifiedName(q)) {
-                    return q;
-                }
+                if (isUsableQualifiedName(q)) return q;
             }
-        } catch (Exception ignored) { }
-
-        if (useSite instanceof CtInvocation inv) {
-            String inferred = inferOwnerFromInvocation(inv);
-            if (inferred != null) {
-                return inferred;
-            }
-        }
-        if (useSite instanceof CtConstructorCall<?> cc) {
-            String inferred = inferOwnerFromConstructorCall(cc);
-            if (inferred != null) {
-                return inferred;
-            }
-        }
-        if (useSite instanceof CtExecutableReferenceExpression ere) {
-            String inferred = inferOwnerFromExecutableReferenceExpression(ere);
-            if (inferred != null) {
-                return inferred;
-            }
-        }
+        } catch (Exception ignored) {}
+        if (useSite instanceof CtInvocation inv) { String r = inferOwnerFromInvocation(inv); if (r != null) return r; }
+        if (useSite instanceof CtConstructorCall<?> cc) { String r = inferOwnerFromConstructorCall(cc); if (r != null) return r; }
+        if (useSite instanceof CtExecutableReferenceExpression ere) { String r = inferOwnerFromExecutableReferenceExpression(ere); if (r != null) return r; }
         return "?";
     }
 
@@ -621,60 +548,25 @@ public class GraphBuilderImpl implements GraphBuilder {
     private static String inferOwnerFromInvocation(CtInvocation<?> inv) {
         CtExpression<?> target = inv.getTarget();
         if (target instanceof CtTypeAccess<?> ta) {
-            try {
-                if (ta.getAccessedType() != null) {
-                    String q = ta.getAccessedType().getQualifiedName();
-                    if (isUsableQualifiedName(q)) {
-                        return q;
-                    }
-                }
-            } catch (Exception ignored) { }
+            try { if (ta.getAccessedType() != null) { String q = ta.getAccessedType().getQualifiedName(); if (isUsableQualifiedName(q)) return q; } } catch (Exception ignored) {}
         }
         if (target != null) {
-            try {
-                CtTypeReference<?> t = target.getType();
-                if (t != null) {
-                    String q = t.getQualifiedName();
-                    if (isUsableQualifiedName(q)) {
-                        return q;
-                    }
-                }
-            } catch (Exception ignored) { }
+            try { CtTypeReference<?> t = target.getType(); if (t != null) { String q = t.getQualifiedName(); if (isUsableQualifiedName(q)) return q; } } catch (Exception ignored) {}
         }
         return null;
     }
 
     private static String inferOwnerFromConstructorCall(CtConstructorCall<?> cc) {
-        try {
-            if (cc.getType() != null) {
-                String q = cc.getType().getQualifiedName();
-                if (isUsableQualifiedName(q)) {
-                    return q;
-                }
-            }
-        } catch (Exception ignored) { }
+        try { if (cc.getType() != null) { String q = cc.getType().getQualifiedName(); if (isUsableQualifiedName(q)) return q; } } catch (Exception ignored) {}
         return null;
     }
 
     private static String inferOwnerFromExecutableReferenceExpression(CtExecutableReferenceExpression<?, ?> ere) {
         try {
             CtExpression<?> target = ere.getTarget();
-            if (target instanceof CtTypeAccess<?> ta && ta.getAccessedType() != null) {
-                String q = ta.getAccessedType().getQualifiedName();
-                if (isUsableQualifiedName(q)) {
-                    return q;
-                }
-            }
-            if (target != null) {
-                CtTypeReference<?> t = target.getType();
-                if (t != null) {
-                    String q = t.getQualifiedName();
-                    if (isUsableQualifiedName(q)) {
-                        return q;
-                    }
-                }
-            }
-        } catch (Exception ignored) { }
+            if (target instanceof CtTypeAccess<?> ta && ta.getAccessedType() != null) { String q = ta.getAccessedType().getQualifiedName(); if (isUsableQualifiedName(q)) return q; }
+            if (target != null) { CtTypeReference<?> t = target.getType(); if (t != null) { String q = t.getQualifiedName(); if (isUsableQualifiedName(q)) return q; } }
+        } catch (Exception ignored) {}
         return null;
     }
 
@@ -683,42 +575,21 @@ public class GraphBuilderImpl implements GraphBuilder {
         try {
             String owner = qualifiedExecutableOwner(ref, useSite);
             String sig = ref.getSignature();
-            if (ref.isConstructor()) {
-                return constructorExecutableId(owner, sig);
-            }
-            return owner + "#" + sig;
-        } catch (Exception e) {
-            return "unresolved:" + ref.getSimpleName();
-        }
+            return ref.isConstructor() ? constructorExecutableId(owner, sig) : owner + "#" + sig;
+        } catch (Exception e) { return "unresolved:" + ref.getSimpleName(); }
     }
 
-    /**
-     * Chains {@code a().b()} when the outer owner is unknown ({@code ?#b(...)}), and falls back to
-     * the static type of the receiver expression for {@code x.setName(...)}.
-     */
     private String execRefIdForChainedInvocation(CtInvocation<?> inv) {
         String base = execRefId(inv.getExecutable(), inv);
-        if (!base.startsWith("?#")) {
-            return base;
-        }
+        if (!base.startsWith("?#")) return base;
         String suffix = base.substring(2);
         CtExpression<?> target = inv.getTarget();
         if (target instanceof CtInvocation<?> inner) {
             String innerId = execRefIdForChainedInvocation(inner);
-            if (!innerId.startsWith("?")) {
-                return innerId + "#" + suffix;
-            }
+            if (!innerId.startsWith("?")) return innerId + "#" + suffix;
         }
         if (target != null) {
-            try {
-                CtTypeReference<?> t = target.getType();
-                if (t != null) {
-                    String q = t.getQualifiedName();
-                    if (isUsableQualifiedName(q)) {
-                        return q + "#" + suffix;
-                    }
-                }
-            } catch (Exception ignored) { }
+            try { CtTypeReference<?> t = target.getType(); if (t != null) { String q = t.getQualifiedName(); if (isUsableQualifiedName(q)) return q + "#" + suffix; } } catch (Exception ignored) {}
         }
         return base;
     }
@@ -740,7 +611,9 @@ public class GraphBuilderImpl implements GraphBuilder {
         return "var@" + ref.getSimpleName();
     }
 
-    private String typeParamId(String ownerId, CtTypeParameter tp) { return ownerId + "#<" + tp.getSimpleName() + ">"; }
+    private String typeParamId(String ownerId, CtTypeParameter tp) {
+        return ownerId + "#<" + tp.getSimpleName() + ">";
+    }
 
     private String formalDeclarerId(CtFormalTypeDeclarer d) {
         if (d instanceof CtType<?> t) return qualifiedName(t);
@@ -768,8 +641,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                 if (cu != null) {
                     String f = cu.getFile() != null ? cu.getFile().getPath()
                             : (cu.getMainType() != null
-                               ? cu.getMainType().getQualifiedName().replace('.', '/') + ".java"
-                               : "");
+                               ? cu.getMainType().getQualifiedName().replace('.', '/') + ".java" : "");
                     if (!f.isEmpty()) return f;
                 }
             }
@@ -780,8 +652,7 @@ public class GraphBuilderImpl implements GraphBuilder {
     private String relPath(String root, String abs) {
         if (abs.isEmpty()) return "unknown";
         if (root.isEmpty()) return abs;
-        return abs.startsWith(root)
-                ? abs.substring(root.length()).replaceFirst("^[/\\\\]", "") : abs;
+        return abs.startsWith(root) ? abs.substring(root.length()).replaceFirst("^[/\\\\]", "") : abs;
     }
 
     private int[] lines(CtElement el) {
