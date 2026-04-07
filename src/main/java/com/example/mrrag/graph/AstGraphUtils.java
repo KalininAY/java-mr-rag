@@ -1,11 +1,16 @@
 package com.example.mrrag.graph;
 
+import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.ProjectGraph;
 import spoon.reflect.code.*;
 import spoon.reflect.declaration.*;
 import spoon.reflect.reference.*;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Map;
 
 /**
@@ -19,6 +24,7 @@ import java.util.Map;
  *   <li>Source snippet extraction from in-memory line arrays</li>
  *   <li>Position/path helpers (relPath, lines, posLine, sourceFile)</li>
  *   <li>Owner inference for invocations and constructor calls</li>
+ *   <li>Body hash computation for semantic diff ({@link #bodyHash(GraphNode)})</li>
  * </ul>
  *
  * <p>All methods are {@code public static} — this class has no state and
@@ -50,6 +56,80 @@ public final class AstGraphUtils {
 
     public static String snippet(CtElement el) {
         try { String s = el.toString(); return s != null ? s : ""; } catch (Exception e) { return ""; }
+    }
+
+    // ------------------------------------------------------------------
+    // Body hash (for semantic diff comparison)
+    // ------------------------------------------------------------------
+
+    /**
+     * Computes a stable SHA-256 hex hash of the node's body, suitable for
+     * detecting whether a method/class body has actually changed between two
+     * versions of the graph (used by {@code SemanticDiffFilter}).
+     *
+     * <p>The hash input is built as follows:
+     * <ol>
+     *   <li>If {@link GraphNode#sourceSnippet()} is non-blank, it is normalised
+     *       (whitespace collapsed, leading/trailing stripped) and hashed.</li>
+     *   <li>Otherwise {@link GraphNode#declarationSnippet()} is used in the
+     *       same way — useful for interface methods or abstract declarations
+     *       that have no body.</li>
+     *   <li>If both fields are blank, the node {@link GraphNode#id()} is hashed
+     *       so that the result is still deterministic and unique per node.</li>
+     * </ol>
+     *
+     * @param node the graph node whose body should be hashed; must not be {@code null}
+     * @return lowercase hex SHA-256 string (64 characters), never {@code null}
+     */
+    public static String bodyHash(GraphNode node) {
+        String body = node.sourceSnippet();
+        if (body == null || body.isBlank()) {
+            body = node.declarationSnippet();
+        }
+        if (body == null || body.isBlank()) {
+            body = node.id();
+        }
+        // Normalise: collapse all whitespace runs to a single space so that
+        // purely cosmetic re-formatting does not produce a different hash.
+        String normalised = body.strip().replaceAll("\\s+", " ");
+        return sha256Hex(normalised);
+    }
+
+    /**
+     * Convenience overload — returns {@code null} when {@code node} is {@code null}.
+     */
+    public static String bodyHash(GraphNode node, boolean nullSafe) {
+        if (nullSafe && node == null) return null;
+        return bodyHash(node);
+    }
+
+    /**
+     * Returns {@code true} when the two nodes have identical body hashes,
+     * meaning their source bodies are semantically equivalent (modulo
+     * whitespace normalisation).
+     *
+     * @param a first node (may be {@code null})
+     * @param b second node (may be {@code null})
+     * @return {@code true} iff both nodes are non-null and their body hashes match
+     */
+    public static boolean sameBody(GraphNode a, GraphNode b) {
+        if (a == null || b == null) return false;
+        return bodyHash(a).equals(bodyHash(b));
+    }
+
+    // ------------------------------------------------------------------
+    // Internal SHA-256 helper
+    // ------------------------------------------------------------------
+
+    private static String sha256Hex(String input) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            // SHA-256 is guaranteed by the JVM spec — should never happen.
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     // ------------------------------------------------------------------
