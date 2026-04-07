@@ -6,6 +6,7 @@ import spoon.reflect.code.*;
 import spoon.reflect.declaration.*;
 import spoon.reflect.reference.*;
 
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Map;
 
@@ -309,6 +310,10 @@ public final class AstGraphUtils {
         if (root.isEmpty()) return abs;
         return abs.startsWith(root)
                 ? abs.substring(root.length()).replaceFirst("^[/\\\\]", "") : abs;
+    }
+
+    public static String relPath(Path root, String abs) {
+        return relPath(root.toString(), abs);
     }
 
     public static int[] lines(CtElement el) {
