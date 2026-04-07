@@ -6,6 +6,7 @@ import spoon.reflect.code.*;
 import spoon.reflect.declaration.*;
 import spoon.reflect.reference.*;
 
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Map;
 
@@ -36,11 +37,16 @@ public final class AstGraphUtils {
     // Source snippet helpers
     // ------------------------------------------------------------------
 
+    /**
+     * @param projectRoot optional local project root (e.g. {@code LocalCloneProjectSourceProvider}'s root).
+     *        When {@code sourceLines} keys are repo-relative but {@code filePath} from Spoon is absolute,
+     *        lookup falls back to a path relative to this root.
+     */
     public static String extractSource(Map<String, String[]> sourceLines,
                                        String filePath, int startLine, int endLine,
-                                       CtElement el) {
+                                       CtElement el, Path projectRoot) {
         if (startLine > 0 && endLine >= startLine) {
-            String[] lines = sourceLines.get(filePath);
+            String[] lines = findLines(sourceLines, filePath, projectRoot);
             if (lines != null) {
                 int from = Math.max(0, startLine - 1);
                 int to   = Math.min(lines.length, endLine);
@@ -48,6 +54,38 @@ public final class AstGraphUtils {
             }
         }
         return snippet(el);
+    }
+
+    /**
+     * Resolves {@code sourceLines} lookup when keys are repo-relative (e.g. {@code src/main/java/Foo.java})
+     * but {@code filePath} is absolute (Spoon positions), or when separator styles differ.
+     */
+    static String[] findLines(Map<String, String[]> sourceLines, String filePath, Path projectRoot) {
+        if (filePath == null || filePath.isBlank()) return null;
+        String[] lines = sourceLines.get(filePath);
+        if (lines != null) return lines;
+        try {
+            String n = Path.of(filePath).normalize().toString();
+            lines = sourceLines.get(n);
+            if (lines != null) return lines;
+        } catch (Exception ignored) { }
+        lines = sourceLines.get(filePath.replace('\\', '/'));
+        if (lines != null) return lines;
+        lines = sourceLines.get(filePath.replace('/', '\\'));
+        if (lines != null) return lines;
+        if (projectRoot != null) {
+            try {
+                Path root = projectRoot.toAbsolutePath().normalize();
+                Path abs = Path.of(filePath).toAbsolutePath().normalize();
+                if (abs.startsWith(root)) {
+                    Path rel = root.relativize(abs);
+                    String key = rel.toString().replace('\\', '/');
+                    lines = sourceLines.get(key);
+                    if (lines != null) return lines;
+                }
+            } catch (Exception ignored) { }
+        }
+        return null;
     }
 
     public static String snippet(CtElement el) {

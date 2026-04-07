@@ -158,7 +158,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                 return new ProjectGraph();
             }
         }
-        return doBuildGraphFromModel(model, sourceLines);
+        return doBuildGraphFromModel(model, sourceLines, classpathRoot);
     }
 
     // ------------------------------------------------------------------
@@ -166,7 +166,8 @@ public class GraphBuilderImpl implements GraphBuilder {
     // ------------------------------------------------------------------
 
     @SuppressWarnings("unchecked")
-    private ProjectGraph doBuildGraphFromModel(CtModel model, Map<String, String[]> sourceLines) {
+    private ProjectGraph doBuildGraphFromModel(CtModel model, Map<String, String[]> sourceLines,
+                                               Path projectRoot) {
         var graph = new ProjectGraph();
 
         model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
@@ -177,7 +178,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                           : (type instanceof CtInterface)      ? NodeKind.INTERFACE
                           :                                      NodeKind.CLASS;
             graph.addNode(new GraphNode(id, kind, type.getSimpleName(), file, ln[0], ln[1],
-                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], type), "", null));
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], type, projectRoot), "", null));
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
                 type.getAnnotations().forEach(ann -> graph.addEdge(new GraphEdge(
                         id, EdgeKind.ANNOTATED_WITH,
@@ -213,7 +214,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                     int[] tpLn = AstGraphUtils.lines(tp);
                     graph.addNode(new GraphNode(tpId, NodeKind.TYPE_PARAM, tp.getSimpleName(),
                             file, tpLn[0], tpLn[1],
-                            AstGraphUtils.extractSource(sourceLines, file, tpLn[0], tpLn[1], tp), "", null));
+                            AstGraphUtils.extractSource(sourceLines, file, tpLn[0], tpLn[1], tp, projectRoot), "", null));
                     graph.addEdge(new GraphEdge(ownerId, EdgeKind.HAS_TYPE_PARAM, tpId, file, ownerLn[0]));
                     if (edgeConfig.isEnabled(EdgeKind.HAS_BOUND)) {
                         var sc = tp.getSuperclass();
@@ -234,7 +235,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             int[] ln = AstGraphUtils.lines(m);
             graph.addNode(new GraphNode(id, NodeKind.METHOD, m.getSimpleName(),
                     file, ln[0], ln[1],
-                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], m), "", null));
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], m, projectRoot), "", null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = AstGraphUtils.qualifiedName(m.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
@@ -254,7 +255,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             int[] ln = AstGraphUtils.lines(c);
             graph.addNode(new GraphNode(id, NodeKind.CONSTRUCTOR, c.getSimpleName(),
                     file, ln[0], ln[1],
-                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], c), "", null));
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], c, projectRoot), "", null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = AstGraphUtils.qualifiedName(c.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
@@ -268,7 +269,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             int[] ln = AstGraphUtils.lines(field);
             graph.addNode(new GraphNode(id, NodeKind.FIELD, field.getSimpleName(),
                     file, ln[0], ln[1],
-                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], field), "", null));
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], field, projectRoot), "", null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = AstGraphUtils.qualifiedName(field.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
@@ -286,7 +287,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             int[] ln = AstGraphUtils.lines(v);
             graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(),
                     file, ln[0], ln[1],
-                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], v), "", null));
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], v, projectRoot), "", null));
         });
 
         if (edgeConfig.isEnabled(EdgeKind.ANNOTATION_ATTR)) {
@@ -301,7 +302,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                     int[] ln = AstGraphUtils.lines(m);
                     graph.addNode(new GraphNode(attrId, NodeKind.ANNOTATION_ATTRIBUTE,
                             m.getSimpleName(), file, ln[0], ln[1],
-                            AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], m), "", null));
+                            AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], m, projectRoot), "", null));
                     graph.addEdge(new GraphEdge(annoId, EdgeKind.ANNOTATION_ATTR, attrId, file, ln[0]));
                 });
             });
@@ -313,7 +314,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             String id = "lambda@" + file + ":" + ln[0];
             graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "λ",
                     file, ln[0], ln[1],
-                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], lambda), "", null));
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], lambda, projectRoot), "", null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 CtMethod<?> em = lambda.getParent(CtMethod.class);
                 if (em != null) {
