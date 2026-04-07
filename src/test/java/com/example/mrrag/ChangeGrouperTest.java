@@ -1,11 +1,10 @@
 package com.example.mrrag;
 
-import com.example.mrrag.model.ChangedLine;
-import com.example.mrrag.model.ChangeGroup;
-import com.example.mrrag.service.ChangeGrouper;
+import com.example.mrrag.review.model.ChangedLine;
+import com.example.mrrag.review.model.ChangeGroup;
+import com.example.mrrag.review.ChangeGrouper;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;

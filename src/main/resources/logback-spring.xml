@@ -9,16 +9,10 @@
   </appender>
 
   <!--
-    InMemoryLogAppender is instantiated by Spring as a bean, but Logback
-    needs a separate instance for its own appender chain. We use the
-    Spring Boot delegating trick: declare a ref appender that forwards to
-    the Spring bean via a custom appender class.
-
-    Simpler approach: just instantiate it directly here. Spring will also
-    create its own @Component instance, but the one below is what actually
-    receives log events. We expose it via a static accessor.
+    InMemoryLogAppender is instantiated by Logback directly (not as a Spring bean).
+    It is accessed from Spring via the static InMemoryLogAppender.getInstance() accessor.
   -->
-  <appender name="MEMORY" class="com.example.mrrag.logging.InMemoryLogAppender">
+  <appender name="MEMORY" class="com.example.mrrag.app.logging.InMemoryLogAppender">
     <!-- no configuration needed -->
   </appender>
 
