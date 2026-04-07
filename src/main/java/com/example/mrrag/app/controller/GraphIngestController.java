@@ -5,6 +5,13 @@ import com.example.mrrag.graph.AstGraphService;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.ExampleObject;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.parameters.RequestBody;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
@@ -24,36 +31,12 @@ import java.util.stream.Collectors;
 
 /**
  * REST endpoint that clones a Git repository into a <b>persistent</b>
- * workspace directory using <b>JGit</b> (no external {@code git} process),
- * builds its AST symbol graph via {@link AstGraphService} and returns
- * build statistics.
- *
- * <pre>
- * POST /api/graph/ingest
- * Content-Type: application/json
- *
- * {
- *   "repoUrl"  : "http://gitlab.example.com/org/repo.git",
- *   "branch"   : "feature/my-branch",
- *   "commit"   : "a1b2c3d4",            // optional full / short commit SHA to checkout
- *   "gitToken" : "glpat-xxxxxxxxxxxx", // optional; falls back to app.gitlab.token
- *   "force"    : false                 // true = re-clone even if dir exists
- * }
- * </pre>
- *
- * <p>When {@code commit} is provided the clone checks out that exact commit after cloning
- * the specified branch (or default branch if {@code branch} is omitted).  This is useful
- * for analysing the repository state at a specific point in time without waiting for a full
- * re-clone.
- *
- * <p>Clone directory layout:
- * <pre>
- *   ${app.workspace.dir}/repos/&lt;repo-slug&gt;/&lt;branch-slug&gt;
- * </pre>
+ * workspace directory using <b>JGit</b> and builds its AST symbol graph.
  */
 @Slf4j
 @RestController
 @RequestMapping("/api/graph")
+@Tag(name = "Граф (клонирование)", description = "Построение AST-графа с клонированием репозитория через JGit")
 public class GraphIngestController {
 
     private final AstGraphService graphService;
@@ -72,20 +55,17 @@ public class GraphIngestController {
     // Request DTO
     // -----------------------------------------------------------------------
 
-    /**
-     * @param repoUrl  Git clone URL (HTTPS).
-     * @param branch   Branch / tag to clone. Uses repository default when {@code null}.
-     * @param commit   Optional commit SHA to checkout after cloning.  Accepts full (40-char)
-     *                 or abbreviated (7+ char) SHA.  Takes precedence over {@code branch} for
-     *                 the working-tree state but the branch is still used as the clone ref.
-     * @param gitToken GitLab PAT. Falls back to {@code app.gitlab.token}.
-     * @param force    {@code true} = delete existing clone and re-clone.
-     */
+    @Schema(description = "Запрос на клонирование репозитория и построение AST-графа")
     public record IngestRequest(
+            @Schema(description = "HTTPS-URL Git-репозитория", example = "https://gitlab.example.com/org/repo.git", requiredMode = Schema.RequiredMode.REQUIRED)
             String  repoUrl,
+            @Schema(description = "Ветка или тег для клонирования. Если не указана — используется ветка по умолчанию", example = "feature/my-branch")
             String  branch,
+            @Schema(description = "SHA коммита для checkout после клонирования (полный или сокращённый, от 7 символов). Имеет приоритет над состоянием ветки", example = "a1b2c3d4")
             String  commit,
+            @Schema(description = "Персональный токен доступа GitLab (PAT). Если не указан — используется токен из конфигурации приложения", example = "glpat-xxxxxxxxxxxx")
             String  gitToken,
+            @Schema(description = "true — удалить существующий клон и повторить клонирование", example = "false", defaultValue = "false")
             Boolean force
     ) {}
 
@@ -93,12 +73,68 @@ public class GraphIngestController {
     // Endpoint
     // -----------------------------------------------------------------------
 
+    @Operation(
+        summary = "Клонировать репозиторий и построить граф",
+        description = """
+            Клонирует Git-репозиторий в персистентную директорию рабочего пространства
+            (${app.workspace.dir}/repos/<slug>/<branch>) с помощью JGit (без внешнего процесса git),
+            затем строит AST-граф символов Java-проекта.
+            Если директория уже существует — переиспользует клон (не клонирует повторно),
+            если только не передан флаг force=true.
+            При указании commit выполняется detached-HEAD checkout на точный коммит.
+            """,
+        requestBody = @RequestBody(
+            required = true,
+            content = @Content(
+                mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = IngestRequest.class),
+                examples = {
+                    @ExampleObject(
+                        name = "Минимальный запрос",
+                        value = """
+                            {
+                              "repoUrl": "https://gitlab.example.com/org/repo.git"
+                            }"""
+                    ),
+                    @ExampleObject(
+                        name = "С веткой и токеном",
+                        value = """
+                            {
+                              "repoUrl": "https://gitlab.example.com/org/repo.git",
+                              "branch": "feature/my-branch",
+                              "gitToken": "glpat-xxxxxxxxxxxx",
+                              "force": false
+                            }"""
+                    ),
+                    @ExampleObject(
+                        name = "С конкретным коммитом",
+                        value = """
+                            {
+                              "repoUrl": "https://gitlab.example.com/org/repo.git",
+                              "branch": "main",
+                              "commit": "a1b2c3d",
+                              "force": true
+                            }"""
+                    )
+                }
+            )
+        ),
+        responses = {
+            @ApiResponse(
+                responseCode = "200",
+                description = "Граф успешно построен. Возвращает статистику: количество узлов/рёбер, время клонирования и сборки.",
+                content = @Content(schema = @Schema(implementation = GraphBuildStats.class))
+            ),
+            @ApiResponse(responseCode = "400", description = "Некорректный запрос: repoUrl не указан или пуст"),
+            @ApiResponse(responseCode = "500", description = "Ошибка клонирования (недоступный репозиторий, неверный токен) или построения графа")
+        }
+    )
     @PostMapping(
             value    = "/ingest",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public GraphBuildStats ingest(@RequestBody IngestRequest request) throws Exception {
+    public GraphBuildStats ingest(@org.springframework.web.bind.annotation.RequestBody IngestRequest request) throws Exception {
 
         long wallStart = System.currentTimeMillis();
 
@@ -173,10 +209,6 @@ public class GraphIngestController {
     // JGit clone + optional checkout
     // -----------------------------------------------------------------------
 
-    /**
-     * Clones the repository and, if {@code commitSha} is non-blank, performs a
-     * detached-HEAD checkout to that exact commit after the clone completes.
-     */
     private void cloneWithJGit(String repoUrl, String branch, String commitSha,
                                Path targetDir, String token)
             throws GitAPIException, IOException {
