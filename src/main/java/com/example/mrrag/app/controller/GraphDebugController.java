@@ -1,8 +1,8 @@
 package com.example.mrrag.app.controller;
 
 import com.example.mrrag.graph.AstGraphService;
-import com.example.mrrag.graph.GraphBuilder.GraphNode;
-import com.example.mrrag.graph.GraphBuilder.ProjectGraph;
+import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.markdown.MarkdownGraphBuilder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

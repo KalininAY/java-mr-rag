@@ -1,6 +1,9 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.GraphCacheProperties;
+import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrrag.graph.model.NodeKind;
+import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.raw.GraphSegmentIds;
 import com.example.mrrag.graph.raw.ProjectGraphCacheStore;
 import com.example.mrrag.graph.raw.ProjectKey;
@@ -30,11 +33,11 @@ class ProjectGraphCacheStoreTest {
     ProjectKey key;
 
     /** A minimal non-empty graph with one node. */
-    static GraphBuilder.ProjectGraph singleNodeGraph(String id) {
-        GraphBuilderImpl.GraphNode n = new GraphBuilderImpl.GraphNode(
-                id, GraphBuilderImpl.NodeKind.CLASS, "Foo",
+    static ProjectGraph singleNodeGraph(String id) {
+        GraphNode n = new GraphNode(
+                id, NodeKind.CLASS, "Foo",
                 "Foo.java", 1, 5, "class Foo{}", "class Foo{");
-        return GraphBuilder.ProjectGraph.reconstruct(List.of(n), List.of());
+        return ProjectGraph.reconstruct(List.of(n), List.of());
     }
 
     @BeforeEach
@@ -103,7 +106,7 @@ class ProjectGraphCacheStoreTest {
     @Test
     void savePartitioned_createsGraphAndMetaForDep() throws Exception {
         String depId = "dep/com.example_foo_1.0.0";
-        Map<String, GraphBuilder.ProjectGraph> segs = Map.of(
+        Map<String, ProjectGraph> segs = Map.of(
                 GraphSegmentIds.MAIN, singleNodeGraph("main.Foo"),
                 depId,               singleNodeGraph("dep.Bar")
         );
@@ -144,12 +147,12 @@ class ProjectGraphCacheStoreTest {
     @Test
     void saveAndLoad_roundTrip() throws Exception {
         String depId = "dep/org.springframework_spring-core_6.1.0";
-        GraphBuilder.ProjectGraph mainG = singleNodeGraph("main.Foo");
-        GraphBuilder.ProjectGraph depG  = singleNodeGraph("org.springframework.core.SpringVersion");
+        ProjectGraph mainG = singleNodeGraph("main.Foo");
+        ProjectGraph depG  = singleNodeGraph("org.springframework.core.SpringVersion");
 
         store.savePartitioned(key, Map.of(GraphSegmentIds.MAIN, mainG, depId, depG));
 
-        Optional<Map<String, GraphBuilder.ProjectGraph>> loaded = store.tryLoadAllSegments(key);
+        Optional<Map<String, ProjectGraph>> loaded = store.tryLoadAllSegments(key);
         assertTrue(loaded.isPresent());
         assertEquals(2, loaded.get().size());
         assertTrue(loaded.get().get(depId).nodes.containsKey("org.springframework.core.SpringVersion"));
@@ -163,7 +166,7 @@ class ProjectGraphCacheStoreTest {
     @Test
     void depSegment_sharedBetweenTwoProjects() throws Exception {
         String depId = "dep/com.example_shared-lib_2.0.0";
-        GraphBuilder.ProjectGraph depG = singleNodeGraph("shared.Util");
+        ProjectGraph depG = singleNodeGraph("shared.Util");
 
         // Project A saves the dep segment
         ProjectKey keyA = new ProjectKey(tmp.resolve("projectA"), "fp-aaa");
@@ -177,7 +180,7 @@ class ProjectGraphCacheStoreTest {
         Files.writeString(bundleB.resolve("segments.json"),
                 "{\"segments\":[\"" + depId + "\"]}");
 
-        Optional<Map<String, GraphBuilder.ProjectGraph>> loaded = store.tryLoadAllSegments(keyB);
+        Optional<Map<String, ProjectGraph>> loaded = store.tryLoadAllSegments(keyB);
         assertTrue(loaded.isPresent(), "Project B must load dep from global cache");
         assertTrue(loaded.get().get(depId).nodes.containsKey("shared.Util"),
                 "Node from shared dep must be present");

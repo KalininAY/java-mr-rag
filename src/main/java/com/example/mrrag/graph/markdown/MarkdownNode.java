@@ -1,7 +1,7 @@
 package com.example.mrrag.graph.markdown;
 
-import com.example.mrrag.graph.GraphBuilder.GraphNode;
-import com.example.mrrag.graph.GraphBuilder.NodeKind;
+import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrrag.graph.model.NodeKind;
 
 import java.lang.reflect.Field;
 import java.util.*;

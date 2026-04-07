@@ -1,9 +1,9 @@
 package com.example.mrrag.graph.markdown;
 
-import com.example.mrrag.graph.GraphBuilder.GraphEdge;
-import com.example.mrrag.graph.GraphBuilder.GraphNode;
-import com.example.mrrag.graph.GraphBuilder.NodeKind;
-import com.example.mrrag.graph.GraphBuilder.ProjectGraph;
+import com.example.mrrag.graph.model.GraphEdge;
+import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrrag.graph.model.NodeKind;
+import com.example.mrrag.graph.model.ProjectGraph;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 

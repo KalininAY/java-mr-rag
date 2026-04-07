@@ -1,13 +1,13 @@
 package com.example.mrrag.app.config;
 
-import com.example.mrrag.graph.GraphBuilder;
+import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.raw.ClasspathResolver;
 import com.example.mrrag.graph.raw.ProjectKey;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Disk cache for serialized {@link GraphBuilder.ProjectGraph}
+ * Disk cache for serialized {@link ProjectGraph}
  * and toggles discovery of sibling {@code *-sources.jar} files on the compile classpath.
  */
 @Data

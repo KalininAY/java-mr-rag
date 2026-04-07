@@ -1,6 +1,9 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.GraphCacheProperties;
+import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrrag.graph.model.NodeKind;
+import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.raw.GraphSegmentIds;
 import com.example.mrrag.graph.raw.ProjectGraphCacheStore;
 import com.example.mrrag.graph.raw.ProjectGraphPartitioner;
@@ -18,9 +21,9 @@ class ProjectGraphPartitionerTest {
 
     @Test
     void mainOnlyWhenNoSourcesJars() {
-        var g = new GraphBuilder.ProjectGraph();
-        g.addNode(new GraphBuilderImpl.GraphNode(
-                "com.app.Foo", GraphBuilderImpl.NodeKind.CLASS, "Foo",
+        var g = new ProjectGraph();
+        g.addNode(new GraphNode(
+                "com.app.Foo", NodeKind.CLASS, "Foo",
                 "src/main/java/com/app/Foo.java", 1, 2, "", ""));
         Path root = Path.of("/tmp/proj");
         var parts = ProjectGraphPartitioner.partition(g, root, List.of());
@@ -45,12 +48,12 @@ class ProjectGraphPartitionerTest {
                 "test-fingerprint");
 
         // main segment only
-        GraphBuilder.ProjectGraph mainGraph = new GraphBuilder.ProjectGraph();
-        mainGraph.addNode(new GraphBuilderImpl.GraphNode(
-                "com.app.Foo", GraphBuilderImpl.NodeKind.CLASS, "Foo",
+        ProjectGraph mainGraph = new ProjectGraph();
+        mainGraph.addNode(new GraphNode(
+                "com.app.Foo", NodeKind.CLASS, "Foo",
                 "src/main/java/com/app/Foo.java", 1, 2, "", ""));
 
-        Map<String, GraphBuilder.ProjectGraph> segments = Map.of(
+        Map<String, ProjectGraph> segments = Map.of(
                 GraphSegmentIds.MAIN, mainGraph);
         store.savePartitioned(key, segments);
 

@@ -3,6 +3,10 @@ package com.example.mrrag.graph;
 import com.example.mrrag.app.source.GitLabProjectSourceProvider;
 import com.example.mrrag.commons.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.commons.source.ProjectSourceProvider;
+import com.example.mrrag.graph.model.EdgeKind;
+import com.example.mrrag.graph.model.GraphEdge;
+import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrrag.graph.model.ProjectGraph;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
@@ -71,7 +75,7 @@ public class JavaIndexService {
      */
     public ProjectIndex buildIndexFromProvider(ProjectSourceProvider provider) throws Exception {
         log.info("Building index via provider: {}", provider.getClass().getSimpleName());
-        GraphBuilder.ProjectGraph graph = graphService.buildGraph(provider);
+        ProjectGraph graph = graphService.buildGraph(provider);
         return project(graph, null);
     }
 
@@ -85,7 +89,7 @@ public class JavaIndexService {
     // ------------------------------------------------------------------
 
     /** Raw graph from local clone. */
-    public GraphBuilder.ProjectGraph getGraph(Path projectRoot) throws Exception {
+    public ProjectGraph getGraph(Path projectRoot) throws Exception {
         return graphService.buildGraph(projectRoot);
     }
 
@@ -95,12 +99,12 @@ public class JavaIndexService {
      * @param projectId numeric GitLab project id
      * @param ref       branch, tag, or commit SHA
      */
-    public GraphBuilder.ProjectGraph getGraphFromRef(long projectId, String ref) throws Exception {
+    public ProjectGraph getGraphFromRef(long projectId, String ref) throws Exception {
         return graphService.buildGraph(new GitLabProjectSourceProvider(gitLabApi, projectId, ref));
     }
 
     /** Raw graph via any provider. */
-    public GraphBuilder.ProjectGraph getGraphFromProvider(ProjectSourceProvider provider) throws Exception {
+    public ProjectGraph getGraphFromProvider(ProjectSourceProvider provider) throws Exception {
         return graphService.buildGraph(provider);
     }
 
@@ -108,10 +112,10 @@ public class JavaIndexService {
     // Projection: ProjectGraph → ProjectIndex
     // ------------------------------------------------------------------
 
-    private ProjectIndex project(GraphBuilder.ProjectGraph g, Path root) {
+    private ProjectIndex project(ProjectGraph g, Path root) {
         ProjectIndex idx = new ProjectIndex();
 
-        for (GraphBuilderImpl.GraphNode node : g.nodes.values()) {
+        for (GraphNode node : g.nodes.values()) {
             switch (node.kind()) {
                 case METHOD -> {
                     String sig = extractSignatureFromId(node.id());
@@ -135,9 +139,9 @@ public class JavaIndexService {
             }
         }
 
-        for (List<GraphBuilderImpl.GraphEdge> edges : g.edgesFrom.values()) {
-            for (GraphBuilderImpl.GraphEdge e : edges) {
-                if (e.kind() == GraphBuilderImpl.EdgeKind.INVOKES) {
+        for (List<GraphEdge> edges : g.edgesFrom.values()) {
+            for (GraphEdge e : edges) {
+                if (e.kind() == EdgeKind.INVOKES) {
                     CallSite cs = new CallSite(simpleNameFromId(e.callee()), e.filePath(),
                             e.line(), e.callee(), List.of());
                     idx.callSites.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(cs);
@@ -145,10 +149,10 @@ public class JavaIndexService {
             }
         }
 
-        for (List<GraphBuilderImpl.GraphEdge> edges : g.edgesFrom.values()) {
-            for (GraphBuilderImpl.GraphEdge e : edges) {
-                if (e.kind() == GraphBuilderImpl.EdgeKind.READS_FIELD
-                        || e.kind() == GraphBuilderImpl.EdgeKind.WRITES_FIELD) {
+        for (List<GraphEdge> edges : g.edgesFrom.values()) {
+            for (GraphEdge e : edges) {
+                if (e.kind() == EdgeKind.READS_FIELD
+                        || e.kind() == EdgeKind.WRITES_FIELD) {
                     FieldAccess fa = new FieldAccess(simpleNameFromFieldId(e.callee()),
                             e.filePath(), e.line(), e.callee());
                     idx.fieldAccesses.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(fa);
@@ -157,10 +161,10 @@ public class JavaIndexService {
             }
         }
 
-        for (List<GraphBuilderImpl.GraphEdge> edges : g.edgesFrom.values()) {
-            for (GraphBuilderImpl.GraphEdge e : edges) {
-                if (e.kind() == GraphBuilderImpl.EdgeKind.READS_LOCAL_VAR
-                        || e.kind() == GraphBuilderImpl.EdgeKind.WRITES_LOCAL_VAR) {
+        for (List<GraphEdge> edges : g.edgesFrom.values()) {
+            for (GraphEdge e : edges) {
+                if (e.kind() == EdgeKind.READS_LOCAL_VAR
+                        || e.kind() == EdgeKind.WRITES_LOCAL_VAR) {
                     String name = simpleNameFromVarId(e.callee());
                     NameUsage nu = new NameUsage(name, e.filePath(), e.line());
                     idx.nameUsages.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(nu);

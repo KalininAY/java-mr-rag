@@ -2,6 +2,8 @@ package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.EdgeKindConfig;
 import com.example.mrrag.app.config.GraphCacheProperties;
+import com.example.mrrag.graph.model.EdgeKind;
+import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.raw.GradleCompileClasspathResolver;
 import com.example.mrrag.graph.raw.GraphSegmentIds;
 import com.example.mrrag.graph.raw.ProjectGraphCacheStore;
@@ -212,7 +214,7 @@ class MultiDependencyProjectIndexingTest {
         copyTree(fixtureRoot(), projectRoot);
 
         AstGraphService service = buildService(ws.resolve("cache"));
-        GraphBuilder.ProjectGraph graph = service.buildGraph(projectRoot);
+        ProjectGraph graph = service.buildGraph(projectRoot);
 
         assertThat(graph.nodes).isNotEmpty();
         Set<String> nodeIds = graph.nodes.keySet();
@@ -228,7 +230,7 @@ class MultiDependencyProjectIndexingTest {
         copyTree(fixtureRoot(), projectRoot);
 
         AstGraphService service = buildService(ws.resolve("cache"));
-        GraphBuilder.ProjectGraph graph = service.buildGraph(projectRoot);
+        ProjectGraph graph = service.buildGraph(projectRoot);
 
         String userServiceId = graph.nodes.keySet().stream()
                 .filter(id -> id.equals("com.example.multi.service.UserService"))
@@ -237,7 +239,7 @@ class MultiDependencyProjectIndexingTest {
                 .as("com.example.multi.service.UserService must be a graph node")
                 .isNotNull();
 
-        var declares     = graph.outgoing(userServiceId, GraphBuilderImpl.EdgeKind.DECLARES);
+        var declares     = graph.outgoing(userServiceId, EdgeKind.DECLARES);
         var declaredNames = declares.stream().map(e -> e.callee()).toList();
         assertThat(declaredNames).as("must declare getProfile").anyMatch(id -> id.contains("getProfile"));
         assertThat(declaredNames).as("must declare evict").anyMatch(id -> id.contains("evict"));
@@ -258,7 +260,7 @@ class MultiDependencyProjectIndexingTest {
         var segments = store.tryLoadAllSegments(key);
 
         assertThat(segments).as("Segment cache must be present").isPresent();
-        Map<String, GraphBuilder.ProjectGraph> parts = segments.get();
+        Map<String, ProjectGraph> parts = segments.get();
 
         assertThat(parts).containsKey(GraphSegmentIds.MAIN);
 
@@ -284,12 +286,12 @@ class MultiDependencyProjectIndexingTest {
         AstGraphService service = buildService(cacheDir);
         ProjectKey key = service.projectKey(projectRoot);
 
-        GraphBuilder.ProjectGraph first = service.buildGraph(key);
+        ProjectGraph first = service.buildGraph(key);
         assertThat(first.nodes).isNotEmpty();
 
         service.invalidate(key);
 
-        GraphBuilder.ProjectGraph second = service.buildGraph(key);
+        ProjectGraph second = service.buildGraph(key);
         assertThat(second.nodes.keySet())
                 .as("Reloaded graph must contain the same nodes")
                 .containsAll(first.nodes.keySet());

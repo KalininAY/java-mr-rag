@@ -2,9 +2,9 @@ package com.example.mrrag.app.controller;
 
 import com.example.mrrag.graph.GraphBuildStats;
 import com.example.mrrag.graph.AstGraphService;
-import com.example.mrrag.graph.GraphBuilder.EdgeKind;
-import com.example.mrrag.graph.GraphBuilder.NodeKind;
-import com.example.mrrag.graph.GraphBuilder.ProjectGraph;
+import com.example.mrrag.graph.model.EdgeKind;
+import com.example.mrrag.graph.model.NodeKind;
+import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.app.source.GitLabProjectSourceProvider;
 import com.example.mrrag.commons.source.ProjectSourceProvider;
 import lombok.RequiredArgsConstructor;

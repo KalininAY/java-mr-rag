@@ -1,7 +1,6 @@
 package com.example.mrrag.graph.raw;
 
-import com.example.mrrag.graph.GraphBuilder;
-import com.example.mrrag.graph.GraphBuilderImpl;
+import com.example.mrrag.graph.model.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -11,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * JSON snapshot of a {@link GraphBuilder.ProjectGraph} for disk cache.
+ * JSON snapshot of a {@link ProjectGraph} for disk cache.
  */
 public final class ProjectGraphSerialization {
 
@@ -21,22 +20,22 @@ public final class ProjectGraphSerialization {
     private ProjectGraphSerialization() {
     }
 
-    public static byte[] toJson(GraphBuilder.ProjectGraph graph) throws IOException {
+    public static byte[] toJson(ProjectGraph graph) throws IOException {
         Snapshot snap = Snapshot.from(graph);
         return MAPPER.writeValueAsBytes(snap);
     }
 
-    public static GraphBuilder.ProjectGraph fromJson(byte[] json) throws IOException {
+    public static ProjectGraph fromJson(byte[] json) throws IOException {
         Snapshot snap = MAPPER.readValue(json, Snapshot.class);
         return snap.toGraph();
     }
 
-    public static void write(GraphBuilder.ProjectGraph graph, OutputStream out) throws IOException {
+    public static void write(ProjectGraph graph, OutputStream out) throws IOException {
         Snapshot snap = Snapshot.from(graph);
         MAPPER.writeValue(out, snap);
     }
 
-    public static GraphBuilder.ProjectGraph read(InputStream in) throws IOException {
+    public static ProjectGraph read(InputStream in) throws IOException {
         Snapshot snap = MAPPER.readValue(in, Snapshot.class);
         return snap.toGraph();
     }
@@ -56,32 +55,32 @@ public final class ProjectGraphSerialization {
             this.edges = edges;
         }
 
-        static Snapshot from(GraphBuilder.ProjectGraph g) {
+        static Snapshot from(ProjectGraph g) {
             List<NodeSnapshot> nodes = new ArrayList<>(g.nodes.size());
-            for (GraphBuilderImpl.GraphNode n : g.nodes.values()) {
+            for (GraphNode n : g.nodes.values()) {
                 nodes.add(NodeSnapshot.from(n));
             }
             List<EdgeSnapshot> edges = new ArrayList<>();
-            for (List<GraphBuilderImpl.GraphEdge> list : g.edgesFrom.values()) {
-                for (GraphBuilderImpl.GraphEdge e : list) {
+            for (List<GraphEdge> list : g.edgesFrom.values()) {
+                for (GraphEdge e : list) {
                     edges.add(EdgeSnapshot.from(e));
                 }
             }
             return new Snapshot(nodes, edges);
         }
 
-        GraphBuilder.ProjectGraph toGraph() {
+        ProjectGraph toGraph() {
             List<NodeSnapshot> nList = nodes != null ? nodes : List.of();
             List<EdgeSnapshot> eList = edges != null ? edges : List.of();
-            List<GraphBuilderImpl.GraphNode> nodeList = new ArrayList<>();
+            List<GraphNode> nodeList = new ArrayList<>();
             for (NodeSnapshot n : nList) {
                 nodeList.add(n.toGraphNode());
             }
-            List<GraphBuilderImpl.GraphEdge> edgeList = new ArrayList<>();
+            List<GraphEdge> edgeList = new ArrayList<>();
             for (EdgeSnapshot e : eList) {
                 edgeList.add(e.toGraphEdge());
             }
-            return GraphBuilder.ProjectGraph.reconstruct(nodeList, edgeList);
+            return ProjectGraph.reconstruct(nodeList, edgeList);
         }
     }
 
@@ -95,7 +94,7 @@ public final class ProjectGraphSerialization {
         public String sourceSnippet;
         public String declarationSnippet;
 
-        static NodeSnapshot from(GraphBuilderImpl.GraphNode n) {
+        static NodeSnapshot from(GraphNode n) {
             NodeSnapshot s = new NodeSnapshot();
             s.id = n.id();
             s.kind = n.kind().name();
@@ -108,10 +107,10 @@ public final class ProjectGraphSerialization {
             return s;
         }
 
-        GraphBuilderImpl.GraphNode toGraphNode() {
-            return new GraphBuilderImpl.GraphNode(
+        GraphNode toGraphNode() {
+            return new GraphNode(
                     id,
-                    GraphBuilderImpl.NodeKind.valueOf(kind),
+                    NodeKind.valueOf(kind),
                     simpleName,
                     filePath,
                     startLine,
@@ -129,7 +128,7 @@ public final class ProjectGraphSerialization {
         public String filePath;
         public int line;
 
-        static EdgeSnapshot from(GraphBuilderImpl.GraphEdge e) {
+        static EdgeSnapshot from(GraphEdge e) {
             EdgeSnapshot s = new EdgeSnapshot();
             s.caller = e.caller();
             s.kind = e.kind().name();
@@ -139,10 +138,10 @@ public final class ProjectGraphSerialization {
             return s;
         }
 
-        GraphBuilderImpl.GraphEdge toGraphEdge() {
-            return new GraphBuilderImpl.GraphEdge(
+        GraphEdge toGraphEdge() {
+            return new GraphEdge(
                     caller,
-                    GraphBuilderImpl.EdgeKind.valueOf(kind),
+                    EdgeKind.valueOf(kind),
                     callee,
                     filePath != null ? filePath : "",
                     line

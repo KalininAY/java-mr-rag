@@ -1,7 +1,8 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.commons.source.ProjectSourceProvider;
-import com.example.mrrag.graph.GraphBuilder.ProjectGraph;
+import com.example.mrrag.graph.model.ProjectGraph;
+import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.raw.ProjectKey;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,7 +13,7 @@ import java.nio.file.Path;
 /**
  * Spring façade over {@link GraphBuilderImpl}: project-key helpers, cache delegation,
  * and path normalization for review/diff flows. All graph data types live on
- * {@link GraphBuilderImpl} ({@link GraphBuilderImpl.GraphNode}, {@link GraphBuilder.ProjectGraph}, …).
+ * {@link GraphBuilderImpl} ({@link GraphNode}, {@link ProjectGraph}, …).
  */
 @Slf4j
 @Service

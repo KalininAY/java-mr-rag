@@ -1,15 +1,15 @@
 package com.example.mrrag.app.service;
 
-import com.example.mrrag.graph.GraphBuilder;
-import com.example.mrrag.graph.GraphBuilder.ProjectGraph;
+import com.example.mrrag.graph.model.ProjectGraph;
+import com.example.mrrag.graph.model.EdgeKind;
+import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.review.model.ChangedLine;
 import com.example.mrrag.review.model.ChangeGroup;
 import com.example.mrrag.review.model.EnrichmentSnippet;
 import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
 import com.example.mrrag.graph.AstGraphService;
-import com.example.mrrag.graph.GraphBuilderImpl;
-import com.example.mrrag.graph.GraphBuilder.GraphEdge;
-import com.example.mrrag.graph.GraphBuilder.GraphNode;
+import com.example.mrrag.graph.model.GraphEdge;
+import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.JavaIndexService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -184,7 +184,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
                 };
 
                 List<String> usageLines = usageEdges.stream()
-                        .filter(e -> e.kind() != GraphBuilderImpl.EdgeKind.DECLARES)
+                        .filter(e -> e.kind() != EdgeKind.DECLARES)
                         .limit(10)
                         .map(e -> e.filePath() + ":" + e.line())
                         .distinct()
@@ -224,7 +224,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
         int    line = first.lineNumber() > 0 ? first.lineNumber() : first.oldLineNumber();
 
         graph.nodesAtLine(file, line).stream()
-                .filter(n -> n.kind() == GraphBuilderImpl.NodeKind.METHOD)
+                .filter(n -> n.kind() == NodeKind.METHOD)
                 .min(Comparator.comparingInt(n -> n.endLine() - n.startLine()))
                 .ifPresent(method -> {
                     if (full(snippets)) return;

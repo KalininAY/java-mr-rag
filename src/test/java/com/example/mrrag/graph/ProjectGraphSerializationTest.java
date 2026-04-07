@@ -1,6 +1,10 @@
 package com.example.mrrag.graph;
 
-import com.example.mrrag.graph.GraphBuilder.ProjectGraph;
+import com.example.mrrag.graph.model.ProjectGraph;
+import com.example.mrrag.graph.model.EdgeKind;
+import com.example.mrrag.graph.model.GraphEdge;
+import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.raw.ProjectGraphSerialization;
 import org.junit.jupiter.api.Test;
 
@@ -14,18 +18,18 @@ class ProjectGraphSerializationTest {
 
     @Test
     void roundTripJson() throws Exception {
-        GraphBuilderImpl.GraphNode n = new GraphBuilderImpl.GraphNode(
+        GraphNode n = new GraphNode(
                 "com.example.Foo",
-                GraphBuilderImpl.NodeKind.CLASS,
+                NodeKind.CLASS,
                 "Foo",
                 "src/main/java/com/example/Foo.java",
                 1, 5,
                 "class Foo {}",
                 "class Foo {}"
         );
-        GraphBuilderImpl.GraphEdge e = new GraphBuilderImpl.GraphEdge(
+        GraphEdge e = new GraphEdge(
                 "com.example.Foo",
-                GraphBuilderImpl.EdgeKind.DECLARES,
+                EdgeKind.DECLARES,
                 "com.example.Foo#bar()",
                 "src/main/java/com/example/Foo.java",
                 2
@@ -38,7 +42,7 @@ class ProjectGraphSerializationTest {
         assertEquals(1, g2.nodes.size());
         assertEquals("com.example.Foo", g2.nodes.get("com.example.Foo").id());
         assertEquals(1, g2.outgoing("com.example.Foo").size());
-        assertEquals(GraphBuilderImpl.EdgeKind.DECLARES, g2.outgoing("com.example.Foo").get(0).kind());
+        assertEquals(EdgeKind.DECLARES, g2.outgoing("com.example.Foo").get(0).kind());
     }
 
     @Test

@@ -1,6 +1,6 @@
 package com.example.mrrag.graph.markdown;
 
-import com.example.mrrag.graph.GraphBuilder.GraphNode;
+import com.example.mrrag.graph.model.GraphNode;
 
 /**
  * Linked node for an ANNOTATION_ATTRIBUTE element.
