@@ -46,8 +46,8 @@ public class GraphBuilderImpl implements GraphBuilder {
     private final EdgeKindConfig         edgeConfig;
     private final ProjectGraphCacheStore cacheStore;
 
-    private final Map<Path, ProjectGraph>        localCache = new ConcurrentHashMap<>();
-    private final Map<ProjectKey, ProjectGraph>  keyCache   = new ConcurrentHashMap<>();
+    /** In-memory cache keyed by {@link ProjectKey} (path + fingerprint). */
+    private final Map<ProjectKey, ProjectGraph> keyCache = new ConcurrentHashMap<>();
 
     @Autowired
     public GraphBuilderImpl(EdgeKindConfig edgeConfig,
@@ -106,6 +106,10 @@ public class GraphBuilderImpl implements GraphBuilder {
 
     public void invalidate(ProjectKey key) {
         keyCache.remove(key);
+        if (cacheStore != null) {
+            cacheStore.delete(key);
+            log.debug("invalidate(ProjectKey): deleted disk cache for {}", key);
+        }
         log.debug("invalidate(ProjectKey): evicted in-memory entry for {}", key);
     }
 
@@ -121,9 +125,23 @@ public class GraphBuilderImpl implements GraphBuilder {
         return doBuildGraphFromSources(sources, provider.localProjectRoot().orElse(null));
     }
 
+    /**
+     * Invalidates all caches (in-memory and disk) for the given project root.
+     *
+     * <p>The {@link ProjectKey} is recomputed from the path — note that if the
+     * project fingerprint changed since the last build, the old disk-cache entry
+     * will not be found and only the in-memory entry (if any) will be evicted.
+     * Use {@link #invalidate(ProjectKey)} directly when you already have the key.
+     */
     @Override
     public void invalidate(Path projectRoot) {
-        localCache.remove(projectRoot);
+        ProjectKey key = projectKey(projectRoot);
+        keyCache.remove(key);
+        log.debug("invalidate(Path): evicted in-memory entry for {}", projectRoot);
+        if (cacheStore != null) {
+            cacheStore.delete(key);
+            log.debug("invalidate(Path): deleted disk cache for {}", projectRoot);
+        }
     }
 
     // ------------------------------------------------------------------
