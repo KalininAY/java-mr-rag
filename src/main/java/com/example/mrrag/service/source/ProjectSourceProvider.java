@@ -1,6 +1,8 @@
 package com.example.mrrag.service.source;
 
+import java.nio.file.Path;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Strategy: supply the raw Java source files of a project.
@@ -37,4 +39,34 @@ public interface ProjectSourceProvider {
      * @throws Exception on any IO / API error
      */
     List<ProjectSource> getSources() throws Exception;
+
+    /**
+     * Returns a stable, human-readable identifier for this project snapshot.
+     *
+     * <p>Used as cache key by the graph layer so the same project is never
+     * analysed twice within a single JVM lifetime.  Format conventions:
+     * <ul>
+     *   <li>GitLab API: {@code "gitlab:<numericId>@<ref>"} —
+     *       e.g. {@code "gitlab:123@main"} or {@code "gitlab:123@a1b2c3d4"}</li>
+     *   <li>Local clone: {@code "local:<absolutePath>"} —
+     *       e.g. {@code "local:/tmp/repo-clone"}</li>
+     * </ul>
+     *
+     * <p>The default implementation returns an empty string, which effectively
+     * disables caching — override in every concrete provider.
+     *
+     * @return non-null project identifier; may be empty to disable caching
+     */
+    default String projectId() {
+        return "";
+    }
+
+    /**
+     * When sources come from a local checkout, returns the repository root so
+     * the graph layer can resolve compile classpath (Gradle/Maven).
+     * API-only providers return empty.
+     */
+    default Optional<Path> localProjectRoot() {
+        return Optional.empty();
+    }
 }
