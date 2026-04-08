@@ -53,9 +53,7 @@ public class SourceBatchPartitioner {
      * @param numBatches desired number of output batches (usually {@code availableProcessors})
      * @return an unmodifiable list of non-empty batches
      */
-    public static List<List<ProjectSource>> partition(
-            List<ProjectSource> sources, int numBatches) {
-
+    public static List<List<ProjectSource>> partition(List<ProjectSource> sources, int numBatches) {
         if (sources.isEmpty()) return List.of();
         if (numBatches <= 1)   return List.of(List.copyOf(sources));
 
@@ -185,12 +183,11 @@ public class SourceBatchPartitioner {
      * This is the Longest Processing Time (LPT) approximation for makespan
      * minimisation — provably within 4/3 of optimal.
      */
-    private static List<List<ProjectSource>> binPack(
-            Map<String, List<ProjectSource>> byComponent, int numBatches) {
+    private static List<List<ProjectSource>> binPack(Map<String, List<ProjectSource>> byComponent, int numBatches) {
 
         // Sort components largest-first
         List<List<ProjectSource>> components = new ArrayList<>(byComponent.values());
-        components.sort(Comparator.comparingInt(List::size).reversed());
+        components.sort((l1,l2) -> Integer.compare(l2.size(), l1.size()));
 
         // Buckets backed by a min-heap on current load
         int n = Math.min(numBatches, components.size());
