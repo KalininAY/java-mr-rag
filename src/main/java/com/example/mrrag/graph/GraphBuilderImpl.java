@@ -35,8 +35,14 @@ import java.util.concurrent.*;
  *
  * <p>Performance notes:
  * <ul>
- *   <li>The ten independent {@code model.getElements()} passes in
- *       {@link #doBuildGraphFromModel} run in parallel via
+ *   <li>Sources are split into {@code N} batches ({@code N = availableProcessors}).
+ *       Each batch is parsed by an independent {@link Launcher} instance running
+ *       in parallel via {@link ForkJoinPool#commonPool()}.  Partial
+ *       {@link ProjectGraph}s are merged after all batches complete.
+ *       Because {@link GraphEdge} stores callee as a qualified-name string,
+ *       cross-batch edges are automatically valid after the merge.</li>
+ *   <li>The independent {@code model.getElements()} passes in
+ *       {@link #doBuildGraphFromModel} also run in parallel via
  *       {@link ForkJoinPool#commonPool()}.</li>
  *   <li>{@link com.example.mrrag.app.service.ProjectGraphCacheStore#savePartitioned}
  *       is dispatched asynchronously so the caller receives the graph
@@ -134,10 +140,57 @@ public class GraphBuilderImpl implements GraphBuilder {
     }
 
     // ------------------------------------------------------------------
-    // Core: sources → Spoon model
+    // Core: sources → Spoon model  (parallel batches)
     // ------------------------------------------------------------------
 
+    /**
+     * Splits {@code sources} into {@code N} batches ({@code N = availableProcessors}),
+     * builds a {@link CtModel} for each batch in parallel, then merges the resulting
+     * partial {@link ProjectGraph}s into a single graph.
+     *
+     * <p>Cross-batch edges are preserved automatically because {@link GraphEdge}
+     * stores the callee as a fully-qualified name string — after the merge both
+     * endpoint nodes are present in the combined graph.
+     */
     private ProjectGraph doBuildGraphFromSources(List<ProjectSource> sources, Path classpathRoot) {
+        if (sources.isEmpty()) {
+            log.warn("doBuildGraphFromSources: empty source list, returning empty graph");
+            return new ProjectGraph();
+        }
+
+        int nThreads  = Math.max(1, Runtime.getRuntime().availableProcessors());
+        int batchSize = Math.max(1, (int) Math.ceil((double) sources.size() / nThreads));
+        List<List<ProjectSource>> batches = partition(sources, batchSize);
+
+        log.info("doBuildGraphFromSources: {} files -> {} batches (batchSize={})",
+                sources.size(), batches.size(), batchSize);
+
+        // Build one partial graph per batch in parallel
+        List<CompletableFuture<ProjectGraph>> futures = batches.stream()
+                .map(batch -> CompletableFuture.supplyAsync(
+                        () -> buildBatch(batch, classpathRoot),
+                        ForkJoinPool.commonPool()))
+                .toList();
+
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        // Merge all partial graphs into one
+        ProjectGraph merged = new ProjectGraph();
+        futures.stream()
+               .map(CompletableFuture::join)
+               .forEach(partial -> mergeGraphs(merged, partial));
+
+        log.info("doBuildGraphFromSources: merged graph — {} nodes, {} edge-sources",
+                merged.nodes.size(), merged.edgesFrom.size());
+        return merged;
+    }
+
+    /**
+     * Builds a {@link ProjectGraph} for a single batch of source files.
+     * Each call creates an independent {@link Launcher} instance, so batches
+     * can safely run concurrently.
+     */
+    private ProjectGraph buildBatch(List<ProjectSource> sources, Path classpathRoot) {
         Map<String, String[]> sourceLines = new ConcurrentHashMap<>();
         for (ProjectSource src : sources) {
             sourceLines.put(src.path(), src.content().split("\n", -1));
@@ -147,6 +200,9 @@ public class GraphBuilderImpl implements GraphBuilder {
         launcher.getEnvironment().setNoClasspath(true);
         launcher.getEnvironment().setCommentEnabled(false);
         launcher.getEnvironment().setAutoImports(false);
+        launcher.getEnvironment().setIgnoreSyntaxErrors(true);
+        launcher.getEnvironment().setLevel("ERROR");
+        launcher.getEnvironment().setComplianceLevel(17);
         try { launcher.getEnvironment().setIgnoreDuplicateDeclarations(true); }
         catch (NoSuchMethodError ignored) {}
 
@@ -158,14 +214,38 @@ public class GraphBuilderImpl implements GraphBuilder {
         try {
             model = launcher.buildModel();
         } catch (ModelBuildingException mbe) {
-            log.warn("Spoon ModelBuildingException — partial model. Cause: {}", mbe.getMessage());
+            log.warn("Spoon ModelBuildingException (batch of {} files) — using partial model. Cause: {}",
+                    sources.size(), mbe.getMessage());
             model = launcher.getModel();
             if (model == null) {
-                log.error("Spoon returned null model — returning empty graph");
+                log.error("Spoon returned null model for batch — returning empty partial graph");
                 return new ProjectGraph();
             }
         }
         return doBuildGraphFromModel(model, sourceLines, classpathRoot);
+    }
+
+    /**
+     * Merges {@code source} into {@code target} in-place.
+     * Both collections are concurrent-safe, so this is safe to call
+     * from any thread after all batch futures have completed.
+     */
+    private static void mergeGraphs(ProjectGraph target, ProjectGraph source) {
+        source.nodes.values().forEach(target::addNode);
+        source.edgesFrom.forEach((caller, edges) ->
+                edges.forEach(target::addEdge));
+    }
+
+    /**
+     * Partitions {@code list} into sub-lists of at most {@code size} elements.
+     * Equivalent to Guava's {@code Lists.partition} (no Guava dependency needed).
+     */
+    private static <T> List<List<T>> partition(List<T> list, int size) {
+        List<List<T>> result = new ArrayList<>();
+        for (int i = 0; i < list.size(); i += size) {
+            result.add(list.subList(i, Math.min(i + size, list.size())));
+        }
+        return result;
     }
 
     // ------------------------------------------------------------------
