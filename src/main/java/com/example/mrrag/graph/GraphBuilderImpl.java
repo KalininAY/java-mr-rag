@@ -44,7 +44,7 @@ import java.util.concurrent.*;
  *   <li>The independent {@code model.getElements()} passes in
  *       {@link #doBuildGraphFromModel} also run in parallel via
  *       {@link ForkJoinPool#commonPool()}.</li>
- *   <li>{@link com.example.mrrag.app.service.ProjectGraphCacheStore#savePartitioned}
+ *   <li>{@link ProjectGraphCacheStore#savePartitioned(ProjectKey, Map)}
  *       is dispatched asynchronously so the caller receives the graph
  *       immediately while the disk write happens in the background.</li>
  *   <li>{@link ProjectGraph} uses {@code ConcurrentHashMap} /
@@ -174,14 +174,18 @@ public class GraphBuilderImpl implements GraphBuilder {
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
+        futures.forEach(graph ->
+                log.info("AST graph built: {} nodes, {} edge-sources",
+                        graph.join().nodes.size(), graph.join().edgesFrom.size()));
+
         // Merge all partial graphs into one
         ProjectGraph merged = new ProjectGraph();
         futures.stream()
                .map(CompletableFuture::join)
                .forEach(partial -> mergeGraphs(merged, partial));
 
-        log.info("doBuildGraphFromSources: merged graph — {} nodes, {} edge-sources",
-                merged.nodes.size(), merged.edgesFrom.size());
+        log.info("doBuildGraphFromSources: merged graph — {} nodes, {} edge-sources {}",
+                merged.nodes.size(), merged.edgesFrom.size(), classpathRoot);
         return merged;
     }
 
@@ -202,7 +206,7 @@ public class GraphBuilderImpl implements GraphBuilder {
         launcher.getEnvironment().setAutoImports(false);
         launcher.getEnvironment().setIgnoreSyntaxErrors(true);
         launcher.getEnvironment().setLevel("ERROR");
-        launcher.getEnvironment().setComplianceLevel(17);
+//        launcher.getEnvironment().setComplianceLevel(17);
         try { launcher.getEnvironment().setIgnoreDuplicateDeclarations(true); }
         catch (NoSuchMethodError ignored) {}
 
@@ -539,7 +543,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             throw new RuntimeException("AST graph build failed in parallel pass", e.getCause());
         }
 
-        log.info("AST graph built: {} nodes, {} edge-sources",
+        log.info("AST graph built now: {} nodes, {} edge-sources",
                 graph.nodes.size(), graph.edgesFrom.size());
         return graph;
     }
