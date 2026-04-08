@@ -61,31 +61,26 @@ public class ReviewService {
             log.info("Cloning source branch '{}' and target branch '{}' in parallel...",
                     request.sourceBranch(), request.targetBranch());
 
-            ExecutorService cloneExecutor = Executors.newFixedThreadPool(2);
-            try {
-                CompletableFuture<Path> sourceFuture = CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return mergeRequestCheckout.checkoutBranch(
-                                request.projectId(), request.mrIid(), request.sourceBranch(), "from");
-                    } catch (Exception e) {
-                        throw new RuntimeException("Failed to clone source branch: " + request.sourceBranch(), e);
-                    }
-                }, cloneExecutor);
+            CompletableFuture<Path> sourceFuture = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return mergeRequestCheckout.checkoutBranch(
+                            request.projectId(), request.mrIid(), request.sourceBranch(), "from");
+                } catch (Exception e) {
+                    throw new RuntimeException("Failed to clone source branch: " + request.sourceBranch(), e);
+                }
+            });
 
-                CompletableFuture<Path> targetFuture = CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return mergeRequestCheckout.checkoutBranch(
-                                request.projectId(), request.mrIid(), request.targetBranch(), "to");
-                    } catch (Exception e) {
-                        throw new RuntimeException("Failed to clone target branch: " + request.targetBranch(), e);
-                    }
-                }, cloneExecutor);
+            CompletableFuture<Path> targetFuture = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return mergeRequestCheckout.checkoutBranch(
+                            request.projectId(), request.mrIid(), request.targetBranch(), "to");
+                } catch (Exception e) {
+                    throw new RuntimeException("Failed to clone target branch: " + request.targetBranch(), e);
+                }
+            });
 
-                sourceRepoDir = sourceFuture.join();
-                targetRepoDir = targetFuture.join();
-            } finally {
-                cloneExecutor.shutdown();
-            }
+            sourceRepoDir = sourceFuture.join();
+            targetRepoDir = targetFuture.join();
 
             log.info("Both branches cloned successfully: source={}, target={}",
                     sourceRepoDir, targetRepoDir);
@@ -99,31 +94,26 @@ public class ReviewService {
             final ProjectSourceProvider sourceProviderRef = sourceProvider;
             final ProjectSourceProvider targetProviderRef = targetProvider;
 
-            ExecutorService graphExecutor = Executors.newFixedThreadPool(2);
             ProjectGraph sourceGraph;
             ProjectGraph targetGraph;
-            try {
-                CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return astGraphService.buildGraph(sourceProviderRef);
-                    } catch (Exception e) {
-                        throw new RuntimeException("Failed to build source AST graph", e);
-                    }
-                }, graphExecutor);
+            CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return astGraphService.buildGraph(sourceProviderRef);
+                } catch (Exception e) {
+                    throw new RuntimeException("Failed to build source AST graph", e);
+                }
+            });
 
-                CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return astGraphService.buildGraph(targetProviderRef);
-                    } catch (Exception e) {
-                        throw new RuntimeException("Failed to build target AST graph", e);
-                    }
-                }, graphExecutor);
+            CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return astGraphService.buildGraph(targetProviderRef);
+                } catch (Exception e) {
+                    throw new RuntimeException("Failed to build target AST graph", e);
+                }
+            });
 
-                sourceGraph = sourceGraphFuture.join();
-                targetGraph = targetGraphFuture.join();
-            } finally {
-                graphExecutor.shutdown();
-            }
+            sourceGraph = sourceGraphFuture.join();
+            targetGraph = targetGraphFuture.join();
 
             log.info("Both AST graphs built successfully");
 

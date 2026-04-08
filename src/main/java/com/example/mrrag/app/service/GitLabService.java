@@ -92,6 +92,7 @@ public class GitLabService implements MergeRequestCheckoutPort {
                 .setURI(repoUrl)
                 .setDirectory(repoDir.toFile())
                 .setBranch(branch)
+                .setDepth(1)
                 .setCredentialsProvider(credentials)
                 .call()
                 .close();
