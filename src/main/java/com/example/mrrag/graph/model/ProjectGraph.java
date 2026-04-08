@@ -1,14 +1,23 @@
 package com.example.mrrag.graph.model;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
+/**
+ * Thread-safe symbol graph.
+ *
+ * <p>All collections use concurrent implementations so that
+ * {@link com.example.mrrag.graph.GraphBuilderImpl} can populate
+ * the graph from multiple threads simultaneously.
+ */
 public class ProjectGraph {
-    public final Map<String, GraphNode> nodes = new LinkedHashMap<>();
-    public final Map<String, List<GraphEdge>> edgesFrom = new LinkedHashMap<>();
-    public final Map<String, List<GraphEdge>> edgesTo = new LinkedHashMap<>();
-    public final Map<String, List<GraphNode>> bySimpleName = new LinkedHashMap<>();
-    public final Map<String, List<GraphNode>> byLine = new LinkedHashMap<>();
-    public final Map<String, List<GraphNode>> byFile = new LinkedHashMap<>();
+    public final Map<String, GraphNode>        nodes        = new ConcurrentHashMap<>();
+    public final Map<String, List<GraphEdge>>  edgesFrom    = new ConcurrentHashMap<>();
+    public final Map<String, List<GraphEdge>>  edgesTo      = new ConcurrentHashMap<>();
+    public final Map<String, List<GraphNode>>  bySimpleName = new ConcurrentHashMap<>();
+    public final Map<String, List<GraphNode>>  byLine       = new ConcurrentHashMap<>();
+    public final Map<String, List<GraphNode>>  byFile       = new ConcurrentHashMap<>();
 
     public Set<String> allFilePaths() {
         return byFile.keySet();
@@ -16,14 +25,14 @@ public class ProjectGraph {
 
     public void addNode(GraphNode n) {
         nodes.put(n.id(), n);
-        bySimpleName.computeIfAbsent(n.simpleName(), k -> new ArrayList<>()).add(n);
-        byLine.computeIfAbsent(n.filePath() + "#" + n.startLine(), k -> new ArrayList<>()).add(n);
-        byFile.computeIfAbsent(n.filePath(), k -> new ArrayList<>()).add(n);
+        bySimpleName.computeIfAbsent(n.simpleName(),             k -> new CopyOnWriteArrayList<>()).add(n);
+        byLine      .computeIfAbsent(n.filePath() + "#" + n.startLine(), k -> new CopyOnWriteArrayList<>()).add(n);
+        byFile      .computeIfAbsent(n.filePath(),                k -> new CopyOnWriteArrayList<>()).add(n);
     }
 
     public void addEdge(GraphEdge e) {
-        edgesFrom.computeIfAbsent(e.caller(), k -> new ArrayList<>()).add(e);
-        edgesTo.computeIfAbsent(e.callee(), k -> new ArrayList<>()).add(e);
+        edgesFrom.computeIfAbsent(e.caller(), k -> new CopyOnWriteArrayList<>()).add(e);
+        edgesTo  .computeIfAbsent(e.callee(), k -> new CopyOnWriteArrayList<>()).add(e);
     }
 
     public List<GraphEdge> outgoing(String id) {
