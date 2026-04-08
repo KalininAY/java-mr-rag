@@ -35,12 +35,14 @@ import java.util.concurrent.*;
  *
  * <p>Performance notes:
  * <ul>
- *   <li>Sources are split into {@code N} batches ({@code N = availableProcessors}).
- *       Each batch is parsed by an independent {@link Launcher} instance running
- *       in parallel via {@link ForkJoinPool#commonPool()}.  Partial
- *       {@link ProjectGraph}s are merged after all batches complete.
- *       Because {@link GraphEdge} stores callee as a qualified-name string,
- *       cross-batch edges are automatically valid after the merge.</li>
+ *   <li>Sources are split into {@code N} import-aware batches
+ *       ({@code N = availableProcessors}) by {@link SourceBatchPartitioner}.
+ *       Files in the same package or connected via {@code import} statements
+ *       are always co-located in the same batch, so Spoon can fully resolve
+ *       intra-component type references and produce correct qualified-name IDs
+ *       for callee nodes.  Each batch is parsed by an independent
+ *       {@link Launcher} running in parallel via {@link ForkJoinPool#commonPool()}.
+ *       Partial {@link ProjectGraph}s are merged after all batches complete.</li>
  *   <li>The independent {@code model.getElements()} passes in
  *       {@link #doBuildGraphFromModel} also run in parallel via
  *       {@link ForkJoinPool#commonPool()}.</li>
@@ -140,17 +142,18 @@ public class GraphBuilderImpl implements GraphBuilder {
     }
 
     // ------------------------------------------------------------------
-    // Core: sources → Spoon model  (parallel batches)
+    // Core: sources → Spoon model  (parallel import-aware batches)
     // ------------------------------------------------------------------
 
     /**
-     * Splits {@code sources} into {@code N} batches ({@code N = availableProcessors}),
-     * builds a {@link CtModel} for each batch in parallel, then merges the resulting
-     * partial {@link ProjectGraph}s into a single graph.
+     * Partitions {@code sources} into import-aware batches via
+     * {@link SourceBatchPartitioner}, then builds a {@link CtModel} for each
+     * batch in parallel and merges the resulting partial {@link ProjectGraph}s.
      *
-     * <p>Cross-batch edges are preserved automatically because {@link GraphEdge}
-     * stores the callee as a fully-qualified name string — after the merge both
-     * endpoint nodes are present in the combined graph.
+     * <p>Files that share a package or are connected via {@code import} statements
+     * are always placed in the same batch, so Spoon can fully resolve
+     * intra-component type references.  Cross-batch edges are still preserved
+     * because {@link GraphEdge} stores the callee as a qualified-name string.
      */
     private ProjectGraph doBuildGraphFromSources(List<ProjectSource> sources, Path classpathRoot) {
         if (sources.isEmpty()) {
@@ -158,12 +161,11 @@ public class GraphBuilderImpl implements GraphBuilder {
             return new ProjectGraph();
         }
 
-        int nThreads  = Math.max(1, Runtime.getRuntime().availableProcessors());
-        int batchSize = Math.max(1, (int) Math.ceil((double) sources.size() / nThreads));
-        List<List<ProjectSource>> batches = partition(sources, batchSize);
+        int nThreads = Math.max(1, Runtime.getRuntime().availableProcessors());
+        List<List<ProjectSource>> batches = SourceBatchPartitioner.partition(sources, nThreads);
 
-        log.info("doBuildGraphFromSources: {} files -> {} batches (batchSize={})",
-                sources.size(), batches.size(), batchSize);
+        log.info("doBuildGraphFromSources: {} files -> {} import-aware batches (threads={})",
+                sources.size(), batches.size(), nThreads);
 
         // Build one partial graph per batch in parallel
         List<CompletableFuture<ProjectGraph>> futures = batches.stream()
@@ -174,9 +176,9 @@ public class GraphBuilderImpl implements GraphBuilder {
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-        futures.forEach(graph ->
-                log.info("AST graph built: {} nodes, {} edge-sources",
-                        graph.join().nodes.size(), graph.join().edgesFrom.size()));
+        futures.forEach(f ->
+                log.info("batch graph: {} nodes, {} edge-sources",
+                        f.join().nodes.size(), f.join().edgesFrom.size()));
 
         // Merge all partial graphs into one
         ProjectGraph merged = new ProjectGraph();
@@ -184,7 +186,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                .map(CompletableFuture::join)
                .forEach(partial -> mergeGraphs(merged, partial));
 
-        log.info("doBuildGraphFromSources: merged graph — {} nodes, {} edge-sources {}",
+        log.info("doBuildGraphFromSources: merged graph — {} nodes, {} edge-sources, root={}",
                 merged.nodes.size(), merged.edgesFrom.size(), classpathRoot);
         return merged;
     }
@@ -201,24 +203,11 @@ public class GraphBuilderImpl implements GraphBuilder {
         }
 
         Launcher launcher = new Launcher();
-//        ClasspathResolver.tryResolve(classpathRoot).ifPresentOrElse(
-//                r -> {
-//                    launcher.getEnvironment().setNoClasspath(false);
-//                    launcher.getEnvironment().setSourceClasspath(r.entries());
-//                    log.info("Spoon using {} compileClasspath ({} entries) for {}",
-//                            r.source(), r.entries().length, classpathRoot);
-//                },
-//                () -> {
-//                    launcher.getEnvironment().setNoClasspath(true);
-//                    log.debug("Spoon noClasspath mode for {} (Gradle/Maven classpath not available)",
-//                            classpathRoot);
-//                });
         launcher.getEnvironment().setNoClasspath(true);
         launcher.getEnvironment().setCommentEnabled(false);
         launcher.getEnvironment().setAutoImports(false);
         launcher.getEnvironment().setIgnoreSyntaxErrors(true);
         launcher.getEnvironment().setLevel("ERROR");
-//        launcher.getEnvironment().setComplianceLevel(17);
         try { launcher.getEnvironment().setIgnoreDuplicateDeclarations(true); }
         catch (NoSuchMethodError ignored) {}
 
@@ -243,25 +232,11 @@ public class GraphBuilderImpl implements GraphBuilder {
 
     /**
      * Merges {@code source} into {@code target} in-place.
-     * Both collections are concurrent-safe, so this is safe to call
-     * from any thread after all batch futures have completed.
      */
     private static void mergeGraphs(ProjectGraph target, ProjectGraph source) {
         source.nodes.values().forEach(target::addNode);
         source.edgesFrom.forEach((caller, edges) ->
                 edges.forEach(target::addEdge));
-    }
-
-    /**
-     * Partitions {@code list} into sub-lists of at most {@code size} elements.
-     * Equivalent to Guava's {@code Lists.partition} (no Guava dependency needed).
-     */
-    private static <T> List<List<T>> partition(List<T> list, int size) {
-        List<List<T>> result = new ArrayList<>();
-        for (int i = 0; i < list.size(); i += size) {
-            result.add(list.subList(i, Math.min(i + size, list.size())));
-        }
-        return result;
     }
 
     // ------------------------------------------------------------------
@@ -555,7 +530,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             throw new RuntimeException("AST graph build failed in parallel pass", e.getCause());
         }
 
-        log.info("AST graph built now: {} nodes, {} edge-sources",
+        log.info("AST graph built: {} nodes, {} edge-sources",
                 graph.nodes.size(), graph.edgesFrom.size());
         return graph;
     }
