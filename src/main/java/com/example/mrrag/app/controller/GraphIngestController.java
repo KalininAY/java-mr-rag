@@ -1,7 +1,9 @@
 package com.example.mrrag.app.controller;
 
+import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.graph.GraphBuildStats;
-import com.example.mrrag.graph.AstGraphService;
+import com.example.mrrag.app.service.AstGraphService;
+import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
@@ -151,10 +153,11 @@ public class GraphIngestController {
         Path cloneDir  = resolveCloneDir(repoUrl, branch);
         boolean exists = Files.isDirectory(cloneDir);
 
+        ProjectSourceProvider sourceProvider = new LocalCloneProjectSourceProvider(cloneDir);
         if (forceReclone && exists) {
             log.info("force=true — deleting existing clone dir: {}", cloneDir);
             FileSystemUtils.deleteRecursively(cloneDir);
-            graphService.invalidate(cloneDir);
+            graphService.invalidate(sourceProvider.projectKey());
             exists = false;
         }
 
@@ -177,7 +180,7 @@ public class GraphIngestController {
         }
 
         long buildStart = System.currentTimeMillis();
-        ProjectGraph graph = graphService.buildGraph(cloneDir);
+        ProjectGraph graph = graphService.buildGraph(sourceProvider);
         long buildMs  = System.currentTimeMillis() - buildStart;
         long totalMs  = System.currentTimeMillis() - wallStart;
 

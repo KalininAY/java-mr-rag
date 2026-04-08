@@ -1,21 +1,22 @@
 package com.example.mrrag.review.spi;
 
-import com.example.mrrag.graph.JavaIndexService;
+import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.ChangeGroup;
 
 import java.nio.file.Path;
 import java.util.List;
 
 /**
- * Enriches change groups with contextual snippets; implemented in {@code app} using
- * {@link com.example.mrrag.graph.AstGraphService}.
+ * Enriches change groups with contextual snippets using AST graph data.
+ * Implemented in {@code app} layer by
+ * {@link com.example.mrrag.app.service.ContextEnricher}.
  */
 public interface ChangeGroupEnrichmentPort {
 
     List<ChangeGroup> enrich(
             List<ChangeGroup> groups,
-            JavaIndexService.ProjectIndex sourceIndex,
-            JavaIndexService.ProjectIndex targetIndex,
+            ProjectGraph sourceGraph,
+            ProjectGraph targetGraph,
             Path sourceRepoDir,
             Path targetRepoDir) throws Exception;
 }

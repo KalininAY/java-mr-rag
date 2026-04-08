@@ -1,4 +1,4 @@
-package com.example.mrrag.graph.raw;
+package com.example.mrrag.app.source;
 
 import java.nio.file.Path;
 import java.util.Objects;

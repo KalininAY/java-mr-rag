@@ -1,24 +1,19 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.EdgeKindConfig;
-import com.example.mrrag.commons.source.LocalCloneProjectSourceProvider;
-import com.example.mrrag.commons.source.ProjectSource;
-import com.example.mrrag.commons.source.ProjectSourceProvider;
-import com.example.mrrag.commons.source.VirtualSource;
+import com.example.mrrag.app.source.ProjectKey;
+import com.example.mrrag.app.source.ProjectSourceProvider;
+import com.example.mrrag.app.source.ProjectSource;
 import com.example.mrrag.graph.model.*;
 import com.example.mrrag.graph.raw.*;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import spoon.Launcher;
 import spoon.compiler.ModelBuildingException;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.*;
 import spoon.reflect.declaration.*;
-import spoon.reflect.reference.CtExecutableReference;
-import spoon.reflect.reference.CtFieldReference;
-import spoon.reflect.reference.CtTypeReference;
-import spoon.reflect.reference.CtVariableReference;
 import spoon.reflect.visitor.filter.TypeFilter;
 import spoon.support.compiler.VirtualFile;
 
@@ -29,229 +24,125 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Builds a rich symbol graph for a Java project using Spoon.
  *
- * <p>Implements {@link GraphBuilder}: accepts any {@link ProjectSourceProvider}
- * so graph construction is fully decoupled from how source files are obtained
- * (local clone, GitLab API, test fixtures, …).
+ * <p>All ID computation, snippet extraction, and path-normalisation helpers
+ * are delegated to {@link AstGraphUtils}.
  *
- * <p><b>Nodes:</b> CLASS, INTERFACE, CONSTRUCTOR, METHOD, FIELD, VARIABLE,
- * LAMBDA, ANNOTATION, TYPE_PARAM, ANNOTATION_ATTRIBUTE<br>
- * <b>Edges:</b> DECLARES, EXTENDS, IMPLEMENTS, INVOKES, INSTANTIATES,
- * INSTANTIATES_ANONYMOUS, REFERENCES_METHOD, READS_FIELD, WRITES_FIELD,
- * READS_LOCAL_VAR, WRITES_LOCAL_VAR, THROWS, ANNOTATED_WITH,
- * REFERENCES_TYPE, OVERRIDES, HAS_TYPE_PARAM, HAS_BOUND, ANNOTATION_ATTR
+ * <p>The only public entry point for graph construction is
+ * {@link #buildGraph(ProjectSourceProvider)}. The {@link ProjectKey} that
+ * drives cache lookups is supplied by the provider itself via
+ * {@link ProjectSourceProvider#projectKey()} — callers never construct keys
+ * manually.
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class GraphBuilderImpl implements GraphBuilder {
 
     // ------------------------------------------------------------------
-    // Dependencies & cache
+    // Dependencies & caches
     // ------------------------------------------------------------------
 
-    private final EdgeKindConfig          edgeConfig;
+    private final EdgeKindConfig         edgeConfig;
     private final ProjectGraphCacheStore cacheStore;
 
-    /**
-     * Cache keyed by the {@link Path} of a local clone.
-     * {@link #buildGraph(ProjectSourceProvider)} is intentionally cache-free
-     * — lifetime is controlled by the caller.
-     */
-    private final Map<Path, ProjectGraph>        localCache   = new ConcurrentHashMap<>();
-    private final Map<ProjectKey, ProjectGraph>  keyCache     = new ConcurrentHashMap<>();
-
-    /**
-     * Primary Spring constructor — injects cache support.
-     * {@code @Autowired} is required because a second single-arg constructor
-     * is present for tests; without it Spring cannot determine which one to use.
-     */
-    @Autowired
-    public GraphBuilderImpl(EdgeKindConfig edgeConfig,
-                            ProjectGraphCacheStore cacheStore) {
-        this.edgeConfig  = edgeConfig;
-        this.cacheStore  = cacheStore;
-    }
-
-    /** Minimal constructor for callers that do not need disk-cache support. */
-    public GraphBuilderImpl(EdgeKindConfig edgeConfig) {
-        this(edgeConfig, null);
-    }
+    /** In-memory cache keyed by {@link ProjectKey} (path + fingerprint). */
+    private final Map<ProjectKey, ProjectGraph> keyCache = new ConcurrentHashMap<>();
 
     // ------------------------------------------------------------------
-    // ProjectKey helpers
+    // Primary entry point (GraphBuilder interface)
     // ------------------------------------------------------------------
 
     /**
-     * Derives a stable {@link ProjectKey} for the given local project root
-     * by computing a {@link ProjectFingerprint}.
-     */
-    public ProjectKey projectKey(Path projectRoot) {
-        return new ProjectKey(projectRoot, ProjectFingerprint.compute(projectRoot));
-    }
-
-    // ------------------------------------------------------------------
-    // GraphBuildService — ProjectKey-based entry point
-    // ------------------------------------------------------------------
-
-    /**
-     * Build (or return cached) graph identified by {@link ProjectKey}.
+     * Builds (or returns a cached) {@link ProjectGraph} for the given provider.
      *
+     * <p>Cache lookup order:
      * <ol>
-     *   <li>Returns the in-memory cached graph if present.</li>
-     *   <li>Tries to load from disk via {@link ProjectGraphCacheStore} (if configured).</li>
-     *   <li>Falls back to a full Spoon build from source.</li>
+     *   <li>In-memory {@code keyCache}.</li>
+     *   <li>Disk {@code cacheStore}.</li>
+     *   <li>Build from sources, then populate both caches.</li>
      * </ol>
-     */
-    public ProjectGraph buildGraph(ProjectKey key) throws Exception {
-        // 1. In-memory cache
-        ProjectGraph cached = keyCache.get(key);
-        if (cached != null) {
-            log.debug("buildGraph(ProjectKey): in-memory cache hit for {}", key);
-            return cached;
-        }
-
-        // 2. Disk cache
-        if (cacheStore != null) {
-            var loaded = cacheStore.tryLoadAllSegments(key);
-            if (loaded.isPresent()) {
-                Map<String, ProjectGraph> segments = loaded.get();
-                ProjectGraph main = segments.getOrDefault(GraphSegmentIds.MAIN, new ProjectGraph());
-                keyCache.put(key, main);
-                log.debug("buildGraph(ProjectKey): disk cache hit for {}", key);
-                return main;
-            }
-        }
-
-        // 3. Full build
-        log.info("buildGraph(ProjectKey): building from source for {}", key.projectRoot());
-        ProjectGraph graph = buildGraph(new LocalCloneProjectSourceProvider(key.projectRoot()));
-        keyCache.put(key, graph);
-
-        // Persist to disk cache
-        if (cacheStore != null) {
-            Map<String, ProjectGraph> segments = new LinkedHashMap<>();
-            segments.put(GraphSegmentIds.MAIN, graph);
-            try {
-                cacheStore.savePartitioned(key, segments);
-                log.debug("buildGraph(ProjectKey): saved to disk cache for {}", key);
-            } catch (Exception e) {
-                log.warn("buildGraph(ProjectKey): failed to save cache for {}: {}", key, e.getMessage());
-            }
-        }
-
-        return graph;
-    }
-
-    /**
-     * Evicts the in-memory entry for the given {@link ProjectKey}.
-     * The disk cache is intentionally preserved.
-     */
-    public void invalidate(ProjectKey key) {
-        keyCache.remove(key);
-        log.debug("invalidate(ProjectKey): evicted in-memory entry for {}", key);
-    }
-
-    // ------------------------------------------------------------------
-    // GraphBuildService — primary entry point
-    // ------------------------------------------------------------------
-
-    /**
-     * Build a symbol graph from any {@link ProjectSourceProvider}.
      */
     @Override
     public ProjectGraph buildGraph(ProjectSourceProvider provider) throws Exception {
-        log.info("Building AST graph via provider: {}", provider.getClass().getSimpleName());
+        ProjectKey key = provider.projectKey();
+        log.info("buildGraph: key={}", key);
+
+        // 1. in-memory cache
+        ProjectGraph cached = keyCache.get(key);
+        if (cached != null) {
+            log.debug("buildGraph: in-memory cache hit for {}", key);
+            return cached;
+        }
+
+        // 2. disk cache
+        var loaded = cacheStore.tryLoadAllSegments(key);
+        if (loaded.isPresent()) {
+            ProjectGraph main = loaded.get().getOrDefault(GraphSegmentIds.MAIN, new ProjectGraph());
+            keyCache.put(key, main);
+            log.debug("buildGraph: disk cache hit for {}", key);
+            return main;
+        }
+
+
+        // 3. build from sources
+        log.info("buildGraph: building from source via provider: {}",
+                provider.getClass().getSimpleName());
         List<ProjectSource> sources = provider.getSources();
         log.info("Provider supplied {} .java files", sources.size());
-        Path classpathRoot = provider.localProjectRoot().orElse(null);
-        return doBuildGraphFromSources(sources, classpathRoot);
+
+        ProjectGraph graph = doBuildGraphFromSources(
+                sources, provider.localProjectRoot().orElse(null));
+
+        keyCache.put(key, graph);
+        Map<String, ProjectGraph> segments = new LinkedHashMap<>();
+        segments.put(GraphSegmentIds.MAIN, graph);
+        try {
+            cacheStore.savePartitioned(key, segments);
+            log.debug("buildGraph: saved to disk cache for {}", key);
+        } catch (Exception e) {
+            log.warn("buildGraph: failed to save cache for {}: {}", key, e.getMessage());
+        }
+        return graph;
     }
 
     // ------------------------------------------------------------------
-    // GraphBuildService — legacy local-path shortcut
+    // Invalidation
     // ------------------------------------------------------------------
 
     @Override
-    public void invalidate(Path projectRoot) {
-        localCache.remove(projectRoot);
+    public void invalidate(ProjectKey key) {
+        keyCache.remove(key);
+        log.debug("invalidate: evicted in-memory entry for {}", key);
+        cacheStore.delete(key);
+        log.debug("invalidate: deleted disk cache for {}", key);
     }
-
+    
     // ------------------------------------------------------------------
-    // GraphBuildService — path normalisation
-    // ------------------------------------------------------------------
-
-    public String normalizeFilePath(String diffPath, ProjectGraph graph) {
-        if (diffPath == null || diffPath.isBlank()) return diffPath;
-        String norm = diffPath.replace('\\', '/');
-        for (String known : graph.allFilePaths()) {
-            String knownNorm = known.replace('\\', '/');
-            if (norm.equals(knownNorm))             return known;
-            if (norm.endsWith("/" + knownNorm))     return known;
-            if (knownNorm.endsWith("/" + norm))     return known;
-        }
-        String[] parts = norm.split("/");
-        for (int i = 1; i < parts.length; i++) {
-            String candidate = String.join("/", Arrays.copyOfRange(parts, i, parts.length));
-            if (graph.byFile.containsKey(candidate)) return candidate;
-        }
-        log.debug("normalizeFilePath: no match in graph for '{}'", diffPath);
-        return diffPath;
-    }
-
-    // ------------------------------------------------------------------
-    // Backward-compat: VirtualSource-based entry point (kept for old callers)
+    // Core: sources → Spoon model
     // ------------------------------------------------------------------
 
-    /**
-     * @deprecated Prefer {@link #buildGraph(ProjectSourceProvider)} with a provider
-     *     that supplies virtual sources (e.g. GitLab API).
-     */
-    @Deprecated
-    public ProjectGraph buildGraphFromVirtualSources(List<VirtualSource> sources) throws Exception {
-        List<ProjectSource> mapped = sources.stream()
-                .map(s -> new ProjectSource(s.path(), s.content()))
-                .toList();
-        return doBuildGraphFromSources(mapped, null);
-    }
-
-    // ------------------------------------------------------------------
-    // Core graph construction
-    // ------------------------------------------------------------------
-
-    /**
-     * Builds a Spoon {@link CtModel} from the provided sources, then
-     * translates it into a {@link ProjectGraph}.
-     *
-     * <p>All {@link ProjectSource} entries are fed to Spoon as
-     * {@link VirtualFile} objects, so no temporary directory is needed
-     * regardless of whether the files came from a local clone or an API.
-     *
-     * @param classpathRoot when non-null (e.g. local clone), try Gradle/Maven compile classpath for Spoon
-     */
     private ProjectGraph doBuildGraphFromSources(List<ProjectSource> sources, Path classpathRoot) {
-        // Build source-lines map for snippet extraction
         Map<String, String[]> sourceLines = new ConcurrentHashMap<>();
         for (ProjectSource src : sources) {
             sourceLines.put(src.path(), src.content().split("\n", -1));
         }
 
         Launcher launcher = new Launcher();
-        ClasspathResolver.tryResolve(classpathRoot).ifPresentOrElse(
-                r -> {
-                    launcher.getEnvironment().setNoClasspath(false);
-                    launcher.getEnvironment().setSourceClasspath(r.entries());
-                    log.info("Spoon using {} compileClasspath ({} entries) for {}",
-                            r.source(), r.entries().length, classpathRoot);
-                },
-                () -> {
+//        ClasspathResolver.tryResolve(classpathRoot).ifPresentOrElse(
+//                r -> {
+//                    launcher.getEnvironment().setNoClasspath(false);
+//                    launcher.getEnvironment().setSourceClasspath(r.entries());
+//                    log.info("Spoon using {} compileClasspath ({} entries) for {}",
+//                            r.source(), r.entries().length, classpathRoot);
+//                },
+//                () -> {
                     launcher.getEnvironment().setNoClasspath(true);
-                    log.debug("Spoon noClasspath mode for {} (Gradle/Maven classpath not available)",
-                            classpathRoot);
-                });
+//                    log.debug("Spoon noClasspath mode (classpath unavailable) for {}", classpathRoot);
+//                });
         launcher.getEnvironment().setCommentEnabled(false);
         launcher.getEnvironment().setAutoImports(false);
-        try {
-            launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
-        } catch (NoSuchMethodError ignored) {}
+        try { launcher.getEnvironment().setIgnoreDuplicateDeclarations(true); }
+        catch (NoSuchMethodError ignored) {}
 
         for (ProjectSource src : sources) {
             launcher.addInputResource(new VirtualFile(src.content(), src.path()));
@@ -268,44 +159,39 @@ public class GraphBuilderImpl implements GraphBuilder {
                 return new ProjectGraph();
             }
         }
-
-        // In virtual mode root is empty: sourceFile() already returns the
-        // repo-relative path, so relPath() returns it unchanged.
-        return doBuildGraphFromModel(model, sourceLines, "");
+        return doBuildGraphFromModel(model, sourceLines, classpathRoot);
     }
 
     // ------------------------------------------------------------------
-    // Model → graph (shared by all paths)
+    // Core: Spoon model → ProjectGraph
     // ------------------------------------------------------------------
 
     @SuppressWarnings("unchecked")
-    private ProjectGraph doBuildGraphFromModel(CtModel model,
-                                               Map<String, String[]> sourceLines,
-                                               String root) {
+    private ProjectGraph doBuildGraphFromModel(CtModel model, Map<String, String[]> sourceLines, Path projectRoot) {
         var graph = new ProjectGraph();
+        Set<String> repoPaths = sourceLines.keySet();
 
-        // ── 1. Type nodes ────────────────────────────────────────────────────────
         model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
-            String id = qualifiedName(type);
-            if (id == null) return;
-            String file = relPath(root, sourceFile(type));
-            int[] ln = lines(type);
+            String id = AstGraphUtils.qualifiedName(type); if (id == null) return;
+            String file = AstGraphUtils.graphFilePath(type, projectRoot, repoPaths);
+            int[] ln = AstGraphUtils.lines(type);
             NodeKind kind = (type instanceof CtAnnotationType) ? NodeKind.ANNOTATION
                           : (type instanceof CtInterface)      ? NodeKind.INTERFACE
                           :                                      NodeKind.CLASS;
             graph.addNode(new GraphNode(id, kind, type.getSimpleName(), file, ln[0], ln[1],
-                    extractSource(sourceLines, file, ln[0], ln[1], type), ""));
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], type, projectRoot),
+                    AstGraphUtils.declarationOf(sourceLines, file, projectRoot, type.getPosition()), null));
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
                 type.getAnnotations().forEach(ann -> graph.addEdge(new GraphEdge(
                         id, EdgeKind.ANNOTATED_WITH,
                         ann.getAnnotationType().getQualifiedName(), file, ln[0])));
         });
 
-        // ── 2. EXTENDS / IMPLEMENTS ──────────────────────────────────────────────
         if (edgeConfig.isEnabled(EdgeKind.EXTENDS) || edgeConfig.isEnabled(EdgeKind.IMPLEMENTS)) {
             model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
-                String id = qualifiedName(type); if (id == null) return;
-                String file = relPath(root, sourceFile(type)); int[] ln = lines(type);
+                String id = AstGraphUtils.qualifiedName(type); if (id == null) return;
+                String file = AstGraphUtils.graphFilePath(type, projectRoot, repoPaths);
+                int[] ln = AstGraphUtils.lines(type);
                 if (edgeConfig.isEnabled(EdgeKind.EXTENDS)) {
                     if (type instanceof CtClass<?> cls && cls.getSuperclass() != null)
                         graph.addEdge(new GraphEdge(id, EdgeKind.EXTENDS,
@@ -320,70 +206,78 @@ public class GraphBuilderImpl implements GraphBuilder {
             });
         }
 
-        // ── 3. TYPE_PARAM nodes ──────────────────────────────────────────────────
         if (edgeConfig.isEnabled(EdgeKind.HAS_TYPE_PARAM)) {
             model.getElements(new TypeFilter<>(CtFormalTypeDeclarer.class)).forEach(declarer -> {
-                String ownerId = formalDeclarerId(declarer); if (ownerId == null) return;
-                String file = relPath(root, sourceFile((CtElement) declarer));
-                int[] ownerLn = lines((CtElement) declarer);
+                String ownerId = AstGraphUtils.formalDeclarerId(declarer); if (ownerId == null) return;
+                String file = AstGraphUtils.graphFilePath(declarer, projectRoot, repoPaths);
+                int[] ownerLn = AstGraphUtils.lines(declarer);
                 declarer.getFormalCtTypeParameters().forEach(tp -> {
-                    String tpId = typeParamId(ownerId, tp); int[] tpLn = lines(tp);
+                    int[] tpLn = AstGraphUtils.lines(tp);
+                    String tpId = AstGraphUtils.typeParamId(ownerId, tp);
                     graph.addNode(new GraphNode(tpId, NodeKind.TYPE_PARAM, tp.getSimpleName(),
                             file, tpLn[0], tpLn[1],
-                            extractSource(sourceLines, file, tpLn[0], tpLn[1], tp), ""));
+                            AstGraphUtils.extractSource(sourceLines, file, tpLn[0], tpLn[1], tp, projectRoot),
+                            AstGraphUtils.declarationOf(sourceLines, file, projectRoot, tp.getPosition()), null));
                     graph.addEdge(new GraphEdge(ownerId, EdgeKind.HAS_TYPE_PARAM, tpId, file, ownerLn[0]));
                     if (edgeConfig.isEnabled(EdgeKind.HAS_BOUND)) {
-                        CtTypeReference<?> sc = tp.getSuperclass();
+                        var sc = tp.getSuperclass();
                         if (sc != null && !sc.getQualifiedName().equals("java.lang.Object"))
-                            graph.addEdge(new GraphEdge(tpId, EdgeKind.HAS_BOUND, sc.getQualifiedName(), file, tpLn[0]));
+                            graph.addEdge(new GraphEdge(tpId, EdgeKind.HAS_BOUND,
+                                    sc.getQualifiedName(), file, tpLn[0]));
                         tp.getSuperInterfaces().forEach(b -> graph.addEdge(
-                                new GraphEdge(tpId, EdgeKind.HAS_BOUND, b.getQualifiedName(), file, tpLn[0])));
+                                new GraphEdge(tpId, EdgeKind.HAS_BOUND,
+                                        b.getQualifiedName(), file, tpLn[0])));
                     }
                 });
             });
         }
 
-        // ── 4. Method nodes ───────────────────────────────────────────────────────
         model.getElements(new TypeFilter<>(CtMethod.class)).forEach(m -> {
-            String id = typeMemberExecId(m); if (id == null) return;
-            String file = relPath(root, sourceFile(m)); int[] ln = lines(m);
+            String id = AstGraphUtils.typeMemberExecId(m); if (id == null) return;
+            String file = AstGraphUtils.graphFilePath(m, projectRoot, repoPaths);
+            int[] ln = AstGraphUtils.lines(m);
             graph.addNode(new GraphNode(id, NodeKind.METHOD, m.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], m), ""));
+                    file, ln[0], ln[1],
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], m, projectRoot),
+                    AstGraphUtils.declarationOf(sourceLines, file, projectRoot, m.getPosition()), null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
-                String cls = qualifiedName(m.getDeclaringType());
+                String cls = AstGraphUtils.qualifiedName(m.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
             }
-            //noinspection unchecked
             m.getTopDefinitions().stream().findFirst().filter(top -> top != m).ifPresent(sup ->
                     graph.addEdge(new GraphEdge(id, EdgeKind.OVERRIDES,
-                            typeMemberExecId((CtTypeMember) sup), file, ln[0])));
+                            AstGraphUtils.typeMemberExecId((CtTypeMember) sup), file, ln[0])));
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
                 m.getAnnotations().forEach(ann -> graph.addEdge(new GraphEdge(
                         id, EdgeKind.ANNOTATED_WITH,
                         ann.getAnnotationType().getQualifiedName(), file, ln[0])));
         });
 
-        // ── 5. Constructor nodes ──────────────────────────────────────────────────
         model.getElements(new TypeFilter<>(CtConstructor.class)).forEach(c -> {
-            String id = typeMemberExecId(c); if (id == null) return;
-            String file = relPath(root, sourceFile(c)); int[] ln = lines(c);
+            String id = AstGraphUtils.typeMemberExecId(c); if (id == null) return;
+            String file = AstGraphUtils.graphFilePath(c, projectRoot, repoPaths);
+            int[] ln = AstGraphUtils.lines(c);
             graph.addNode(new GraphNode(id, NodeKind.CONSTRUCTOR, c.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], c), ""));
+                    file, ln[0], ln[1],
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], c, projectRoot),
+                    AstGraphUtils.declarationOf(sourceLines, file, projectRoot, c.getPosition()), null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
-                String cls = qualifiedName(c.getDeclaringType());
+                String cls = AstGraphUtils.qualifiedName(c.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
             }
         });
 
-        // ── 6. Field nodes ────────────────────────────────────────────────────────
         model.getElements(new TypeFilter<>(CtField.class)).forEach(field -> {
             if (field.getDeclaringType() instanceof CtAnnotationType) return;
-            String id = fieldId(field); if (id == null) return;
-            String file = relPath(root, sourceFile(field)); int[] ln = lines(field);
+            String id = AstGraphUtils.fieldId(field); if (id == null) return;
+            String file = AstGraphUtils.graphFilePath(field, projectRoot, repoPaths);
+            int[] ln = AstGraphUtils.lines(field);
             graph.addNode(new GraphNode(id, NodeKind.FIELD, field.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], field), ""));
+                    file, ln[0], ln[1],
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], field, projectRoot),
+                    AstGraphUtils.declarationOf(sourceLines, file, projectRoot, field.getPosition()), null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
-                String cls = qualifiedName(field.getDeclaringType());
+                String cls = AstGraphUtils.qualifiedName(field.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
             }
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
@@ -392,407 +286,140 @@ public class GraphBuilderImpl implements GraphBuilder {
                         ann.getAnnotationType().getQualifiedName(), file, ln[0])));
         });
 
-        // ── 7. Local variable + parameter nodes ───────────────────────────────────
         model.getElements(new TypeFilter<>(CtVariable.class)).forEach(v -> {
             if (v instanceof CtField) return;
-            String id = varId(v); if (id == null) return;
-            String file = relPath(root, sourceFile(v)); int[] ln = lines(v);
+            String id = AstGraphUtils.varId(v); if (id == null) return;
+            String file = AstGraphUtils.graphFilePath(v, projectRoot, repoPaths);
+            int[] ln = AstGraphUtils.lines(v);
             graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(),
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], v), ""));
+                    file, ln[0], ln[1],
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], v, projectRoot),
+                    AstGraphUtils.declarationOf(sourceLines, file, projectRoot, v.getPosition()), null));
         });
 
-        // ── 8. ANNOTATION_ATTRIBUTE nodes ─────────────────────────────────────────
         if (edgeConfig.isEnabled(EdgeKind.ANNOTATION_ATTR)) {
             model.getElements(new TypeFilter<>(CtAnnotationType.class)).forEach(ann -> {
-                String annoId = qualifiedName(ann); if (annoId == null) return;
-                String file = relPath(root, sourceFile(ann));
+                String annoId = AstGraphUtils.qualifiedName(ann); if (annoId == null) return;
+                String file = AstGraphUtils.graphFilePath(ann, projectRoot, repoPaths);
                 @SuppressWarnings("unchecked")
                 Collection<CtMethod<?>> methods =
                         (Collection<CtMethod<?>>) (Collection<?>) ann.getMethods();
                 methods.forEach(m -> {
-                    String attrId = annoId + "#" + m.getSimpleName(); int[] ln = lines(m);
+                    String attrId = annoId + "#" + m.getSimpleName();
+                    int[] ln = AstGraphUtils.lines(m);
                     graph.addNode(new GraphNode(attrId, NodeKind.ANNOTATION_ATTRIBUTE,
                             m.getSimpleName(), file, ln[0], ln[1],
-                            extractSource(sourceLines, file, ln[0], ln[1], m), ""));
+                            AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], m, projectRoot),
+                            AstGraphUtils.declarationOf(sourceLines, file, projectRoot, m.getPosition()), null));
                     graph.addEdge(new GraphEdge(annoId, EdgeKind.ANNOTATION_ATTR, attrId, file, ln[0]));
                 });
             });
         }
 
-        // ── 9. Lambda nodes ───────────────────────────────────────────────────────
         model.getElements(new TypeFilter<>(CtLambda.class)).forEach(lambda -> {
-            String file = relPath(root, sourceFile(lambda)); int[] ln = lines(lambda);
+            String file = AstGraphUtils.graphFilePath(lambda, projectRoot, repoPaths);
+            int[] ln = AstGraphUtils.lines(lambda);
             String id = "lambda@" + file + ":" + ln[0];
-            graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb",
-                    file, ln[0], ln[1], extractSource(sourceLines, file, ln[0], ln[1], lambda), ""));
+            graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "λ",
+                    file, ln[0], ln[1],
+                    AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], lambda, projectRoot),
+                    AstGraphUtils.declarationOf(sourceLines, file, projectRoot, lambda.getPosition()), null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 CtMethod<?> em = lambda.getParent(CtMethod.class);
-                if (em != null) { String enc = typeMemberExecId(em); if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0])); }
-                else { CtConstructor<?> ec = lambda.getParent(CtConstructor.class); if (ec != null) { String enc = typeMemberExecId(ec); if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0])); } }
+                if (em != null) {
+                    String enc = AstGraphUtils.typeMemberExecId(em);
+                    if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0]));
+                } else {
+                    CtConstructor<?> ec = lambda.getParent(CtConstructor.class);
+                    if (ec != null) {
+                        String enc = AstGraphUtils.typeMemberExecId(ec);
+                        if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0]));
+                    }
+                }
             }
         });
 
-        // ── 10. INVOKES ───────────────────────────────────────────────────────────
         if (edgeConfig.isEnabled(EdgeKind.INVOKES))
             model.getElements(new TypeFilter<>(CtInvocation.class)).forEach(inv -> {
-                String callerId = nearestExecId(inv); if (callerId == null) return;
+                String callerId = AstGraphUtils.nearestExecId(inv); if (callerId == null) return;
+                String file = AstGraphUtils.graphFilePath(inv, projectRoot, repoPaths);
                 graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES,
-                        execRefIdForChainedInvocation(inv),
-                        relPath(root, sourceFile(inv)), posLine(inv)));
+                        AstGraphUtils.execRefIdForChainedInvocation(inv),
+                        file, AstGraphUtils.posLine(inv)));
             });
 
-        // ── 11. INSTANTIATES / INSTANTIATES_ANONYMOUS ────────────────────────────
         if (edgeConfig.isEnabled(EdgeKind.INSTANTIATES) || edgeConfig.isEnabled(EdgeKind.INSTANTIATES_ANONYMOUS))
             model.getElements(new TypeFilter<>(CtConstructorCall.class)).forEach(cc -> {
-                String callerId = nearestExecId(cc); if (callerId == null) return;
+                String callerId = AstGraphUtils.nearestExecId(cc); if (callerId == null) return;
+                String file = AstGraphUtils.graphFilePath(cc, projectRoot, repoPaths);
+                int line = AstGraphUtils.posLine(cc);
                 String typeId = cc.getExecutable().getDeclaringType() != null
                         ? cc.getExecutable().getDeclaringType().getQualifiedName() : "?";
                 EdgeKind ek = (cc instanceof CtNewClass) ? EdgeKind.INSTANTIATES_ANONYMOUS : EdgeKind.INSTANTIATES;
                 if (edgeConfig.isEnabled(ek))
-                    graph.addEdge(new GraphEdge(callerId, ek, typeId, relPath(root, sourceFile(cc)), posLine(cc)));
+                    graph.addEdge(new GraphEdge(callerId, ek, typeId, file, line));
                 if (edgeConfig.isEnabled(EdgeKind.INVOKES))
-                    graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES, execRefId(cc.getExecutable(), cc),
-                            relPath(root, sourceFile(cc)), posLine(cc)));
+                    graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES,
+                            AstGraphUtils.execRefId(cc.getExecutable(), cc), file, line));
             });
 
-        // ── 12. REFERENCES_METHOD ─────────────────────────────────────────────────
         if (edgeConfig.isEnabled(EdgeKind.REFERENCES_METHOD))
             model.getElements(new TypeFilter<>(CtExecutableReferenceExpression.class)).forEach(ref -> {
-                String callerId = nearestExecId(ref); if (callerId == null) return;
+                String callerId = AstGraphUtils.nearestExecId(ref); if (callerId == null) return;
+                String file = AstGraphUtils.graphFilePath(ref, projectRoot, repoPaths);
                 graph.addEdge(new GraphEdge(callerId, EdgeKind.REFERENCES_METHOD,
-                        execRefId(ref.getExecutable(), ref),
-                        relPath(root, sourceFile(ref)), posLine(ref)));
+                        AstGraphUtils.execRefId(ref.getExecutable(), ref),
+                        file, AstGraphUtils.posLine(ref)));
             });
 
-        // ── 13. READS_FIELD / WRITES_FIELD ───────────────────────────────────────
         if (edgeConfig.isEnabled(EdgeKind.READS_FIELD) || edgeConfig.isEnabled(EdgeKind.WRITES_FIELD))
             model.getElements(new TypeFilter<>(CtFieldAccess.class)).forEach(fa -> {
-                String execId = nearestExecId(fa); if (execId == null) return;
-                CtFieldReference<?> ref = fa.getVariable();
+                String execId = AstGraphUtils.nearestExecId(fa); if (execId == null) return;
+                String file = AstGraphUtils.graphFilePath(fa, projectRoot, repoPaths);
+                var ref = fa.getVariable();
                 String fId = ref.getDeclaringType() != null
                         ? ref.getDeclaringType().getQualifiedName() + "." + ref.getSimpleName()
                         : "?." + ref.getSimpleName();
                 EdgeKind ek = (fa instanceof CtFieldWrite) ? EdgeKind.WRITES_FIELD : EdgeKind.READS_FIELD;
                 if (edgeConfig.isEnabled(ek))
-                    graph.addEdge(new GraphEdge(execId, ek, fId, relPath(root, sourceFile(fa)), posLine(fa)));
+                    graph.addEdge(new GraphEdge(execId, ek, fId, file, AstGraphUtils.posLine(fa)));
             });
 
-        // ── 14. READS_LOCAL_VAR / WRITES_LOCAL_VAR ───────────────────────────────
         if (edgeConfig.isEnabled(EdgeKind.READS_LOCAL_VAR) || edgeConfig.isEnabled(EdgeKind.WRITES_LOCAL_VAR))
             model.getElements(new TypeFilter<>(CtVariableAccess.class)).forEach(va -> {
                 if (va instanceof CtFieldAccess) return;
-                String execId = nearestExecId(va); if (execId == null) return;
-                String vId = varRefId(va.getVariable());
+                String execId = AstGraphUtils.nearestExecId(va); if (execId == null) return;
+                String file = AstGraphUtils.graphFilePath(va, projectRoot, repoPaths);
+                String vId = AstGraphUtils.varRefId(va.getVariable());
                 EdgeKind ek = (va instanceof CtVariableWrite) ? EdgeKind.WRITES_LOCAL_VAR : EdgeKind.READS_LOCAL_VAR;
                 if (edgeConfig.isEnabled(ek))
-                    graph.addEdge(new GraphEdge(execId, ek, vId, relPath(root, sourceFile(va)), posLine(va)));
+                    graph.addEdge(new GraphEdge(execId, ek, vId, file, AstGraphUtils.posLine(va)));
             });
 
-        // ── 15. THROWS ────────────────────────────────────────────────────────────
         if (edgeConfig.isEnabled(EdgeKind.THROWS))
             model.getElements(new TypeFilter<>(CtThrow.class)).forEach(thr -> {
-                String execId = nearestExecId(thr); if (execId == null) return;
+                String execId = AstGraphUtils.nearestExecId(thr); if (execId == null) return;
+                String file = AstGraphUtils.graphFilePath(thr, projectRoot, repoPaths);
                 CtExpression<?> thrown = thr.getThrownExpression();
                 String typeId = (thrown instanceof CtConstructorCall<?> cc
                         && cc.getExecutable().getDeclaringType() != null)
                         ? cc.getExecutable().getDeclaringType().getQualifiedName() : "?";
                 graph.addEdge(new GraphEdge(execId, EdgeKind.THROWS, typeId,
-                        relPath(root, sourceFile(thr)), posLine(thr)));
+                        file, AstGraphUtils.posLine(thr)));
             });
 
-        // ── 16. REFERENCES_TYPE ──────────────────────────────────────────────────
         if (edgeConfig.isEnabled(EdgeKind.REFERENCES_TYPE))
             model.getElements(new TypeFilter<>(CtTypeAccess.class)).forEach(ta -> {
-                String execId = nearestExecId(ta); if (execId == null) return;
+                String execId = AstGraphUtils.nearestExecId(ta); if (execId == null) return;
                 if (ta.getAccessedType() == null) return;
+                String file = AstGraphUtils.graphFilePath(ta, projectRoot, repoPaths);
                 graph.addEdge(new GraphEdge(execId, EdgeKind.REFERENCES_TYPE,
                         ta.getAccessedType().getQualifiedName(),
-                        relPath(root, sourceFile(ta)), posLine(ta)));
+                        file, AstGraphUtils.posLine(ta)));
             });
 
         log.info("AST graph built: {} nodes, {} edge-sources",
                 graph.nodes.size(), graph.edgesFrom.size());
         return graph;
-    }
-
-    // ------------------------------------------------------------------
-    // Source snippet helpers
-    // ------------------------------------------------------------------
-
-    private static String extractSource(Map<String, String[]> sourceLines,
-                                        String filePath, int startLine, int endLine,
-                                        CtElement el) {
-        if (startLine > 0 && endLine >= startLine) {
-            String[] lines = sourceLines.get(filePath);
-            if (lines != null) {
-                int from = Math.max(0, startLine - 1);
-                int to   = Math.min(lines.length, endLine);
-                if (from < to) return String.join("\n", Arrays.copyOfRange(lines, from, to));
-            }
-        }
-        return snippet(el);
-    }
-
-    private static String snippet(CtElement el) {
-        try { String s = el.toString(); return s != null ? s : ""; } catch (Exception e) { return ""; }
-    }
-
-    // ------------------------------------------------------------------
-    // ID helpers
-    // ------------------------------------------------------------------
-
-    private String qualifiedName(CtType<?> type) {
-        if (type == null) return null;
-        String q = type.getQualifiedName();
-        return (q == null || q.isBlank()) ? null : q;
-    }
-
-    private String typeMemberExecId(CtTypeMember member) {
-        if (member == null) return null;
-        try {
-            CtType<?> decl = member.getDeclaringType();
-            String owner = decl != null ? decl.getQualifiedName() : "?";
-            if (member instanceof CtConstructor<?>) {
-                return constructorExecutableId(owner, ((CtExecutable<?>) member).getSignature());
-            }
-            if (member instanceof CtExecutable<?> exec) {
-                return owner + "#" + exec.getSignature();
-            }
-            return owner + "#" + member.getSimpleName();
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private static String constructorExecutableId(String ownerQualified, String signature) {
-        if (signature == null || signature.isBlank()) {
-            return ownerQualified + "#<init>()";
-        }
-        int open = signature.indexOf('(');
-        if (open < 0) {
-            return ownerQualified + "#<init>()";
-        }
-        return ownerQualified + "#<init>" + signature.substring(open);
-    }
-
-    private static String qualifiedExecutableOwner(CtExecutableReference<?> ref, CtElement useSite) {
-        try {
-            if (ref.getDeclaringType() != null) {
-                String q = ref.getDeclaringType().getQualifiedName();
-                if (isUsableQualifiedName(q)) {
-                    return q;
-                }
-            }
-        } catch (Exception ignored) { }
-        try {
-            CtExecutable<?> decl = ref.getDeclaration();
-            if (decl instanceof CtTypeMember tm && tm.getDeclaringType() != null) {
-                String q = tm.getDeclaringType().getQualifiedName();
-                if (isUsableQualifiedName(q)) {
-                    return q;
-                }
-            }
-        } catch (Exception ignored) { }
-
-        if (useSite instanceof CtInvocation inv) {
-            String inferred = inferOwnerFromInvocation(inv);
-            if (inferred != null) {
-                return inferred;
-            }
-        }
-        if (useSite instanceof CtConstructorCall<?> cc) {
-            String inferred = inferOwnerFromConstructorCall(cc);
-            if (inferred != null) {
-                return inferred;
-            }
-        }
-        if (useSite instanceof CtExecutableReferenceExpression ere) {
-            String inferred = inferOwnerFromExecutableReferenceExpression(ere);
-            if (inferred != null) {
-                return inferred;
-            }
-        }
-        return "?";
-    }
-
-    private static boolean isUsableQualifiedName(String q) {
-        return q != null && !q.isBlank() && !"?".equals(q);
-    }
-
-    private static String inferOwnerFromInvocation(CtInvocation<?> inv) {
-        CtExpression<?> target = inv.getTarget();
-        if (target instanceof CtTypeAccess<?> ta) {
-            try {
-                if (ta.getAccessedType() != null) {
-                    String q = ta.getAccessedType().getQualifiedName();
-                    if (isUsableQualifiedName(q)) {
-                        return q;
-                    }
-                }
-            } catch (Exception ignored) { }
-        }
-        if (target != null) {
-            try {
-                CtTypeReference<?> t = target.getType();
-                if (t != null) {
-                    String q = t.getQualifiedName();
-                    if (isUsableQualifiedName(q)) {
-                        return q;
-                    }
-                }
-            } catch (Exception ignored) { }
-        }
-        return null;
-    }
-
-    private static String inferOwnerFromConstructorCall(CtConstructorCall<?> cc) {
-        try {
-            if (cc.getType() != null) {
-                String q = cc.getType().getQualifiedName();
-                if (isUsableQualifiedName(q)) {
-                    return q;
-                }
-            }
-        } catch (Exception ignored) { }
-        return null;
-    }
-
-    private static String inferOwnerFromExecutableReferenceExpression(CtExecutableReferenceExpression<?, ?> ere) {
-        try {
-            CtExpression<?> target = ere.getTarget();
-            if (target instanceof CtTypeAccess<?> ta && ta.getAccessedType() != null) {
-                String q = ta.getAccessedType().getQualifiedName();
-                if (isUsableQualifiedName(q)) {
-                    return q;
-                }
-            }
-            if (target != null) {
-                CtTypeReference<?> t = target.getType();
-                if (t != null) {
-                    String q = t.getQualifiedName();
-                    if (isUsableQualifiedName(q)) {
-                        return q;
-                    }
-                }
-            }
-        } catch (Exception ignored) { }
-        return null;
-    }
-
-    private String execRefId(CtExecutableReference<?> ref, CtElement useSite) {
-        if (ref == null) return "unresolved";
-        try {
-            String owner = qualifiedExecutableOwner(ref, useSite);
-            String sig = ref.getSignature();
-            if (ref.isConstructor()) {
-                return constructorExecutableId(owner, sig);
-            }
-            return owner + "#" + sig;
-        } catch (Exception e) {
-            return "unresolved:" + ref.getSimpleName();
-        }
-    }
-
-    /**
-     * Chains {@code a().b()} when the outer owner is unknown ({@code ?#b(...)}), and falls back to
-     * the static type of the receiver expression for {@code x.setName(...)}.
-     */
-    private String execRefIdForChainedInvocation(CtInvocation<?> inv) {
-        String base = execRefId(inv.getExecutable(), inv);
-        if (!base.startsWith("?#")) {
-            return base;
-        }
-        String suffix = base.substring(2);
-        CtExpression<?> target = inv.getTarget();
-        if (target instanceof CtInvocation<?> inner) {
-            String innerId = execRefIdForChainedInvocation(inner);
-            if (!innerId.startsWith("?")) {
-                return innerId + "#" + suffix;
-            }
-        }
-        if (target != null) {
-            try {
-                CtTypeReference<?> t = target.getType();
-                if (t != null) {
-                    String q = t.getQualifiedName();
-                    if (isUsableQualifiedName(q)) {
-                        return q + "#" + suffix;
-                    }
-                }
-            } catch (Exception ignored) { }
-        }
-        return base;
-    }
-
-    private String fieldId(CtField<?> field) {
-        if (field.getDeclaringType() == null) return null;
-        return field.getDeclaringType().getQualifiedName() + "." + field.getSimpleName();
-    }
-
-    private String varId(CtVariable<?> v) {
-        if (!v.getPosition().isValidPosition()) return null;
-        String file = v.getPosition().getFile() != null ? v.getPosition().getFile().getName() : "?";
-        return "var@" + file + ":" + v.getPosition().getLine() + ":" + v.getSimpleName();
-    }
-
-    private String varRefId(CtVariableReference<?> ref) {
-        if (ref == null) return "var@?";
-        try { CtVariable<?> d = ref.getDeclaration(); if (d != null) return varId(d); } catch (Exception ignored) {}
-        return "var@" + ref.getSimpleName();
-    }
-
-    private String typeParamId(String ownerId, CtTypeParameter tp) { return ownerId + "#<" + tp.getSimpleName() + ">"; }
-
-    private String formalDeclarerId(CtFormalTypeDeclarer d) {
-        if (d instanceof CtType<?> t) return qualifiedName(t);
-        if (d instanceof CtTypeMember m) return typeMemberExecId(m);
-        return null;
-    }
-
-    private String nearestExecId(CtElement el) {
-        CtMethod<?> m = el.getParent(CtMethod.class);
-        if (m != null) return typeMemberExecId(m);
-        CtConstructor<?> c = el.getParent(CtConstructor.class);
-        return c != null ? typeMemberExecId(c) : null;
-    }
-
-    // ------------------------------------------------------------------
-    // Position / path helpers
-    // ------------------------------------------------------------------
-
-    private String sourceFile(CtElement el) {
-        try {
-            var pos = el.getPosition();
-            if (pos.isValidPosition()) {
-                if (pos.getFile() != null) return pos.getFile().getAbsolutePath();
-                var cu = pos.getCompilationUnit();
-                if (cu != null) {
-                    String f = cu.getFile() != null ? cu.getFile().getPath()
-                            : (cu.getMainType() != null
-                               ? cu.getMainType().getQualifiedName().replace('.', '/') + ".java"
-                               : "");
-                    if (!f.isEmpty()) return f;
-                }
-            }
-        } catch (Exception ignored) {}
-        return "";
-    }
-
-    private String relPath(String root, String abs) {
-        if (abs.isEmpty()) return "unknown";
-        if (root.isEmpty()) return abs;
-        return abs.startsWith(root)
-                ? abs.substring(root.length()).replaceFirst("^[/\\\\]", "") : abs;
-    }
-
-    private int[] lines(CtElement el) {
-        try { var p = el.getPosition(); if (p.isValidPosition()) return new int[]{ p.getLine(), p.getEndLine() }; }
-        catch (Exception ignored) {}
-        return new int[]{ -1, -1 };
-    }
-
-    private int posLine(CtElement el) {
-        try { var p = el.getPosition(); return p.isValidPosition() ? p.getLine() : -1; }
-        catch (Exception e) { return -1; }
     }
 }

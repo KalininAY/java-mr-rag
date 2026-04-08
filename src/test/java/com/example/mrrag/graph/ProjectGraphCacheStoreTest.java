@@ -6,7 +6,7 @@ import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.raw.GraphSegmentIds;
 import com.example.mrrag.graph.raw.ProjectGraphCacheStore;
-import com.example.mrrag.graph.raw.ProjectKey;
+import com.example.mrrag.app.source.ProjectKey;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -36,7 +36,7 @@ class ProjectGraphCacheStoreTest {
     static ProjectGraph singleNodeGraph(String id) {
         GraphNode n = new GraphNode(
                 id, NodeKind.CLASS, "Foo",
-                "Foo.java", 1, 5, "class Foo{}", "class Foo{");
+                "Foo.java", 1, 5, "class Foo{}", "class Foo{", null);
         return ProjectGraph.reconstruct(List.of(n), List.of());
     }
 
@@ -58,11 +58,9 @@ class ProjectGraphCacheStoreTest {
 
     @Test
     void segmentIdForGradleJar_isFlat() {
-        // Simulated Gradle cache path
         Path jar = tmp.resolve(".gradle/caches/modules-2/files-2.1/"
                 + "org.springframework/spring-core/6.1.0/abc123/spring-core-6.1.0-sources.jar");
         String id = GraphSegmentIds.segmentIdForJar(jar);
-        // Expected flat format: dep/org.springframework_spring-core_6.1.0
         assertEquals("dep/org.springframework_spring-core_6.1.0", id);
         assertFalse(id.contains("/org/"), "groupId dots must NOT be replaced by slashes");
     }
@@ -83,7 +81,6 @@ class ProjectGraphCacheStoreTest {
     void depSegmentDir_mavGav_resolvesCorrectly() {
         String segId = "dep/com.example_foo_1.0.0";
         Path dir = store.depSegmentDir(segId);
-        // depsDir/dep/com.example_foo_1.0.0/
         Path expected = tmp.resolve("cache").resolve("deps")
                 .resolve("dep").resolve("com.example_foo_1.0.0");
         assertEquals(expected, dir);
@@ -119,7 +116,6 @@ class ProjectGraphCacheStoreTest {
         assertTrue(Files.isRegularFile(depDir.resolve("meta.json")),
                 "meta.json must exist in dep dir");
 
-        // main stays in project bundle
         Path bundle = store.bundleDir(key);
         assertTrue(Files.isRegularFile(bundle.resolve("main.json")),
                 "main.json must be in project bundle");
@@ -133,7 +129,6 @@ class ProjectGraphCacheStoreTest {
         store.savePartitioned(key, Map.of(depId, singleNodeGraph("dep.Bar")));
 
         Path bundle = store.bundleDir(key);
-        // dep segment must NOT appear inside the project bundle
         assertFalse(Files.exists(bundle.resolve(depId + ".json")),
                 "Dep file must not be duplicated inside project bundle");
         assertFalse(Files.exists(bundle.resolve("dep")),
@@ -168,13 +163,10 @@ class ProjectGraphCacheStoreTest {
         String depId = "dep/com.example_shared-lib_2.0.0";
         ProjectGraph depG = singleNodeGraph("shared.Util");
 
-        // Project A saves the dep segment
         ProjectKey keyA = new ProjectKey(tmp.resolve("projectA"), "fp-aaa");
         store.savePartitioned(keyA, Map.of(depId, depG));
 
-        // Project B has no cache at all — but the global dep file exists
         ProjectKey keyB = new ProjectKey(tmp.resolve("projectB"), "fp-bbb");
-        // Manually build a segments.json for project B referencing the same dep
         Path bundleB = store.bundleDir(keyB);
         Files.createDirectories(bundleB);
         Files.writeString(bundleB.resolve("segments.json"),
@@ -198,7 +190,6 @@ class ProjectGraphCacheStoreTest {
         Path graphFile = store.depGraphFile(depId);
         long modifiedBefore = Files.getLastModifiedTime(graphFile).toMillis();
 
-        // Small sleep to ensure mtime would differ if file were rewritten
         Thread.sleep(50);
         store.savePartitioned(key, Map.of(depId, singleNodeGraph("different.Node")));
 

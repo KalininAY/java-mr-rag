@@ -17,7 +17,7 @@ app:
     url: ${GITLAB_URL:https://gitlab.com}
     token: ${GITLAB_TOKEN:}
   workspace:
-    dir: ${WORKSPACE_DIR:/tmp/mr-rag-workspace}
+    dir: ${WORKSPACE_DIR:workspace}
   graph:
     cache:
       serialization-enabled: true

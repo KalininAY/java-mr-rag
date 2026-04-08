@@ -1,4 +1,4 @@
-package com.example.mrrag.commons.source;
+package com.example.mrrag.app.source;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -38,10 +38,6 @@ public class LocalCloneProjectSourceProvider implements ProjectSourceProvider {
 
     public LocalCloneProjectSourceProvider(Path projectRoot) {
         this.projectRoot = projectRoot;
-    }
-
-    public Path getProjectRoot() {
-        return projectRoot;
     }
 
     @Override

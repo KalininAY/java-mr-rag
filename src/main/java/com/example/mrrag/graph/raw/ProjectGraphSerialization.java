@@ -47,9 +47,6 @@ public final class ProjectGraphSerialization {
         public List<NodeSnapshot> nodes;
         public List<EdgeSnapshot> edges;
 
-        public Snapshot() {
-        }
-
         Snapshot(List<NodeSnapshot> nodes, List<EdgeSnapshot> edges) {
             this.nodes = nodes;
             this.edges = edges;
@@ -108,6 +105,7 @@ public final class ProjectGraphSerialization {
         }
 
         GraphNode toGraphNode() {
+            // Pass null for bodyHash — compact constructor recomputes it from snippets
             return new GraphNode(
                     id,
                     NodeKind.valueOf(kind),
@@ -116,7 +114,8 @@ public final class ProjectGraphSerialization {
                     startLine,
                     endLine,
                     sourceSnippet != null ? sourceSnippet : "",
-                    declarationSnippet != null ? declarationSnippet : ""
+                    declarationSnippet != null ? declarationSnippet : "",
+                    null
             );
         }
     }

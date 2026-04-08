@@ -1,5 +1,6 @@
 package com.example.mrrag.app.service;
 
+import com.example.mrrag.graph.AstGraphUtils;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.NodeKind;
@@ -7,10 +8,8 @@ import com.example.mrrag.review.model.ChangedLine;
 import com.example.mrrag.review.model.ChangeGroup;
 import com.example.mrrag.review.model.EnrichmentSnippet;
 import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
-import com.example.mrrag.graph.AstGraphService;
 import com.example.mrrag.graph.model.GraphEdge;
 import com.example.mrrag.graph.model.GraphNode;
-import com.example.mrrag.graph.JavaIndexService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -39,7 +38,7 @@ import java.util.*;
  * <p>File paths from GitLab diffs may include a module prefix
  * (e.g. {@code gl-hooks/src/main/java/...}) while the graph stores paths
  * relative to the cloned repo root (e.g. {@code src/main/java/...}).
- * All lookups go through {@link AstGraphService#normalizeFilePath} to
+ * All lookups go through {@link AstGraphUtils#normalizeFilePath} to
  * strip such prefixes automatically.
  */
 @Slf4j
@@ -48,7 +47,6 @@ import java.util.*;
 public class ContextEnricher implements ChangeGroupEnrichmentPort {
 
     private final AstGraphService graphService;
-    private final JavaIndexService indexService;
 
     @Value("${app.enrichment.maxSnippetsPerGroup:12}")
     private int maxSnippetsPerGroup;
@@ -63,14 +61,11 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
     @Override
     public List<ChangeGroup> enrich(
             List<ChangeGroup> groups,
-            JavaIndexService.ProjectIndex sourceIndex,
-            JavaIndexService.ProjectIndex targetIndex,
+            ProjectGraph sourceGraph,
+            ProjectGraph targetGraph,
             Path sourceRepoDir,
             Path targetRepoDir
     ) throws Exception {
-        ProjectGraph sourceGraph = graphService.buildGraph(sourceRepoDir);
-        ProjectGraph targetGraph = graphService.buildGraph(targetRepoDir);
-
         for (ChangeGroup group : groups) {
             enrichGroup(group, sourceGraph, targetGraph, sourceRepoDir, targetRepoDir);
         }
@@ -90,7 +85,6 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
     ) {
         List<EnrichmentSnippet> snippets = group.enrichments();
 
-        List<ChangedLine> added   = filterByType(group, ChangedLine.LineType.ADD);
         List<ChangedLine> deleted = filterByType(group, ChangedLine.LineType.DELETE);
         List<ChangedLine> all     = group.changedLines();
 
@@ -117,7 +111,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
             if (cl.type() == ChangedLine.LineType.CONTEXT) continue;
             if (full(snippets)) break;
 
-            String file = graphService.normalizeFilePath(cl.filePath(), graph);
+            String file = AstGraphUtils.normalizeFilePath(cl.filePath(), graph);
             int    line = cl.lineNumber() > 0 ? cl.lineNumber() : cl.oldLineNumber();
             if (line <= 0) continue;
 
@@ -163,7 +157,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
         for (ChangedLine cl : deleted) {
             if (full(snippets)) break;
 
-            String file    = graphService.normalizeFilePath(cl.filePath(), targetGraph);
+            String file    = AstGraphUtils.normalizeFilePath(cl.filePath(), targetGraph);
             int    oldLine = cl.oldLineNumber();
             if (oldLine <= 0) continue;
 
@@ -220,7 +214,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
                 .findFirst().orElse(null);
         if (first == null) return;
 
-        String file = graphService.normalizeFilePath(first.filePath(), graph);
+        String file = AstGraphUtils.normalizeFilePath(first.filePath(), graph);
         int    line = first.lineNumber() > 0 ? first.lineNumber() : first.oldLineNumber();
 
         graph.nodesAtLine(file, line).stream()
@@ -342,7 +336,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
     }
 
     private void trim(List<EnrichmentSnippet> snippets) {
-        while (snippets.size() > maxSnippetsPerGroup) snippets.remove(snippets.size() - 1);
+        while (snippets.size() > maxSnippetsPerGroup) snippets.removeLast();
     }
 
     private String describeDeletedUsages(GraphNode decl, int count) {

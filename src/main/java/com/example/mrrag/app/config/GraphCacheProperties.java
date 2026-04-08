@@ -2,7 +2,7 @@ package com.example.mrrag.app.config;
 
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.raw.ClasspathResolver;
-import com.example.mrrag.graph.raw.ProjectKey;
+import com.example.mrrag.app.source.ProjectKey;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 

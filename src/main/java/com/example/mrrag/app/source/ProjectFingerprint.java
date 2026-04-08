@@ -1,4 +1,4 @@
-package com.example.mrrag.graph.raw;
+package com.example.mrrag.app.source;
 
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
@@ -37,10 +37,7 @@ public final class ProjectFingerprint {
     public static String compute(Path projectRoot) {
         Path abs = projectRoot.toAbsolutePath().normalize();
         Optional<String> git = tryGitHead(abs);
-        if (git.isPresent()) {
-            return "git:" + git.get();
-        }
-        return "content:" + hashBuildFiles(abs);
+        return git.map(s -> "git:" + s).orElseGet(() -> "content:" + hashBuildFiles(abs));
     }
 
     private static Optional<String> tryGitHead(Path workTree) {
