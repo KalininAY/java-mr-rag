@@ -15,13 +15,16 @@ import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Orchestrates the full review pipeline:
  * <ol>
  *   <li>Fetch MR from GitLab</li>
- *   <li>Clone source branch → &lt;project&gt;-mr&lt;id&gt;/from-&lt;branch&gt;-&lt;ts&gt;</li>
- *   <li>Clone target branch → &lt;project&gt;-mr&lt;id&gt;/to-&lt;branch&gt;-&lt;ts&gt;</li>
+ *   <li>Clone source branch → &lt;project&gt;-mr&lt;id&gt;/from-&lt;branch&gt;-&lt;ts&gt; (parallel with target)</li>
+ *   <li>Clone target branch → &lt;project&gt;-mr&lt;id&gt;/to-&lt;branch&gt;-&lt;ts&gt;   (parallel with source)</li>
  *   <li>Build AST graphs for both branches</li>
  *   <li>Parse git diff</li>
  *   <li>Filter MOVED symbols ({@link SemanticDiffFilter})</li>
@@ -54,13 +57,37 @@ public class ReviewService {
         ProjectSourceProvider sourceProvider = null;
         ProjectSourceProvider targetProvider = null;
         try {
-            log.info("Cloning source branch: {}", request.sourceBranch());
-            sourceRepoDir = mergeRequestCheckout.checkoutBranch(
-                    request.projectId(), request.mrIid(), request.sourceBranch(), "from");
+            log.info("Cloning source branch '{}' and target branch '{}' in parallel...",
+                    request.sourceBranch(), request.targetBranch());
 
-            log.info("Cloning target branch: {}", request.targetBranch());
-            targetRepoDir = mergeRequestCheckout.checkoutBranch(
-                    request.projectId(), request.mrIid(), request.targetBranch(), "to");
+            ExecutorService cloneExecutor = Executors.newFixedThreadPool(2);
+            try {
+                CompletableFuture<Path> sourceFuture = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return mergeRequestCheckout.checkoutBranch(
+                                request.projectId(), request.mrIid(), request.sourceBranch(), "from");
+                    } catch (Exception e) {
+                        throw new RuntimeException("Failed to clone source branch: " + request.sourceBranch(), e);
+                    }
+                }, cloneExecutor);
+
+                CompletableFuture<Path> targetFuture = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return mergeRequestCheckout.checkoutBranch(
+                                request.projectId(), request.mrIid(), request.targetBranch(), "to");
+                    } catch (Exception e) {
+                        throw new RuntimeException("Failed to clone target branch: " + request.targetBranch(), e);
+                    }
+                }, cloneExecutor);
+
+                sourceRepoDir = sourceFuture.join();
+                targetRepoDir = targetFuture.join();
+            } finally {
+                cloneExecutor.shutdown();
+            }
+
+            log.info("Both branches cloned successfully: source={}, target={}",
+                    sourceRepoDir, targetRepoDir);
 
             sourceProvider = new LocalCloneProjectSourceProvider(sourceRepoDir);
             targetProvider = new LocalCloneProjectSourceProvider(targetRepoDir);
