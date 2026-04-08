@@ -25,7 +25,7 @@ import java.util.concurrent.Executors;
  *   <li>Fetch MR from GitLab</li>
  *   <li>Clone source branch → &lt;project&gt;-mr&lt;id&gt;/from-&lt;branch&gt;-&lt;ts&gt; (parallel with target)</li>
  *   <li>Clone target branch → &lt;project&gt;-mr&lt;id&gt;/to-&lt;branch&gt;-&lt;ts&gt;   (parallel with source)</li>
- *   <li>Build AST graphs for both branches</li>
+ *   <li>Build AST graphs for both branches (parallel)</li>
  *   <li>Parse git diff</li>
  *   <li>Filter MOVED symbols ({@link SemanticDiffFilter})</li>
  *   <li>Group remaining changes by AST code block ({@link ChangeGrouper})</li>
@@ -57,6 +57,7 @@ public class ReviewService {
         ProjectSourceProvider sourceProvider = null;
         ProjectSourceProvider targetProvider = null;
         try {
+            // --- Parallel clone ---
             log.info("Cloning source branch '{}' and target branch '{}' in parallel...",
                     request.sourceBranch(), request.targetBranch());
 
@@ -92,11 +93,39 @@ public class ReviewService {
             sourceProvider = new LocalCloneProjectSourceProvider(sourceRepoDir);
             targetProvider = new LocalCloneProjectSourceProvider(targetRepoDir);
 
-            log.info("Building AST graphs...");
-            ProjectGraph sourceGraph = astGraphService.buildGraph(
-                    sourceProvider);
-            ProjectGraph targetGraph = astGraphService.buildGraph(
-                    targetProvider);
+            // --- Parallel AST graph build ---
+            log.info("Building AST graphs in parallel...");
+
+            final ProjectSourceProvider sourceProviderRef = sourceProvider;
+            final ProjectSourceProvider targetProviderRef = targetProvider;
+
+            ExecutorService graphExecutor = Executors.newFixedThreadPool(2);
+            ProjectGraph sourceGraph;
+            ProjectGraph targetGraph;
+            try {
+                CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return astGraphService.buildGraph(sourceProviderRef);
+                    } catch (Exception e) {
+                        throw new RuntimeException("Failed to build source AST graph", e);
+                    }
+                }, graphExecutor);
+
+                CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return astGraphService.buildGraph(targetProviderRef);
+                    } catch (Exception e) {
+                        throw new RuntimeException("Failed to build target AST graph", e);
+                    }
+                }, graphExecutor);
+
+                sourceGraph = sourceGraphFuture.join();
+                targetGraph = targetGraphFuture.join();
+            } finally {
+                graphExecutor.shutdown();
+            }
+
+            log.info("Both AST graphs built successfully");
 
             log.info("Fetching MR diffs...");
             List<Diff> rawDiffs = mergeRequestCheckout.getMrDiffs(request.projectId(), request.mrIid());
