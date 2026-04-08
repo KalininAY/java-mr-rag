@@ -1,14 +1,11 @@
 package com.example.mrrag.app.source;
 
+import com.example.mrrag.app.service.CodeRepositoryException;
+import com.example.mrrag.app.service.TreeItem;
+import com.example.mrrag.review.spi.CodeRepositoryGateway;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
-import org.gitlab4j.api.GitLabApi;
-import org.gitlab4j.api.GitLabApiException;
-import org.gitlab4j.api.models.TreeItem;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -55,16 +52,18 @@ import java.util.List;
 @Slf4j
 public class GitLabProjectSourceProvider implements ProjectSourceProvider {
 
-    private final GitLabApi gitLabApi;
+    private final CodeRepositoryGateway gateway;
     @Getter
-    private final long      projectId;
-    /** Branch name, tag name, or full / abbreviated commit SHA. */
-    private final String    ref;
+    private final long projectId;
+    /**
+     * Branch name, tag name, or full / abbreviated commit SHA.
+     */
+    private final String ref;
 
-    public GitLabProjectSourceProvider(GitLabApi gitLabApi, long projectId, String ref) {
-        this.gitLabApi = gitLabApi;
+    public GitLabProjectSourceProvider(CodeRepositoryGateway gateway, long projectId, String ref) {
+        this.gateway = gateway;
         this.projectId = projectId;
-        this.ref       = ref;
+        this.ref = ref;
     }
 
     /**
@@ -82,15 +81,14 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
     }
 
     @Override
-    public List<ProjectSource> getSources() throws GitLabApiException {
+    public List<ProjectSource> getSources() {
         log.info("Fetching .java tree from GitLab: projectId={}, ref={}", projectId, ref);
 
-        List<TreeItem> tree = gitLabApi.getRepositoryApi()
-                .getTree(projectId, null, ref, true); // recursive = true
+        List<TreeItem> tree = gateway.getRepositoryTree(projectId, ref);
 
         List<String> javaPaths = tree.stream()
-                .filter(item -> item.getType() == TreeItem.Type.BLOB)
-                .map(TreeItem::getPath)
+                .filter(item -> item.type().equals("BLOB"))
+                .map(TreeItem::path)
                 .filter(p -> p.endsWith(".java"))
                 .toList();
 
@@ -100,8 +98,9 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
         List<ProjectSource> sources = new ArrayList<>(javaPaths.size());
         for (String filePath : javaPaths) {
             try {
-                sources.add(new ProjectSource(filePath, fetchRaw(filePath)));
-            } catch (Exception ex) {
+                String fileContent = gateway.getFileContent(projectId, ref, filePath);
+                sources.add(new ProjectSource(filePath, fileContent));
+            } catch (CodeRepositoryException ex) {
                 log.warn("Skipping {} — fetch error: {}", filePath, ex.getMessage());
             }
         }
@@ -111,16 +110,10 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
         return sources;
     }
 
-    // ------------------------------------------------------------------ helpers
 
-    private String fetchRaw(String filePath) throws GitLabApiException, IOException {
-        try (InputStream is = gitLabApi.getRepositoryFileApi()
-                .getRawFile(projectId, ref, filePath)) {
-            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
-        }
-    }
-
-    /** A ref is treated as a full commit SHA when it is exactly 40 hex characters. */
+    /**
+     * A ref is treated as a full commit SHA when it is exactly 40 hex characters.
+     */
     private static boolean isFullSha(String ref) {
         return ref != null && ref.length() == 40 && ref.chars().allMatch(c ->
                 (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));

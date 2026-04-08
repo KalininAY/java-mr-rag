@@ -25,9 +25,8 @@ public interface ProjectSourceProvider {
      * Load all Java source files and return them as in-memory records.
      *
      * @return non-null list of sources; may be empty
-     * @throws Exception on any IO / API error
      */
-    List<ProjectSource> getSources() throws Exception;
+    List<ProjectSource> getSources();
 
     /**
      * When sources come from a local checkout, returns the repository root so the graph

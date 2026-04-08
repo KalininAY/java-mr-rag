@@ -1,12 +1,12 @@
 package com.example.mrrag.review;
 
 import com.example.mrrag.app.service.AstGraphService;
-import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
+import com.example.mrrag.app.source.LocalProjectSourceProvider;
 import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
-import com.example.mrrag.review.spi.MergeRequestCheckoutPort;
+import com.example.mrrag.review.spi.CodeRepositoryGateway;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.models.Diff;
@@ -39,18 +39,19 @@ import java.util.concurrent.Executors;
 @RequiredArgsConstructor
 public class ReviewService {
 
-    private final MergeRequestCheckoutPort  mergeRequestCheckout;
-    private final AstGraphService           astGraphService;
-    private final DiffParser                diffParser;
-    private final SemanticDiffFilter        semanticDiffFilter;
-    private final ChangeGrouper             changeGrouper;
+    private final CodeRepositoryGateway repoGateway;
+    private final AstGraphService astGraphService;
+    private final DiffParser diffParser;
+    private final SemanticDiffFilter semanticDiffFilter;
+    private final ChangeGrouper changeGrouper;
     private final ChangeGroupEnrichmentPort changeGroupEnrichment;
 
     public ReviewContext buildReviewContext(ReviewRequest request) throws Exception {
         log.info("Building review context for project={} mrIid={}",
                 request.projectId(), request.mrIid());
 
-        MergeRequest mr = mergeRequestCheckout.getMergeRequest(request.projectId(), request.mrIid());
+        MergeRequest mr = repoGateway.getMergeRequest(request.projectId(), request.mrIid());
+        Path workspace = Path.of(System.getenv("workspace")).resolve(request.mrIid().toString());
 
         Path sourceRepoDir = null;
         Path targetRepoDir = null;
@@ -65,8 +66,8 @@ public class ReviewService {
             try {
                 CompletableFuture<Path> sourceFuture = CompletableFuture.supplyAsync(() -> {
                     try {
-                        return mergeRequestCheckout.checkoutBranch(
-                                request.projectId(), request.mrIid(), request.sourceBranch(), "from");
+                        return repoGateway.cloneProject(
+                                request.projectId(), request.sourceBranch(), workspace.resolve("from"));
                     } catch (Exception e) {
                         throw new RuntimeException("Failed to clone source branch: " + request.sourceBranch(), e);
                     }
@@ -74,8 +75,8 @@ public class ReviewService {
 
                 CompletableFuture<Path> targetFuture = CompletableFuture.supplyAsync(() -> {
                     try {
-                        return mergeRequestCheckout.checkoutBranch(
-                                request.projectId(), request.mrIid(), request.targetBranch(), "to");
+                        return repoGateway.cloneProject(
+                                request.projectId(), request.targetBranch(), workspace.resolve("to"));
                     } catch (Exception e) {
                         throw new RuntimeException("Failed to clone target branch: " + request.targetBranch(), e);
                     }
@@ -90,8 +91,8 @@ public class ReviewService {
             log.info("Both branches cloned successfully: source={}, target={}",
                     sourceRepoDir, targetRepoDir);
 
-            sourceProvider = new LocalCloneProjectSourceProvider(sourceRepoDir);
-            targetProvider = new LocalCloneProjectSourceProvider(targetRepoDir);
+            sourceProvider = new LocalProjectSourceProvider(sourceRepoDir);
+            targetProvider = new LocalProjectSourceProvider(targetRepoDir);
 
             // --- Parallel AST graph build ---
             log.info("Building AST graphs in parallel...");
@@ -128,7 +129,7 @@ public class ReviewService {
             log.info("Both AST graphs built successfully");
 
             log.info("Fetching MR diffs...");
-            List<Diff> rawDiffs = mergeRequestCheckout.getMrDiffs(request.projectId(), request.mrIid());
+            List<Diff> rawDiffs = repoGateway.getMrDiffs(request.projectId(), request.mrIid());
             List<ChangedLine> rawLines = diffParser.parse(rawDiffs);
             log.info("Parsed {} changed lines from {} file diffs", rawLines.size(), rawDiffs.size());
 
@@ -163,14 +164,16 @@ public class ReviewService {
                 astGraphService.invalidate(sourceProvider.projectKey());
             if (targetProvider != null)
                 astGraphService.invalidate(targetProvider.projectKey());
-            mergeRequestCheckout.cleanup(sourceRepoDir);
-            mergeRequestCheckout.cleanup(targetRepoDir);
+            repoGateway.cleanup(sourceRepoDir);
+            repoGateway.cleanup(targetRepoDir);
         }
     }
 
-    /** Auto-detect branches from GitLab MR metadata. */
+    /**
+     * Auto-detect branches from GitLab MR metadata.
+     */
     public ReviewContext buildReviewContext(long projectId, long mrIid) throws Exception {
-        MergeRequest mr = mergeRequestCheckout.getMergeRequest(projectId, mrIid);
+        MergeRequest mr = repoGateway.getMergeRequest(projectId, mrIid);
         return buildReviewContext(new ReviewRequest(
                 projectId, mrIid,
                 mr.getSourceBranch(),

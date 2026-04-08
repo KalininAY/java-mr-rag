@@ -3,7 +3,7 @@ package com.example.mrrag.graph;
 import com.example.mrrag.app.config.EdgeKindConfig;
 import com.example.mrrag.app.config.GraphCacheProperties;
 import com.example.mrrag.app.service.AstGraphService;
-import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
+import com.example.mrrag.app.source.LocalProjectSourceProvider;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.raw.GradleCompileClasspathResolver;
@@ -171,7 +171,7 @@ class MultiDependencyProjectIndexingTest {
         copyTree(fixtureRoot(), projectRoot);
 
         AstGraphService service  = buildService(ws.resolve("cache"));
-        var             provider = new LocalCloneProjectSourceProvider(projectRoot);
+        var             provider = new LocalProjectSourceProvider(projectRoot);
         ProjectGraph    graph    = service.buildGraph(provider);
 
         assertThat(graph.nodes).isNotEmpty();
@@ -188,7 +188,7 @@ class MultiDependencyProjectIndexingTest {
         copyTree(fixtureRoot(), projectRoot);
 
         AstGraphService service  = buildService(ws.resolve("cache"));
-        var             provider = new LocalCloneProjectSourceProvider(projectRoot);
+        var             provider = new LocalProjectSourceProvider(projectRoot);
         ProjectGraph    graph    = service.buildGraph(provider);
 
         String userServiceId = graph.nodes.keySet().stream()
@@ -212,7 +212,7 @@ class MultiDependencyProjectIndexingTest {
         Path cacheDir    = ws.resolve("cache");
 
         AstGraphService service  = buildService(cacheDir);
-        var             provider = new LocalCloneProjectSourceProvider(projectRoot);
+        var             provider = new LocalProjectSourceProvider(projectRoot);
         ProjectKey      key      = provider.projectKey();
         service.buildGraph(provider);
 
@@ -244,7 +244,7 @@ class MultiDependencyProjectIndexingTest {
         Path cacheDir = ws.resolve("cache");
 
         AstGraphService service  = buildService(cacheDir);
-        var             provider = new LocalCloneProjectSourceProvider(projectRoot);
+        var             provider = new LocalProjectSourceProvider(projectRoot);
         ProjectKey      key      = provider.projectKey();
 
         ProjectGraph first = service.buildGraph(provider);
@@ -253,7 +253,7 @@ class MultiDependencyProjectIndexingTest {
         service.invalidate(key);
 
         // second call: build a fresh provider for the same path
-        ProjectGraph second = service.buildGraph(new LocalCloneProjectSourceProvider(projectRoot));
+        ProjectGraph second = service.buildGraph(new LocalProjectSourceProvider(projectRoot));
         assertThat(second.nodes.keySet())
                 .as("Reloaded graph must contain the same nodes")
                 .containsAll(first.nodes.keySet());
