@@ -47,9 +47,6 @@ public final class ProjectGraphSerialization {
         public List<NodeSnapshot> nodes;
         public List<EdgeSnapshot> edges;
 
-        public Snapshot() {
-        }
-
         Snapshot(List<NodeSnapshot> nodes, List<EdgeSnapshot> edges) {
             this.nodes = nodes;
             this.edges = edges;

@@ -3,12 +3,17 @@ package com.example.mrrag.graph;
 import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.ProjectGraph;
 import spoon.reflect.code.*;
+import spoon.reflect.cu.CompilationUnit;
+import spoon.reflect.cu.SourcePosition;
+import spoon.reflect.cu.position.BodyHolderSourcePosition;
+import spoon.reflect.cu.position.CompoundSourcePosition;
 import spoon.reflect.declaration.*;
 import spoon.reflect.reference.*;
 
 import java.nio.file.Path;
-import java.util.Arrays;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 /**
  * Utility class containing stateless helper methods extracted from
@@ -38,9 +43,11 @@ public final class AstGraphUtils {
     // ------------------------------------------------------------------
 
     /**
-     * @param projectRoot optional local project root (e.g. {@code LocalCloneProjectSourceProvider}'s root).
-     *        When {@code sourceLines} keys are repo-relative but {@code filePath} from Spoon is absolute,
-     *        lookup falls back to a path relative to this root.
+     * Extracts source lines [{@code startLine}, {@code endLine}] (1-based, inclusive) from
+     * {@code sourceLines}. Returns {@code ""} when {@code fileLines} cannot be resolved —
+     * there is no reliable fallback if the original source is absent.
+     *
+     * @param projectRoot optional local project root for path resolution
      */
     public static String extractSource(Map<String, String[]> sourceLines,
                                        String filePath, int startLine, int endLine,
@@ -53,7 +60,7 @@ public final class AstGraphUtils {
                 if (from < to) return String.join("\n", Arrays.copyOfRange(lines, from, to));
             }
         }
-        return snippet(el);
+        return ""; // нет исходного кода
     }
 
     /**
@@ -88,10 +95,6 @@ public final class AstGraphUtils {
         return null;
     }
 
-    public static String snippet(CtElement el) {
-        try { String s = el.toString(); return s != null ? s : ""; } catch (Exception e) { return ""; }
-    }
-
     // ------------------------------------------------------------------
     // Semantic body comparison (delegates to GraphNode field)
     // ------------------------------------------------------------------
@@ -100,14 +103,6 @@ public final class AstGraphUtils {
      * Returns {@code true} when both nodes are non-null and their
      * {@link GraphNode#bodyHash()} values match — i.e. the source bodies
      * are identical modulo whitespace normalisation.
-     *
-     * <p>The hash itself is computed once at {@link GraphNode} construction
-     * time, so this call is O(1).
-     *
-     * <pre>{@code
-     * // SemanticDiffFilter usage:
-     * boolean changed = !AstGraphUtils.sameBody(srcNode, tgtNode);
-     * }</pre>
      */
     public static boolean sameBody(GraphNode a, GraphNode b) {
         if (a == null || b == null) return false;
@@ -342,15 +337,48 @@ public final class AstGraphUtils {
         return "";
     }
 
-    public static String relPath(String root, String abs) {
-        if (abs.isEmpty()) return "unknown";
-        if (root.isEmpty()) return abs;
-        return abs.startsWith(root)
-                ? abs.substring(root.length()).replaceFirst("^[/\\\\]", "") : abs;
+    /**
+     * Path for graph storage and {@link #extractSource} lookup: repo-relative with forward slashes when possible.
+     */
+    public static String graphFilePath(CtElement el, Path projectRoot, Set<String> repoRelativeSourcePaths) {
+        String spoon = sourceFile(el);
+        if (spoon == null || spoon.isBlank()) return spoon;
+        if (projectRoot == null) return spoon.replace('\\', '/');
+
+        try {
+            Path root = projectRoot.toAbsolutePath().normalize();
+            try { root = root.toRealPath(); } catch (Exception ignored) { }
+            Path abs = Path.of(spoon).toAbsolutePath().normalize();
+            try { abs = abs.toRealPath(); } catch (Exception ignored) { }
+            if (abs.startsWith(root)) {
+                return root.relativize(abs).toString().replace('\\', '/');
+            }
+        } catch (Exception ignored) { }
+
+        String norm = spoon.replace('\\', '/');
+        if (repoRelativeSourcePaths != null && !repoRelativeSourcePaths.isEmpty()) {
+            String best = null;
+            int bestLen = -1;
+            for (String rel : repoRelativeSourcePaths) {
+                if (rel == null || rel.isBlank()) continue;
+                String r = rel.replace('\\', '/');
+                if (norm.endsWith(r) && r.length() > bestLen) { best = r; bestLen = r.length(); }
+            }
+            if (best != null) return best;
+        }
+
+        int cut = indexOfStandardSourceRoot(norm);
+        if (cut >= 0) return norm.substring(cut).replace('\\', '/');
+        return spoon;
     }
 
-    public static String relPath(Path root, String abs) {
-        return relPath(root.toString(), abs);
+    private static int indexOfStandardSourceRoot(String normalizedForwardSlashes) {
+        String lower = normalizedForwardSlashes.toLowerCase(Locale.ROOT);
+        int m = lower.indexOf("src/main/java/");
+        int t = lower.indexOf("src/test/java/");
+        if (m < 0) return t;
+        if (t < 0) return m;
+        return Math.min(m, t);
     }
 
     public static int[] lines(CtElement el) {
@@ -359,9 +387,31 @@ public final class AstGraphUtils {
         return new int[]{ -1, -1 };
     }
 
+    /**
+     * Fallback variant — uses CU source when no {@code fileLines} are available.
+     */
     public static int posLine(CtElement el) {
-        try { var p = el.getPosition(); return p.isValidPosition() ? p.getLine() : -1; }
-        catch (Exception e) { return -1; }
+        try {
+            var p = el.getPosition();
+            if (!p.isValidPosition()) return -1;
+            CompilationUnit cu = p.getCompilationUnit();
+            String src = cu != null ? cu.getOriginalSourceCode() : null;
+            if (src != null && !src.isEmpty()) return lineNumberAtOffset(src, p.getSourceStart());
+            return p.getLine();
+        } catch (Exception e) { return -1; }
+    }
+
+    /**
+     * 1-based line number of the character at {@code offset} (0-based) in {@code src}.
+     */
+    public static int lineNumberAtOffset(String src, int offset) {
+        if (src == null || src.isEmpty()) return 1;
+        int n = Math.min(Math.max(offset, 0), src.length());
+        int line = 1;
+        for (int i = 0; i < n; i++) {
+            if (src.charAt(i) == '\n') line++;
+        }
+        return line;
     }
 
     // ------------------------------------------------------------------
@@ -376,9 +426,9 @@ public final class AstGraphUtils {
         String norm = diffPath.replace('\\', '/');
         for (String known : graph.allFilePaths()) {
             String knownNorm = known.replace('\\', '/');
-            if (norm.equals(knownNorm))             return known;
-            if (norm.endsWith("/" + knownNorm))     return known;
-            if (knownNorm.endsWith("/" + norm))     return known;
+            if (norm.equals(knownNorm))         return known;
+            if (norm.endsWith("/" + knownNorm)) return known;
+            if (knownNorm.endsWith("/" + norm)) return known;
         }
         String[] parts = norm.split("/");
         for (int i = 1; i < parts.length; i++) {
@@ -386,5 +436,128 @@ public final class AstGraphUtils {
             if (graph.byFile.containsKey(candidate)) return candidate;
         }
         return diffPath;
+    }
+
+    /**
+     * Resolves {@code sourceLines} the same way as {@link #extractSource}, then extracts a declaration.
+     * Returns {@code ""} when {@code fileLines} cannot be resolved.
+     */
+    public static String declarationOf(Map<String, String[]> sourceLines, String filePath,
+                                       Path projectRoot, SourcePosition pos) {
+        String[] lines = findLines(sourceLines, filePath, projectRoot);
+        if (lines == null) return "";
+        return declarationOf(lines, pos);
+    }
+
+    /**
+     * Extracts the declaration (signature/header without method body) from {@code sourceLines}.
+     */
+    public static String declarationOf(String[] sourceLines, SourcePosition pos) {
+        if (sourceLines == null || sourceLines.length == 0 || pos == null || !pos.isValidPosition()) {
+            return "";
+        }
+        String full = String.join("\n", sourceLines);
+
+        if (pos instanceof BodyHolderSourcePosition bodyPos) {
+            int start = bodyPos.getDeclarationStart();
+            int bodyStart = bodyPos.getBodyStart();
+            if (bodyStart > start) {
+                return trimDeclaration(safeSubstring(full, start, bodyStart));
+            }
+        }
+        if (pos instanceof CompoundSourcePosition declPos) {
+            int start = declPos.getDeclarationStart();
+            int endInclusive = declPos.getDeclarationEnd();
+            if (endInclusive >= start) {
+                return trimDeclaration(safeSubstring(full, start, endInclusive + 1));
+            }
+        }
+        int line = pos.getLine();
+        int endLine = pos.getEndLine();
+        if (line < 1) return "";
+        int from = line - 1;
+        int to = (endLine >= line) ? endLine - 1 : from;
+        if (from >= sourceLines.length) return "";
+        to = Math.min(to, sourceLines.length - 1);
+        if (from > to) return trimDeclaration(sourceLines[from]);
+        return trimDeclaration(IntStream.rangeClosed(from, to)
+                .mapToObj(i -> sourceLines[i])
+                .collect(Collectors.joining("\n")));
+    }
+
+    /**
+     * Removes line and block comments (including Javadoc) from a Java source fragment,
+     * without touching text inside string/char literals or text blocks.
+     */
+    public static String stripJavaCommentsAndJavadoc(String s) {
+        if (s == null || s.isEmpty()) return "";
+        StringBuilder out = new StringBuilder(s.length());
+        int i = 0, n = s.length();
+        while (i < n) {
+            char c = s.charAt(i);
+            if (c == '/' && i + 1 < n) {
+                char next = s.charAt(i + 1);
+                if (next == '/') {
+                    i += 2;
+                    while (i < n && s.charAt(i) != '\r' && s.charAt(i) != '\n') i++;
+                    if (i < n && s.charAt(i) == '\r') i++;
+                    if (i < n && s.charAt(i) == '\n') i++;
+                    out.append(' ');
+                    continue;
+                }
+                if (next == '*') {
+                    i += 2;
+                    while (i + 1 < n && !(s.charAt(i) == '*' && s.charAt(i + 1) == '/')) i++;
+                    if (i + 1 < n) i += 2; else i = n;
+                    out.append(' ');
+                    continue;
+                }
+            }
+            if (c == '"') {
+                if (i + 2 < n && s.charAt(i + 1) == '"' && s.charAt(i + 2) == '"') {
+                    out.append("\"\"\""); i += 3;
+                    while (i < n) {
+                        if (i + 2 < n && s.charAt(i) == '"' && s.charAt(i+1) == '"' && s.charAt(i+2) == '"') {
+                            out.append("\"\"\""); i += 3; break;
+                        }
+                        out.append(s.charAt(i++));
+                    }
+                    continue;
+                }
+                out.append(c); i++;
+                while (i < n) {
+                    char c2 = s.charAt(i); out.append(c2);
+                    if (c2 == '\\' && i + 1 < n) { out.append(s.charAt(i + 1)); i += 2; continue; }
+                    if (c2 == '"') { i++; break; }
+                    i++;
+                }
+                continue;
+            }
+            if (c == '\'') {
+                out.append(c); i++;
+                while (i < n) {
+                    char c2 = s.charAt(i); out.append(c2);
+                    if (c2 == '\\' && i + 1 < n) { out.append(s.charAt(i + 1)); i += 2; continue; }
+                    if (c2 == '\'') { i++; break; }
+                    i++;
+                }
+                continue;
+            }
+            out.append(c); i++;
+        }
+        return out.toString();
+    }
+
+    private static String trimDeclaration(String s) {
+        if (s == null) return "";
+        return stripJavaCommentsAndJavadoc(s.replace("\r", "")).replaceAll("\\s+", " ").trim();
+    }
+
+    private static String safeSubstring(String full, int start, int endExclusive) {
+        if (full == null || full.isEmpty()) return "";
+        if (start < 0) start = 0;
+        if (endExclusive > full.length()) endExclusive = full.length();
+        if (start >= endExclusive) return "";
+        return full.substring(start, endExclusive);
     }
 }

@@ -40,18 +40,6 @@ public record GraphNode(
         bodyHash = computeBodyHash(id, sourceSnippet, declarationSnippet);
     }
 
-    /**
-     * Convenience factory used by callers that do not yet have a
-     * pre-computed hash (e.g. deserialisers, test builders).
-     * The hash is recomputed from the supplied snippets.
-     */
-    public static GraphNode of(String id, NodeKind kind, String simpleName,
-                               String filePath, int startLine, int endLine,
-                               String sourceSnippet, String declarationSnippet) {
-        return new GraphNode(id, kind, simpleName, filePath,
-                startLine, endLine, sourceSnippet, declarationSnippet,
-                /* bodyHash will be overwritten by compact constructor */ null);
-    }
 
     // ------------------------------------------------------------------
     // Semantic comparison helpers
