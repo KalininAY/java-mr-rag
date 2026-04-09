@@ -1,14 +1,16 @@
 package com.example.mrrag.app.source;
 
-import com.example.mrrag.app.service.CodeRepositoryException;
-import com.example.mrrag.app.service.TreeItem;
-import com.example.mrrag.review.spi.CodeRepositoryGateway;
-import lombok.Getter;
+import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
+import com.example.mrrag.app.repo.CodeRepositoryException;
+import com.example.mrrag.app.repo.TreeItem;
+import com.example.mrrag.app.repo.CodeRepositoryGateway;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.Validate;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+
 
 /**
  * {@link ProjectSourceProvider} that downloads {@code .java} files from a
@@ -53,17 +55,22 @@ import java.util.List;
 public class GitLabProjectSourceProvider implements ProjectSourceProvider {
 
     private final CodeRepositoryGateway gateway;
-    @Getter
     private final long projectId;
-    /**
-     * Branch name, tag name, or full / abbreviated commit SHA.
-     */
-    private final String ref;
+    private final String revision;
+    private final String token;
+    private final Boolean force;
 
-    public GitLabProjectSourceProvider(CodeRepositoryGateway gateway, long projectId, String ref) {
+
+    public GitLabProjectSourceProvider(CodeRepositoryGateway gateway, RemoteProjectRequest req) {
+        Validate.notNull(req, "RemoteProjectRequest is null");
+        Validate.notNull(req.projectId(), "projectId is null");
+        Validate.notNull(req.revision(), "revision is null");
+
         this.gateway = gateway;
-        this.projectId = projectId;
-        this.ref = ref;
+        this.projectId = req.projectId();
+        this.revision = req.revision();
+        this.token = req.token();
+        this.force = req.force();
     }
 
     /**
@@ -76,15 +83,15 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
      */
     @Override
     public ProjectKey projectKey() {
-        String fingerprint = isFullSha(ref) ? "git:" + ref : "ref:" + ref;
+        String fingerprint = isFullSha(revision) ? "git:" + revision : "ref:" + revision;
         return new ProjectKey(Path.of("/gitlab/" + projectId), fingerprint);
     }
 
     @Override
     public List<ProjectSource> getSources() {
-        log.info("Fetching .java tree from GitLab: projectId={}, ref={}", projectId, ref);
+        log.info("Fetching .java tree from GitLab: projectId={}, revision={}", projectId, revision);
 
-        List<TreeItem> tree = gateway.getRepositoryTree(projectId, ref);
+        List<TreeItem> tree = gateway.getRepositoryTree(projectId, revision, token);
 
         List<String> javaPaths = tree.stream()
                 .filter(item -> item.type().equals("BLOB"))
@@ -93,12 +100,12 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
                 .toList();
 
         log.info("Found {} .java files in project {} at ref={}",
-                javaPaths.size(), projectId, ref);
+                javaPaths.size(), projectId, revision);
 
         List<ProjectSource> sources = new ArrayList<>(javaPaths.size());
         for (String filePath : javaPaths) {
             try {
-                String fileContent = gateway.getFileContent(projectId, ref, filePath);
+                String fileContent = gateway.getFileContent(projectId, revision, filePath, token);
                 sources.add(new ProjectSource(filePath, fileContent));
             } catch (CodeRepositoryException ex) {
                 log.warn("Skipping {} — fetch error: {}", filePath, ex.getMessage());
@@ -106,7 +113,7 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
         }
 
         log.info("Loaded {}/{} .java files from GitLab (project={}, ref={})",
-                sources.size(), javaPaths.size(), projectId, ref);
+                sources.size(), javaPaths.size(), projectId, revision);
         return sources;
     }
 

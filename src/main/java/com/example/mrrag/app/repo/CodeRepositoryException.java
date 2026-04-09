@@ -1,4 +1,4 @@
-package com.example.mrrag.app.service;
+package com.example.mrrag.app.repo;
 
 public class CodeRepositoryException extends RuntimeException {
 

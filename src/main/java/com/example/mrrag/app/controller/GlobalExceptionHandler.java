@@ -1,6 +1,6 @@
 package com.example.mrrag.app.controller;
 
-import com.example.mrrag.app.service.CodeRepositoryException;
+import com.example.mrrag.app.repo.CodeRepositoryException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;

@@ -63,7 +63,7 @@ public class GraphBuilderImpl implements GraphBuilder {
      * </ol>
      */
     @Override
-    public ProjectGraph buildGraph(ProjectSourceProvider provider) throws Exception {
+    public ProjectGraph buildGraph(ProjectSourceProvider provider) {
         ProjectKey key = provider.projectKey();
         log.info("buildGraph: key={}", key);
 

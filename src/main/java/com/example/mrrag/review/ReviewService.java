@@ -6,7 +6,7 @@ import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
-import com.example.mrrag.review.spi.CodeRepositoryGateway;
+import com.example.mrrag.app.repo.CodeRepositoryGateway;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.models.Diff;
@@ -50,7 +50,7 @@ public class ReviewService {
         log.info("Building review context for project={} mrIid={}",
                 request.projectId(), request.mrIid());
 
-        MergeRequest mr = repoGateway.getMergeRequest(request.projectId(), request.mrIid());
+        MergeRequest mr = repoGateway.getMergeRequest(request.projectId(), request.mrIid(), null);
         Path workspace = Path.of(System.getenv("workspace")).resolve(request.mrIid().toString());
 
         Path sourceRepoDir = null;
@@ -66,8 +66,8 @@ public class ReviewService {
             try {
                 CompletableFuture<Path> sourceFuture = CompletableFuture.supplyAsync(() -> {
                     try {
-                        return repoGateway.cloneProject(
-                                request.projectId(), request.sourceBranch(), workspace.resolve("from"));
+                        return repoGateway.cloneProject(workspace.resolve("from"),
+                                request.projectId(), request.sourceBranch(), null);
                     } catch (Exception e) {
                         throw new RuntimeException("Failed to clone source branch: " + request.sourceBranch(), e);
                     }
@@ -75,8 +75,8 @@ public class ReviewService {
 
                 CompletableFuture<Path> targetFuture = CompletableFuture.supplyAsync(() -> {
                     try {
-                        return repoGateway.cloneProject(
-                                request.projectId(), request.targetBranch(), workspace.resolve("to"));
+                        return repoGateway.cloneProject(workspace.resolve("to"),
+                                request.projectId(), request.targetBranch(),  null);
                     } catch (Exception e) {
                         throw new RuntimeException("Failed to clone target branch: " + request.targetBranch(), e);
                     }
@@ -129,7 +129,7 @@ public class ReviewService {
             log.info("Both AST graphs built successfully");
 
             log.info("Fetching MR diffs...");
-            List<Diff> rawDiffs = repoGateway.getMrDiffs(request.projectId(), request.mrIid());
+            List<Diff> rawDiffs = repoGateway.getMrDiffs(request.projectId(), request.mrIid(), null);
             List<ChangedLine> rawLines = diffParser.parse(rawDiffs);
             log.info("Parsed {} changed lines from {} file diffs", rawLines.size(), rawDiffs.size());
 
@@ -173,7 +173,7 @@ public class ReviewService {
      * Auto-detect branches from GitLab MR metadata.
      */
     public ReviewContext buildReviewContext(long projectId, long mrIid) throws Exception {
-        MergeRequest mr = repoGateway.getMergeRequest(projectId, mrIid);
+        MergeRequest mr = repoGateway.getMergeRequest(projectId, mrIid, null);
         return buildReviewContext(new ReviewRequest(
                 projectId, mrIid,
                 mr.getSourceBranch(),

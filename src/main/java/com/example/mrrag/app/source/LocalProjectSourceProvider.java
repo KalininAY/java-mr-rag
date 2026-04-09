@@ -1,5 +1,7 @@
 package com.example.mrrag.app.source;
 
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -27,6 +29,8 @@ import java.util.stream.Stream;
  * {@code projectRoot} with forward slashes — matching paths GitLab reports in diff output.
  */
 @Slf4j
+@Setter
+@NoArgsConstructor
 public class LocalProjectSourceProvider implements ProjectSourceProvider {
 
     protected static final java.util.Set<String> EXCLUDED_DIRS = java.util.Set.of(
@@ -34,7 +38,7 @@ public class LocalProjectSourceProvider implements ProjectSourceProvider {
             "generated", "generated-sources", "generated-test-sources"
     );
 
-    protected final Path projectRoot;
+    protected Path projectRoot;
 
     public LocalProjectSourceProvider(Path projectRoot) {
         this.projectRoot = projectRoot;

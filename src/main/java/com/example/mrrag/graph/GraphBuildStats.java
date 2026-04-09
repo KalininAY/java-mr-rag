@@ -22,7 +22,7 @@ import java.util.Map;
  * @param uniqueFiles number of unique source files indexed
  */
 public record GraphBuildStats(
-        Long projectId,
+        @jakarta.validation.constraints.NotBlank String projectId,
         String branchOrTag,
         String cloneDir,
         long buildMs,
