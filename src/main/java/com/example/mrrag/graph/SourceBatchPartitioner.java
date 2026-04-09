@@ -23,15 +23,18 @@ import java.util.concurrent.*;
  *       flat package-only strategy.</li>
  *   <li><b>Group by package</b> — both test and main files are grouped
  *       purely by their {@code package} declaration.  No Union-Find
- *       merging is applied to either pool — merging via imports collapses
- *       everything into one giant component.</li>
+ *       merging is applied to either pool.</li>
  *   <li><b>Batch assembly</b> — each test-package group becomes the seed
- *       of one batch.  The main-package groups directly imported by any
- *       file in that test group are appended (each main-package group is
- *       added at most once per batch).  Main packages not referenced by
- *       any test go into a trailing catch-all batch.</li>
+ *       of one batch ({@link LinkedHashSet} accumulator).  The main-package
+ *       groups directly imported by any file in that test group are added.
+ *       Because the accumulator is a {@code Set}, a main file referenced by
+ *       multiple test-packages in the same bin-pack bucket is stored only
+ *       once.</li>
  *   <li><b>Bin packing</b> — if the number of assembled batches exceeds
- *       {@code numBatches}, batches are merged via the LPT heuristic.</li>
+ *       {@code numBatches}, batches are merged via the LPT heuristic.
+ *       The merged bucket also uses a {@code LinkedHashSet} so that
+ *       duplicates introduced by merging two batches that share main-packages
+ *       are eliminated automatically.</li>
  * </ol>
  */
 @Slf4j
@@ -69,8 +72,9 @@ public class SourceBatchPartitioner {
         Map<String, List<ProjectSource>> mainByPkg = groupByPkg(mainSources, metaMap);
 
         // Step 4: assemble batches — test-pkg + directly imported main-pkgs
+        // LinkedHashSet ensures deduplication if two test-pkgs import the same main-pkg
         Set<String> referencedMainPkgs = new HashSet<>();
-        List<List<ProjectSource>> batches = new ArrayList<>();
+        List<Set<ProjectSource>> batches = new ArrayList<>();
 
         for (List<ProjectSource> testGroup : testByPkg.values()) {
             Set<String> neededMainPkgs = new LinkedHashSet<>();
@@ -81,7 +85,7 @@ public class SourceBatchPartitioner {
                     }
                 }
             }
-            List<ProjectSource> batch = new ArrayList<>(testGroup);
+            Set<ProjectSource> batch = new LinkedHashSet<>(testGroup);
             for (String pkg : neededMainPkgs) {
                 batch.addAll(mainByPkg.get(pkg));
                 referencedMainPkgs.add(pkg);
@@ -90,7 +94,7 @@ public class SourceBatchPartitioner {
         }
 
         // Step 5: catch-all for unreferenced main packages
-        List<ProjectSource> catchAll = new ArrayList<>();
+        Set<ProjectSource> catchAll = new LinkedHashSet<>();
         for (Map.Entry<String, List<ProjectSource>> e : mainByPkg.entrySet()) {
             if (!referencedMainPkgs.contains(e.getKey())) catchAll.addAll(e.getValue());
         }
@@ -130,7 +134,11 @@ public class SourceBatchPartitioner {
             Map<String, SourceMeta> metaMap,
             int numBatches) {
         Map<String, List<ProjectSource>> byPkg = groupByPkg(sources, metaMap);
-        List<List<ProjectSource>> result = binPack(new ArrayList<>(byPkg.values()), numBatches);
+        List<Set<ProjectSource>> pkgSets = new ArrayList<>();
+        for (List<ProjectSource> pkgFiles : byPkg.values()) {
+            pkgSets.add(new LinkedHashSet<>(pkgFiles));
+        }
+        List<List<ProjectSource>> result = binPack(pkgSets, numBatches);
         log.info("SourceBatchPartitioner (flat): {} files, {} pkgs -> {} batches",
                 sources.size(), byPkg.size(), result.size());
         return Collections.unmodifiableList(result);
@@ -190,28 +198,30 @@ public class SourceBatchPartitioner {
 
     // ------------------------------------------------------------------
     // Greedy bin-packing (LPT)
+    // Bucket accumulator is a LinkedHashSet — merging two batches that
+    // share main-package files automatically deduplicates them.
     // ------------------------------------------------------------------
 
     private static List<List<ProjectSource>> binPack(
-            List<List<ProjectSource>> slices, int numBatches) {
-        List<List<ProjectSource>> sorted = new ArrayList<>(slices);
+            List<Set<ProjectSource>> slices, int numBatches) {
+        List<Set<ProjectSource>> sorted = new ArrayList<>(slices);
         sorted.sort((a, b) -> Integer.compare(b.size(), a.size()));
 
         int n = Math.min(numBatches, sorted.size());
         PriorityQueue<Bucket> heap = new PriorityQueue<>(Comparator.comparingInt(b -> b.size));
         for (int i = 0; i < n; i++) heap.add(new Bucket());
 
-        for (List<ProjectSource> slice : sorted) {
+        for (Set<ProjectSource> slice : sorted) {
             Bucket lightest = heap.poll();
             assert lightest != null;
-            lightest.files.addAll(slice);
-            lightest.size += slice.size();
+            lightest.files.addAll(slice);   // LinkedHashSet.addAll deduplicates
+            lightest.size = lightest.files.size();
             heap.add(lightest);
         }
 
         return heap.stream()
                 .filter(b -> !b.files.isEmpty())
-                .map(b -> Collections.unmodifiableList(b.files))
+                .map(b -> Collections.unmodifiableList(new ArrayList<>(b.files)))
                 .toList();
     }
 
@@ -245,7 +255,7 @@ public class SourceBatchPartitioner {
     private record SourceMeta(String pkg, Set<String> importedPackages) {}
 
     private static final class Bucket {
-        final List<ProjectSource> files = new ArrayList<>();
+        final LinkedHashSet<ProjectSource> files = new LinkedHashSet<>();
         int size = 0;
     }
 }
