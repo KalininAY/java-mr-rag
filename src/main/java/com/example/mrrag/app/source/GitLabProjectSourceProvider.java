@@ -56,7 +56,8 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
 
     private final CodeRepositoryGateway gateway;
     private final long projectId;
-    private final String revision;
+    private final String branch;
+    private final String commit;
     private final String token;
     private final Boolean force;
 
@@ -64,11 +65,11 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
     public GitLabProjectSourceProvider(CodeRepositoryGateway gateway, RemoteProjectRequest req) {
         Validate.notNull(req, "RemoteProjectRequest is null");
         Validate.notNull(req.projectId(), "projectId is null");
-        Validate.notNull(req.revision(), "revision is null");
 
         this.gateway = gateway;
         this.projectId = req.projectId();
-        this.revision = req.revision();
+        this.branch = req.branch();
+        this.commit = req.commit();
         this.token = req.token();
         this.force = req.force();
     }
@@ -83,15 +84,15 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
      */
     @Override
     public ProjectKey projectKey() {
-        String fingerprint = isFullSha(revision) ? "git:" + revision : "ref:" + revision;
+        String fingerprint = isFullSha(branch) ? "git:" + branch : "ref:" + branch;
         return new ProjectKey(Path.of("/gitlab/" + projectId), fingerprint);
     }
 
     @Override
     public List<ProjectSource> getSources() {
-        log.info("Fetching .java tree from GitLab: projectId={}, revision={}", projectId, revision);
+        log.info("Fetching .java tree from GitLab: projectId={}, revision={}", projectId, branch);
 
-        List<TreeItem> tree = gateway.getRepositoryTree(projectId, revision, token);
+        List<TreeItem> tree = gateway.getRepositoryTree(projectId, branch, token);
 
         List<String> javaPaths = tree.stream()
                 .filter(item -> item.type().equals("BLOB"))
@@ -100,12 +101,12 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
                 .toList();
 
         log.info("Found {} .java files in project {} at ref={}",
-                javaPaths.size(), projectId, revision);
+                javaPaths.size(), projectId, branch);
 
         List<ProjectSource> sources = new ArrayList<>(javaPaths.size());
         for (String filePath : javaPaths) {
             try {
-                String fileContent = gateway.getFileContent(projectId, revision, filePath, token);
+                String fileContent = gateway.getFileContent(projectId, branch, filePath, token);
                 sources.add(new ProjectSource(filePath, fileContent));
             } catch (CodeRepositoryException ex) {
                 log.warn("Skipping {} — fetch error: {}", filePath, ex.getMessage());
@@ -113,7 +114,7 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
         }
 
         log.info("Loaded {}/{} .java files from GitLab (project={}, ref={})",
-                sources.size(), javaPaths.size(), projectId, revision);
+                sources.size(), javaPaths.size(), projectId, branch);
         return sources;
     }
 

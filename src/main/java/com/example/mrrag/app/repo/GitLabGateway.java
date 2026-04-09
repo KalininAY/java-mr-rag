@@ -132,28 +132,28 @@ public class GitLabGateway implements CodeRepositoryGateway {
     }
 
     @Override
-    public String getFileContent(long projectId, String revision, String filePath, String token) {
+    public String getFileContent(long projectId, String branch, String filePath, String token) {
         return gitLabApi(token, api -> {
             try (InputStream is = api.getRepositoryFileApi()
-                    .getRawFile(projectId, revision, filePath)) {
+                    .getRawFile(projectId, branch, filePath)) {
                 return new String(is.readAllBytes(), StandardCharsets.UTF_8);
             } catch (IOException | GitLabApiException e) {
-                throw new CodeRepositoryException("Failed to get content file projectID = '%s', ref = '%s', filePath = '%s'".formatted(projectId, revision, filePath), e);
+                throw new CodeRepositoryException("Failed to get content file projectID = '%s', ref = '%s', filePath = '%s'".formatted(projectId, branch, filePath), e);
             }
         });
     }
 
 
     @Override
-    public List<TreeItem> getRepositoryTree(long projectId, String revision, String token) {
+    public List<TreeItem> getRepositoryTree(long projectId, String branch, String token) {
         return gitLabApi(token, api -> {
             try {
                 List<org.gitlab4j.api.models.TreeItem> tree = api
                         .getRepositoryApi()
-                        .getTree(projectId, null, revision, true);
+                        .getTree(projectId, null, branch, true);
                 return TreeItem.listFrom(tree);
             } catch (GitLabApiException e) {
-                throw new CodeRepositoryException("Failed get repository tree projectID = '%s', ref = '%s'".formatted(projectId, revision), e);
+                throw new CodeRepositoryException("Failed get repository tree projectID = '%s', ref = '%s'".formatted(projectId, branch), e);
             }
         });
     }

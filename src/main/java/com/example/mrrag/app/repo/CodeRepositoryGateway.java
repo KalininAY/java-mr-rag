@@ -74,24 +74,24 @@ public interface CodeRepositoryGateway {
      * Получает сырой контент файла по пути и ревизии.
      *
      * @param projectId идентификатор проекта GitLab
-     * @param revision  ветка/тег/коммит (например, "main", "develop", коммит‑хэш)
+     * @param branch    ветка
      * @param filePath  относительный путь к файлу в репозитории
      * @param token     персональный токен; если null — используется токен по умолчанию
      * @return содержимое файла как строка (UTF‑8)
      * @throws CodeRepositoryException если получение содержимого файла не удалось
      */
-    String getFileContent(long projectId, String revision, String filePath, @Nullable String token);
+    String getFileContent(long projectId, String branch, String filePath, @Nullable String token);
 
 
     /**
      * Получает дерево репозитория (список файлов/директорий) по ревизии.
      *
      * @param projectId идентификатор проекта GitLab
-     * @param revision  ветка/тег/коммит
+     * @param branch    ветка
      * @param token     персональный токен; если null — используется токен по умолчанию
      * @return список TreeItem (имя, тип, путь и т.п.)
      */
-    List<TreeItem> getRepositoryTree(long projectId, String revision, @Nullable String token);
+    List<TreeItem> getRepositoryTree(long projectId, String branch, @Nullable String token);
 
     /**
      * Удаляет локальный клон репозитория.

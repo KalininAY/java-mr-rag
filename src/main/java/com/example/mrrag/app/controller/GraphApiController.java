@@ -86,7 +86,7 @@ public class GraphApiController {
                                 .filter(e -> e.kind() == k).count()));
 
         return new GraphBuildStats(
-                request.projectId().toString(), request.revision(),
+                request.projectId().toString(), request.branch(),
                 "(virtual — no clone)",
                 0, 0,
                 graph.nodes.size(), 0,
