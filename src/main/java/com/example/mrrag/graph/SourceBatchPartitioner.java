@@ -8,7 +8,6 @@ import java.io.BufferedReader;
 import java.io.StringReader;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.stream.Collectors;
 
 /**
  * Partitions a list of {@link ProjectSource} files into batches suitable for
@@ -19,24 +18,20 @@ import java.util.stream.Collectors;
  *   <li><b>Pre-scan</b> — each file is read line-by-line in parallel.
  *       Only the import block is scanned.</li>
  *   <li><b>Split by source root</b> — sources are separated into
- *       <em>test</em> ({@code src/test/java}) and <em>main</em>
- *       ({@code src/main/java}) pools.  If no test files are present the
- *       algorithm falls back to the flat package+Union-Find+bin-packing
- *       strategy.</li>
- *   <li><b>Test groups — by package only</b> — test files are grouped
- *       purely by their {@code package} declaration, without any
- *       Union-Find merging.  Tests in different packages are treated as
- *       independent; merging them via imports produces one giant component.</li>
- *   <li><b>Main groups — Union-Find</b> — main files are grouped using
- *       Union-Find over intra-main imports so that Spoon can resolve
- *       intra-main type references correctly.</li>
- *   <li><b>Batch assembly</b> — each test-group becomes the seed of one
- *       batch.  The <em>direct</em> main-group dependencies of that
- *       test-group (main packages directly imported by any file in the
- *       test-group) are appended to the batch.  Main files not referenced
- *       by any test-group go into a trailing catch-all batch.</li>
+ *       <em>test</em> ({@code src/test/java}) and <em>main</em> pools.
+ *       If no test files are present the algorithm falls back to the
+ *       flat package-only strategy.</li>
+ *   <li><b>Group by package</b> — both test and main files are grouped
+ *       purely by their {@code package} declaration.  No Union-Find
+ *       merging is applied to either pool — merging via imports collapses
+ *       everything into one giant component.</li>
+ *   <li><b>Batch assembly</b> — each test-package group becomes the seed
+ *       of one batch.  The main-package groups directly imported by any
+ *       file in that test group are appended (each main-package group is
+ *       added at most once per batch).  Main packages not referenced by
+ *       any test go into a trailing catch-all batch.</li>
  *   <li><b>Bin packing</b> — if the number of assembled batches exceeds
- *       {@code numBatches}, the smallest batches are merged via LPT.</li>
+ *       {@code numBatches}, batches are merged via the LPT heuristic.</li>
  * </ol>
  */
 @Slf4j
@@ -69,93 +64,61 @@ public class SourceBatchPartitioner {
             return flatPartition(sources, metaMap, numBatches);
         }
 
-        // Step 3a: group test files by package only (no Union-Find)
-        Map<String, List<ProjectSource>> testByPkg = new LinkedHashMap<>();
-        for (ProjectSource src : testSources) {
-            String pkg = metaMap.get(src.path()).pkg;
-            testByPkg.computeIfAbsent(pkg, k -> new ArrayList<>()).add(src);
-        }
-        List<List<ProjectSource>> testGroups = new ArrayList<>(testByPkg.values());
+        // Step 3: group both pools by package only (no Union-Find)
+        Map<String, List<ProjectSource>> testByPkg = groupByPkg(testSources, metaMap);
+        Map<String, List<ProjectSource>> mainByPkg = groupByPkg(mainSources, metaMap);
 
-        // Step 3b: group main files via Union-Find on intra-main imports
-        List<List<ProjectSource>> mainGroups = buildComponents(mainSources, metaMap);
-
-        // Step 4: package -> mainGroup index
-        Map<String, Integer> pkgToMainGroup = new HashMap<>();
-        for (int gi = 0; gi < mainGroups.size(); gi++) {
-            for (ProjectSource src : mainGroups.get(gi)) {
-                pkgToMainGroup.put(metaMap.get(src.path()).pkg, gi);
-            }
-        }
-
-        // Step 5: assemble batches — test group + directly imported main groups
-        Set<Integer> referencedMainGroups = new HashSet<>();
+        // Step 4: assemble batches — test-pkg + directly imported main-pkgs
+        Set<String> referencedMainPkgs = new HashSet<>();
         List<List<ProjectSource>> batches = new ArrayList<>();
 
-        for (List<ProjectSource> testGroup : testGroups) {
-            Set<Integer> neededMainGroupIds = new LinkedHashSet<>();
+        for (List<ProjectSource> testGroup : testByPkg.values()) {
+            Set<String> neededMainPkgs = new LinkedHashSet<>();
             for (ProjectSource testFile : testGroup) {
                 for (String importedPkg : metaMap.get(testFile.path()).importedPackages) {
-                    Integer mgId = pkgToMainGroup.get(importedPkg);
-                    if (mgId != null) neededMainGroupIds.add(mgId);
+                    if (mainByPkg.containsKey(importedPkg)) {
+                        neededMainPkgs.add(importedPkg);
+                    }
                 }
             }
             List<ProjectSource> batch = new ArrayList<>(testGroup);
-            for (int mgId : neededMainGroupIds) {
-                batch.addAll(mainGroups.get(mgId));
-                referencedMainGroups.add(mgId);
+            for (String pkg : neededMainPkgs) {
+                batch.addAll(mainByPkg.get(pkg));
+                referencedMainPkgs.add(pkg);
             }
             batches.add(batch);
         }
 
-        // Step 6: catch-all for unreferenced main files
+        // Step 5: catch-all for unreferenced main packages
         List<ProjectSource> catchAll = new ArrayList<>();
-        for (int gi = 0; gi < mainGroups.size(); gi++) {
-            if (!referencedMainGroups.contains(gi)) catchAll.addAll(mainGroups.get(gi));
+        for (Map.Entry<String, List<ProjectSource>> e : mainByPkg.entrySet()) {
+            if (!referencedMainPkgs.contains(e.getKey())) catchAll.addAll(e.getValue());
         }
         if (!catchAll.isEmpty()) batches.add(catchAll);
 
-        // Step 7: bin-pack down to numBatches if needed
+        // Step 6: bin-pack down to numBatches
         List<List<ProjectSource>> result = binPack(batches, numBatches);
 
         log.info("SourceBatchPartitioner: {} test + {} main files, "
-                + "{} test-pkgs, {} main-groups -> {} batches",
+                + "{} test-pkgs, {} main-pkgs -> {} batches (total files in batches: {})",
                 testSources.size(), mainSources.size(),
-                testGroups.size(), mainGroups.size(), result.size());
+                testByPkg.size(), mainByPkg.size(), result.size(),
+                result.stream().mapToInt(List::size).sum());
         return Collections.unmodifiableList(result);
     }
 
     // ------------------------------------------------------------------
-    // Union-Find component builder (main pool only)
+    // Group by package (no merging)
     // ------------------------------------------------------------------
 
-    private static List<List<ProjectSource>> buildComponents(
+    private static Map<String, List<ProjectSource>> groupByPkg(
             List<ProjectSource> pool, Map<String, SourceMeta> metaMap) {
-
-        if (pool.isEmpty()) return List.of();
-
-        Set<String> poolPackages = pool.stream()
-                .map(s -> metaMap.get(s.path()).pkg)
-                .collect(Collectors.toSet());
-
-        UnionFind<String> uf = new UnionFind<>();
-        poolPackages.forEach(uf::add);
-
+        Map<String, List<ProjectSource>> byPkg = new LinkedHashMap<>();
         for (ProjectSource src : pool) {
-            SourceMeta meta = metaMap.get(src.path());
-            for (String importedPkg : meta.importedPackages) {
-                if (poolPackages.contains(importedPkg)) {
-                    uf.union(meta.pkg, importedPkg);
-                }
-            }
+            String pkg = metaMap.get(src.path()).pkg;
+            byPkg.computeIfAbsent(pkg, k -> new ArrayList<>()).add(src);
         }
-
-        Map<String, List<ProjectSource>> byRoot = new LinkedHashMap<>();
-        for (ProjectSource src : pool) {
-            String root = uf.find(metaMap.get(src.path()).pkg);
-            byRoot.computeIfAbsent(root, k -> new ArrayList<>()).add(src);
-        }
-        return new ArrayList<>(byRoot.values());
+        return byPkg;
     }
 
     // ------------------------------------------------------------------
@@ -166,11 +129,10 @@ public class SourceBatchPartitioner {
             List<ProjectSource> sources,
             Map<String, SourceMeta> metaMap,
             int numBatches) {
-
-        List<List<ProjectSource>> components = buildComponents(sources, metaMap);
-        List<List<ProjectSource>> result = binPack(components, numBatches);
-        log.info("SourceBatchPartitioner (flat): {} files, {} components -> {} batches",
-                sources.size(), components.size(), result.size());
+        Map<String, List<ProjectSource>> byPkg = groupByPkg(sources, metaMap);
+        List<List<ProjectSource>> result = binPack(new ArrayList<>(byPkg.values()), numBatches);
+        log.info("SourceBatchPartitioner (flat): {} files, {} pkgs -> {} batches",
+                sources.size(), byPkg.size(), result.size());
         return Collections.unmodifiableList(result);
     }
 
@@ -232,7 +194,6 @@ public class SourceBatchPartitioner {
 
     private static List<List<ProjectSource>> binPack(
             List<List<ProjectSource>> slices, int numBatches) {
-
         List<List<ProjectSource>> sorted = new ArrayList<>(slices);
         sorted.sort((a, b) -> Integer.compare(b.size(), a.size()));
 
