@@ -14,36 +14,35 @@ import java.util.stream.Collectors;
  * Partitions a list of {@link ProjectSource} files into batches suitable for
  * parallel {@link spoon.Launcher} invocations.
  *
- * <h2>Algorithm</h2>
+ * <h2>Algorithm — test-centric strategy</h2>
  * <ol>
  *   <li><b>Pre-scan</b> — each file is read line-by-line in parallel via
- *       {@link ForkJoinPool#commonPool()}.  Only the import block is processed.</li>
- *   <li><b>Package grouping</b> — files that share the same package are kept
- *       together; they can reference each other without imports.</li>
- *   <li><b>Union-Find</b> — cross-package {@code import} statements that
- *       reference other project packages merge those packages into a single
- *       component.  External packages are ignored.</li>
- *   <li><b>Oversized-component splitting</b> — if a component is larger than
- *       {@code ceil(total/N) * OVERSIZE_FACTOR} it is sub-partitioned by
- *       package into slices of the target size.  Files whose imports cross a
- *       slice boundary are duplicated into both neighbouring slices so Spoon
- *       can still resolve the cross-slice reference.  This bounds the maximum
- *       batch size while tolerating a small amount of duplication.</li>
- *   <li><b>Bin packing</b> — resulting slices are sorted descending by size
- *       and assigned to the {@code numBatches} least-loaded bucket (LPT
- *       heuristic, within 4/3 of optimal).</li>
+ *       {@link ForkJoinPool#commonPool()}.  Only the import block is scanned.</li>
+ *   <li><b>Split by source root</b> — sources are separated into
+ *       <em>test</em> ({@code src/test/java}) and <em>main</em>
+ *       ({@code src/main/java}) pools.  If no test files are present the
+ *       algorithm falls back to the flat package+Union-Find+bin-packing
+ *       strategy.</li>
+ *   <li><b>Independent Union-Find per pool</b> — test files are grouped into
+ *       test-components; main files are grouped into main-components.  Only
+ *       intra-pool imports drive the merges, so the two pools never collapse
+ *       into one giant component.</li>
+ *   <li><b>Batch assembly</b> — each test-component becomes the seed of one
+ *       batch.  The <em>direct</em> main-component dependencies of that
+ *       test-component (i.e. main packages directly imported by any file in
+ *       the test-component) are appended to the batch.  Main files that are
+ *       not referenced by any test-component are collected into a trailing
+ *       catch-all batch.</li>
+ *   <li><b>Bin packing</b> — if the number of assembled batches exceeds
+ *       {@code numBatches}, the smallest batches are merged greedily.</li>
  * </ol>
  */
 @Slf4j
 @UtilityClass
 public class SourceBatchPartitioner {
 
-    /**
-     * A component whose size exceeds {@code ceil(total/N) * OVERSIZE_FACTOR}
-     * is eligible for sub-partitioning.  Value 1.5 allows a 50 %% overage
-     * before we start splitting.
-     */
-    private static final double OVERSIZE_FACTOR = 1.5;
+    private static final String TEST_ROOT = "src/test/java";
+    private static final String MAIN_ROOT = "src/main/java";
 
     // ------------------------------------------------------------------
     // Public API
@@ -53,42 +52,131 @@ public class SourceBatchPartitioner {
         if (sources.isEmpty()) return List.of();
         if (numBatches <= 1)   return List.of(List.copyOf(sources));
 
-        // Step 1: scan package declarations and imports in parallel
+        // Step 1: scan all files in parallel
         Map<String, SourceMeta> metaMap = scanAll(sources);
 
-        // Step 2: build Union-Find over packages
-        Set<String> knownPackages = metaMap.values().stream()
-                .map(m -> m.pkg)
+        // Step 2: split into test / main pools
+        List<ProjectSource> testSources = new ArrayList<>();
+        List<ProjectSource> mainSources = new ArrayList<>();
+        for (ProjectSource src : sources) {
+            if (src.path().contains(TEST_ROOT)) testSources.add(src);
+            else                                mainSources.add(src);
+        }
+
+        if (testSources.isEmpty()) {
+            // Fallback: no tests — use flat strategy
+            log.info("SourceBatchPartitioner: no test sources found, using flat strategy");
+            return flatPartition(sources, metaMap, numBatches);
+        }
+
+        // Step 3: Union-Find within each pool independently
+        List<List<ProjectSource>> testGroups = buildComponents(testSources, metaMap);
+        List<List<ProjectSource>> mainGroups = buildComponents(mainSources, metaMap);
+
+        // Step 4: build package -> mainGroup index
+        // key: package name, value: index into mainGroups
+        Map<String, Integer> pkgToMainGroup = new HashMap<>();
+        for (int gi = 0; gi < mainGroups.size(); gi++) {
+            for (ProjectSource src : mainGroups.get(gi)) {
+                pkgToMainGroup.put(metaMap.get(src.path()).pkg, gi);
+            }
+        }
+
+        // Step 5: for each test group, collect directly imported main groups
+        Set<Integer> referencedMainGroups = new HashSet<>();
+        List<List<ProjectSource>> batches = new ArrayList<>();
+
+        for (List<ProjectSource> testGroup : testGroups) {
+            Set<Integer> neededMainGroupIds = new LinkedHashSet<>();
+            for (ProjectSource testFile : testGroup) {
+                for (String importedPkg : metaMap.get(testFile.path()).importedPackages) {
+                    Integer mgId = pkgToMainGroup.get(importedPkg);
+                    if (mgId != null) neededMainGroupIds.add(mgId);
+                }
+            }
+
+            List<ProjectSource> batch = new ArrayList<>(testGroup);
+            for (int mgId : neededMainGroupIds) {
+                batch.addAll(mainGroups.get(mgId));
+                referencedMainGroups.add(mgId);
+            }
+            batches.add(batch);
+        }
+
+        // Step 6: collect unreferenced main files into a catch-all batch
+        List<ProjectSource> catchAll = new ArrayList<>();
+        for (int gi = 0; gi < mainGroups.size(); gi++) {
+            if (!referencedMainGroups.contains(gi)) {
+                catchAll.addAll(mainGroups.get(gi));
+            }
+        }
+        if (!catchAll.isEmpty()) batches.add(catchAll);
+
+        // Step 7: bin-pack down to numBatches if needed
+        List<List<ProjectSource>> result = binPack(batches, numBatches);
+
+        log.info("SourceBatchPartitioner: {} test + {} main files, "
+                + "{} test-groups, {} main-groups -> {} batches",
+                testSources.size(), mainSources.size(),
+                testGroups.size(), mainGroups.size(), result.size());
+        return Collections.unmodifiableList(result);
+    }
+
+    // ------------------------------------------------------------------
+    // Union-Find component builder (shared by both pools)
+    // ------------------------------------------------------------------
+
+    /**
+     * Groups {@code pool} files into connected components using Union-Find
+     * over packages.  Only imports that reference other packages <em>within
+     * the same pool</em> drive merges — cross-pool imports are ignored.
+     *
+     * @return list of components; each component is a non-empty list of files
+     */
+    private static List<List<ProjectSource>> buildComponents(
+            List<ProjectSource> pool, Map<String, SourceMeta> metaMap) {
+
+        if (pool.isEmpty()) return List.of();
+
+        Set<String> poolPackages = pool.stream()
+                .map(s -> metaMap.get(s.path()).pkg)
                 .collect(Collectors.toSet());
 
         UnionFind<String> uf = new UnionFind<>();
-        knownPackages.forEach(uf::add);
+        poolPackages.forEach(uf::add);
 
-        for (SourceMeta meta : metaMap.values()) {
+        for (ProjectSource src : pool) {
+            SourceMeta meta = metaMap.get(src.path());
             for (String importedPkg : meta.importedPackages) {
-                if (knownPackages.contains(importedPkg)) {
+                if (poolPackages.contains(importedPkg)) {
                     uf.union(meta.pkg, importedPkg);
                 }
             }
         }
 
-        // Step 3: group files by component representative
-        Map<String, List<ProjectSource>> byComponent = new LinkedHashMap<>();
-        for (ProjectSource src : sources) {
-            String pkg  = metaMap.get(src.path()).pkg;
-            String root = uf.find(pkg);
-            byComponent.computeIfAbsent(root, k -> new ArrayList<>()).add(src);
+        Map<String, List<ProjectSource>> byRoot = new LinkedHashMap<>();
+        for (ProjectSource src : pool) {
+            String root = uf.find(metaMap.get(src.path()).pkg);
+            byRoot.computeIfAbsent(root, k -> new ArrayList<>()).add(src);
         }
 
-        // Step 4: split oversized components into smaller slices
-        int targetSize = (int) Math.ceil((double) sources.size() / numBatches);
-        List<List<ProjectSource>> slices = splitComponents(byComponent, metaMap, targetSize);
+        return new ArrayList<>(byRoot.values());
+    }
 
-        // Step 5: greedy bin-packing into numBatches buckets
-        List<List<ProjectSource>> result = binPack(slices, numBatches);
+    // ------------------------------------------------------------------
+    // Fallback: flat strategy (no test sources)
+    // ------------------------------------------------------------------
 
-        log.info("SourceBatchPartitioner: {} files, {} packages, {} components, {} slices -> {} batches",
-                sources.size(), knownPackages.size(), byComponent.size(), slices.size(), result.size());
+    private static List<List<ProjectSource>> flatPartition(
+            List<ProjectSource> sources,
+            Map<String, SourceMeta> metaMap,
+            int numBatches) {
+
+        List<List<ProjectSource>> components = buildComponents(sources, metaMap);
+        List<List<ProjectSource>> result = binPack(components, numBatches);
+
+        log.info("SourceBatchPartitioner (flat): {} files, {} components -> {} batches",
+                sources.size(), components.size(), result.size());
         return Collections.unmodifiableList(result);
     }
 
@@ -106,8 +194,7 @@ public class SourceBatchPartitioner {
 
         Map<String, SourceMeta> result = new ConcurrentHashMap<>(sources.size());
         for (int i = 0; i < sources.size(); i++) {
-            SourceMeta m = futures.get(i).join();
-            result.put(sources.get(i).path(), m);
+            result.put(sources.get(i).path(), futures.get(i).join());
         }
         return result;
     }
@@ -120,13 +207,17 @@ public class SourceBatchPartitioner {
             String line;
             while ((line = reader.readLine()) != null) {
                 String trimmed = line.strip();
-                if (trimmed.isEmpty() || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) continue;
+                if (trimmed.isEmpty()
+                        || trimmed.startsWith("//")
+                        || trimmed.startsWith("/*")
+                        || trimmed.startsWith("*")) continue;
                 if (trimmed.startsWith("package ")) {
                     pkg = trimmed.substring(8).replace(";", "").strip();
                     continue;
                 }
                 if (trimmed.startsWith("import ")) {
-                    String fqn = trimmed.substring(7).replace("static ", "").replace(";", "").strip();
+                    String fqn = trimmed.substring(7)
+                            .replace("static ", "").replace(";", "").strip();
                     int dot = fqn.lastIndexOf('.');
                     if (dot > 0) {
                         String importedPkg = fqn.substring(0, dot);
@@ -139,124 +230,24 @@ public class SourceBatchPartitioner {
         } catch (Exception e) {
             log.warn("SourceBatchPartitioner: failed to scan {}: {}", src.path(), e.getMessage());
         }
-
         return new SourceMeta(pkg, importedPackages);
     }
 
     // ------------------------------------------------------------------
-    // Step 4: oversized-component splitting
+    // Greedy bin-packing (LPT)
     // ------------------------------------------------------------------
 
     /**
-     * Iterates over all components.  Components whose size does not exceed
-     * {@code targetSize * OVERSIZE_FACTOR} are emitted as-is.  Oversized
-     * components are split by package into slices of approximately
-     * {@code targetSize} files.
-     *
-     * <p>Border files (files whose imported packages belong to a different
-     * slice) are duplicated into both the owning slice and every neighbouring
-     * slice they reference.  This allows Spoon to resolve cross-slice
-     * references at the cost of parsing a small number of files twice.
+     * Assigns {@code slices} to at most {@code numBatches} buckets using the
+     * Longest Processing Time heuristic — sort descending, always fill the
+     * least-loaded bucket next.  If {@code slices.size() <= numBatches} each
+     * slice becomes its own batch (no merging needed).
      */
-    private static List<List<ProjectSource>> splitComponents(
-            Map<String, List<ProjectSource>> byComponent,
-            Map<String, SourceMeta> metaMap,
-            int targetSize) {
+    private static List<List<ProjectSource>> binPack(
+            List<List<ProjectSource>> slices, int numBatches) {
 
-        int threshold = (int) Math.ceil(targetSize * OVERSIZE_FACTOR);
-        List<List<ProjectSource>> result = new ArrayList<>();
-
-        for (List<ProjectSource> component : byComponent.values()) {
-            if (component.size() <= threshold) {
-                result.add(component);
-                continue;
-            }
-
-            // Group files of this component by package
-            Map<String, List<ProjectSource>> byPkg = new LinkedHashMap<>();
-            for (ProjectSource src : component) {
-                String pkg = metaMap.get(src.path()).pkg;
-                byPkg.computeIfAbsent(pkg, k -> new ArrayList<>()).add(src);
-            }
-
-            // Assign packages to slices sequentially until each slice is full
-            List<List<ProjectSource>> componentSlices = new ArrayList<>();
-            List<ProjectSource> current = new ArrayList<>();
-            for (List<ProjectSource> pkgFiles : byPkg.values()) {
-                if (!current.isEmpty() && current.size() + pkgFiles.size() > threshold) {
-                    componentSlices.add(current);
-                    current = new ArrayList<>();
-                }
-                current.addAll(pkgFiles);
-            }
-            if (!current.isEmpty()) componentSlices.add(current);
-
-            if (componentSlices.size() <= 1) {
-                // Could not split meaningfully — emit as one slice
-                result.add(component);
-                continue;
-            }
-
-            // Build a reverse index: path -> slice index
-            Map<String, Integer> pathToSlice = new HashMap<>();
-            for (int si = 0; si < componentSlices.size(); si++) {
-                for (ProjectSource src : componentSlices.get(si)) {
-                    pathToSlice.put(src.path(), si);
-                }
-            }
-
-            // Build a package -> slice index map for quick cross-slice lookup
-            Map<String, Integer> pkgToSlice = new HashMap<>();
-            for (int si = 0; si < componentSlices.size(); si++) {
-                for (ProjectSource src : componentSlices.get(si)) {
-                    pkgToSlice.put(metaMap.get(src.path()).pkg, si);
-                }
-            }
-
-            // Build a path -> ProjectSource lookup for duplication
-            Map<String, ProjectSource> pathToSrc = new HashMap<>();
-            for (ProjectSource src : component) pathToSrc.put(src.path(), src);
-
-            // Duplicate border files into neighbouring slices
-            // A file is a border file if it imports a package assigned to a
-            // different slice.  We add it (read-only duplicate) to that slice.
-            List<Set<String>> extras = new ArrayList<>();
-            for (int si = 0; si < componentSlices.size(); si++) extras.add(new LinkedHashSet<>());
-
-            for (ProjectSource src : component) {
-                int ownerSlice = pathToSlice.get(src.path());
-                SourceMeta meta = metaMap.get(src.path());
-                for (String importedPkg : meta.importedPackages) {
-                    Integer targetSlice = pkgToSlice.get(importedPkg);
-                    if (targetSlice != null && targetSlice != ownerSlice) {
-                        // Duplicate this file into the slice that owns the imported package
-                        extras.get(targetSlice).add(src.path());
-                    }
-                }
-            }
-
-            for (int si = 0; si < componentSlices.size(); si++) {
-                List<ProjectSource> slice = new ArrayList<>(componentSlices.get(si));
-                for (String extraPath : extras.get(si)) {
-                    slice.add(pathToSrc.get(extraPath));
-                }
-                result.add(slice);
-            }
-
-            log.debug("SourceBatchPartitioner: oversized component ({} files) split into {} slices",
-                    component.size(), componentSlices.size());
-        }
-
-        return result;
-    }
-
-    // ------------------------------------------------------------------
-    // Step 5: greedy bin-packing
-    // ------------------------------------------------------------------
-
-    private static List<List<ProjectSource>> binPack(List<List<ProjectSource>> slices, int numBatches) {
         List<List<ProjectSource>> sorted = new ArrayList<>(slices);
-        sorted.sort((l1, l2) -> Integer.compare(l2.size(), l1.size()));
+        sorted.sort((a, b) -> Integer.compare(b.size(), a.size()));
 
         int n = Math.min(numBatches, sorted.size());
         PriorityQueue<Bucket> heap = new PriorityQueue<>(Comparator.comparingInt(b -> b.size));
@@ -286,16 +277,16 @@ public class SourceBatchPartitioner {
     }
 
     private static boolean isExternal(String pkg) {
-        return pkg.startsWith("java.")        ||
-               pkg.startsWith("javax.")       ||
-               pkg.startsWith("jakarta.")     ||
-               pkg.startsWith("org.")         ||
-               pkg.startsWith("io.")          ||
-               pkg.startsWith("com.google.")  ||
+        return pkg.startsWith("java.")          ||
+               pkg.startsWith("javax.")         ||
+               pkg.startsWith("jakarta.")       ||
+               pkg.startsWith("org.")           ||
+               pkg.startsWith("io.")            ||
+               pkg.startsWith("com.google.")    ||
                pkg.startsWith("com.fasterxml.") ||
-               pkg.startsWith("lombok")       ||
-               pkg.startsWith("reactor.")     ||
-               pkg.startsWith("kotlin.")      ||
+               pkg.startsWith("lombok")         ||
+               pkg.startsWith("reactor.")       ||
+               pkg.startsWith("kotlin.")        ||
                pkg.startsWith("scala.");
     }
 
