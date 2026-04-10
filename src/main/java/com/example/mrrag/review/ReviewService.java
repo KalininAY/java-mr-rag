@@ -4,9 +4,6 @@ import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
 import com.example.mrrag.app.controller.requestDTO.ReviewRequest;
 import com.example.mrrag.app.service.AstGraphService;
 import com.example.mrrag.app.source.GitLabLocalSourceProvider;
-import com.example.mrrag.app.source.LocalProjectSourceProvider;
-import com.example.mrrag.app.source.ProjectSource;
-import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
@@ -17,7 +14,6 @@ import org.gitlab4j.api.models.Diff;
 import org.gitlab4j.api.models.MergeRequest;
 import org.springframework.stereotype.Service;
 
-import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;

@@ -6,11 +6,11 @@ import com.example.mrrag.review.model.ChangeGroupMarkdown;
 import com.example.mrrag.review.model.ReviewContext;
 import com.example.mrrag.review.ReviewService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
@@ -32,6 +32,13 @@ public class MrReviewController {
                     полный контекст ревью: список групп изменений, обогащённых AST-контекстом из графа.
                     Возвращает структурированный JSON с информацией об изменениях и их зависимостях.
                     """,
+            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    required = true,
+                    content = @Content(
+                            mediaType = MediaType.APPLICATION_JSON_VALUE,
+                            schema = @Schema(implementation = ReviewRequest.class)
+                    )
+            ),
             responses = {
                     @ApiResponse(
                             responseCode = "200",
@@ -44,7 +51,7 @@ public class MrReviewController {
     )
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
-    public ReviewContext review(@RequestBody ReviewRequest request) throws Exception {
+    public ReviewContext review(@RequestBody @Valid ReviewRequest request) {
         ReviewContext reviewContext = reviewService.buildReviewContext(request);
         String s = renderContext(reviewContext);
         return reviewContext;
@@ -57,10 +64,13 @@ public class MrReviewController {
                     Удобно для быстрой инспекции результата ревью в человекочитаемом формате
                     без разбора JSON-структуры.
                     """,
-            parameters = {
-                    @Parameter(name = "projectId", description = "Числовой ID проекта в GitLab", example = "123", required = true),
-                    @Parameter(name = "mrIid", description = "IID мёрж-реквеста", example = "42", required = true)
-            },
+            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    required = true,
+                    content = @Content(
+                            mediaType = MediaType.APPLICATION_JSON_VALUE,
+                            schema = @Schema(implementation = ReviewRequest.class)
+                    )
+            ),
             responses = {
                     @ApiResponse(responseCode = "200", description = "Markdown-представление контекста ревью",
                             content = @Content(mediaType = MediaType.TEXT_PLAIN_VALUE, schema = @Schema(type = "string"))),
@@ -71,7 +81,7 @@ public class MrReviewController {
     @GetMapping(value = "markdown",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.TEXT_PLAIN_VALUE)
-    public String reviewMarkdown(@RequestBody ReviewRequest request) throws Exception {
+    public String reviewMarkdown(@RequestBody @Valid ReviewRequest request) {
         return renderContext(reviewService.buildReviewContext(request));
     }
 
