@@ -1,14 +1,13 @@
 package com.example.mrrag.app.controller;
 
-import com.example.mrrag.app.controller.requestDTO.CloneProjectRequest;
 import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
-import com.example.mrrag.app.source.CloneProjectSourceProvider;
+import com.example.mrrag.app.source.GitLabLocalSourceProvider;
 import com.example.mrrag.graph.GraphBuildStats;
 import com.example.mrrag.app.service.AstGraphService;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
-import com.example.mrrag.app.source.GitLabProjectSourceProvider;
+import com.example.mrrag.app.source.GitLabRemoteSourceProvider;
 import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.app.repo.CodeRepositoryGateway;
 import io.swagger.v3.oas.annotations.Operation;
@@ -72,7 +71,7 @@ public class GraphApiController {
     public GraphBuildStats remote(@RequestBody @Valid RemoteProjectRequest request) throws Exception {
 
         ProjectSourceProvider provider =
-                new GitLabProjectSourceProvider(gatewayRepo, request);
+                new GitLabRemoteSourceProvider(gatewayRepo, request);
 
         ProjectGraph graph = graphService.buildGraph(provider);
 
@@ -86,7 +85,7 @@ public class GraphApiController {
                                 .filter(e -> e.kind() == k).count()));
 
         return new GraphBuildStats(
-                request.projectId().toString(), request.branch(),
+                request.owner() + " " + request.repo(), request.branch(),
                 "(virtual — no clone)",
                 0, 0,
                 graph.nodes.size(), 0,
@@ -98,14 +97,14 @@ public class GraphApiController {
     @Operation(
             summary = "Клонировать репозиторий и построить граф",
             description = """
-                    Клонирует Git-репозиторий в рабочее пространство и строит\s
-                    AST-граф Java-проекта с использованием JGit.
-                   \s""",
+                     Клонирует Git-репозиторий в рабочее пространство и строит\s
+                     AST-граф Java-проекта с использованием JGit.
+                    \s""",
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
                     required = true,
                     content = @Content(
                             mediaType = MediaType.APPLICATION_JSON_VALUE,
-                            schema = @Schema(implementation = CloneProjectRequest.class)
+                            schema = @Schema(implementation = RemoteProjectRequest.class)
                     )
             ),
             responses = {
@@ -122,10 +121,10 @@ public class GraphApiController {
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public GraphBuildStats local(@RequestBody @Valid CloneProjectRequest request) throws Exception {
+    public GraphBuildStats local(@RequestBody @Valid RemoteProjectRequest request) throws Exception {
 
         ProjectSourceProvider sourceProvider =
-                new CloneProjectSourceProvider(gatewayRepo, request);
+                new GitLabLocalSourceProvider(gatewayRepo, request);
 
         ProjectGraph graph = graphService.buildGraph(sourceProvider);
 
@@ -144,7 +143,7 @@ public class GraphApiController {
 
 
         return new GraphBuildStats(
-                request.repoUrl(), request.branch(),
+                request.owner(), request.branch(),
                 "workspaceDir",
                 0, 0,
                 graph.nodes.size(), 0,

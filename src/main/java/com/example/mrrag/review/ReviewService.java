@@ -1,7 +1,11 @@
 package com.example.mrrag.review;
 
+import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
+import com.example.mrrag.app.controller.requestDTO.ReviewRequest;
 import com.example.mrrag.app.service.AstGraphService;
+import com.example.mrrag.app.source.GitLabLocalSourceProvider;
 import com.example.mrrag.app.source.LocalProjectSourceProvider;
+import com.example.mrrag.app.source.ProjectSource;
 import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
@@ -46,138 +50,88 @@ public class ReviewService {
     private final ChangeGrouper changeGrouper;
     private final ChangeGroupEnrichmentPort changeGroupEnrichment;
 
-    public ReviewContext buildReviewContext(ReviewRequest request) throws Exception {
+    public ReviewContext buildReviewContext(ReviewRequest request) {
         log.info("Building review context for project={} mrIid={}",
-                request.projectId(), request.mrIid());
+                request.owner() + "/" + request.repo(), request.mrIid());
 
-        MergeRequest mr = repoGateway.getMergeRequest(request.projectId(), request.mrIid(), null);
-        Path workspace = Path.of(System.getenv("workspace")).resolve(request.mrIid().toString());
+        MergeRequest mr = repoGateway.getMergeRequest(request.owner(), request.repo(), request.mrIid(), null);
 
-        Path sourceRepoDir = null;
-        Path targetRepoDir = null;
-        ProjectSourceProvider sourceProvider = null;
-        ProjectSourceProvider targetProvider = null;
+        // --- Parallel clone ---
+        log.info("Cloning source branch '{}' and target branch '{}' in parallel...",
+                mr.getSourceBranch(), mr.getTargetBranch());
+
+
+        GitLabLocalSourceProvider sourceProvider = new GitLabLocalSourceProvider(
+                repoGateway,
+                new RemoteProjectRequest(request.owner(), request.repo(), mr.getSourceBranch(), null, null, true));
+        GitLabLocalSourceProvider targetProvider = new GitLabLocalSourceProvider(
+                repoGateway,
+                new RemoteProjectRequest(request.owner(), request.repo(), mr.getTargetBranch(), null, null, true));
+
+
+        log.info("Both branches cloned successfully: source={}, target={}",
+                mr.getSourceBranch(), mr.getSourceBranch());
+        // --- Parallel AST graph build ---
+        log.info("Building AST graphs in parallel...");
+
+
+        ExecutorService graphExecutor = Executors.newFixedThreadPool(2);
+        ProjectGraph sourceGraph;
+        ProjectGraph targetGraph;
         try {
-            // --- Parallel clone ---
-            log.info("Cloning source branch '{}' and target branch '{}' in parallel...",
-                    request.sourceBranch(), request.targetBranch());
+            CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return astGraphService.buildGraph(sourceProvider);
+                } catch (Exception e) {
+                    throw new RuntimeException("Failed to build source AST graph", e);
+                }
+            }, graphExecutor);
 
-            ExecutorService cloneExecutor = Executors.newFixedThreadPool(2);
-            try {
-                CompletableFuture<Path> sourceFuture = CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return repoGateway.cloneProject(workspace.resolve("from"),
-                                request.projectId(), request.sourceBranch(), null);
-                    } catch (Exception e) {
-                        throw new RuntimeException("Failed to clone source branch: " + request.sourceBranch(), e);
-                    }
-                }, cloneExecutor);
+            CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return astGraphService.buildGraph(targetProvider);
+                } catch (Exception e) {
+                    throw new RuntimeException("Failed to build target AST graph", e);
+                }
+            }, graphExecutor);
 
-                CompletableFuture<Path> targetFuture = CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return repoGateway.cloneProject(workspace.resolve("to"),
-                                request.projectId(), request.targetBranch(),  null);
-                    } catch (Exception e) {
-                        throw new RuntimeException("Failed to clone target branch: " + request.targetBranch(), e);
-                    }
-                }, cloneExecutor);
-
-                sourceRepoDir = sourceFuture.join();
-                targetRepoDir = targetFuture.join();
-            } finally {
-                cloneExecutor.shutdown();
-            }
-
-            log.info("Both branches cloned successfully: source={}, target={}",
-                    sourceRepoDir, targetRepoDir);
-
-            sourceProvider = new LocalProjectSourceProvider(sourceRepoDir);
-            targetProvider = new LocalProjectSourceProvider(targetRepoDir);
-
-            // --- Parallel AST graph build ---
-            log.info("Building AST graphs in parallel...");
-
-            final ProjectSourceProvider sourceProviderRef = sourceProvider;
-            final ProjectSourceProvider targetProviderRef = targetProvider;
-
-            ExecutorService graphExecutor = Executors.newFixedThreadPool(2);
-            ProjectGraph sourceGraph;
-            ProjectGraph targetGraph;
-            try {
-                CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return astGraphService.buildGraph(sourceProviderRef);
-                    } catch (Exception e) {
-                        throw new RuntimeException("Failed to build source AST graph", e);
-                    }
-                }, graphExecutor);
-
-                CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return astGraphService.buildGraph(targetProviderRef);
-                    } catch (Exception e) {
-                        throw new RuntimeException("Failed to build target AST graph", e);
-                    }
-                }, graphExecutor);
-
-                sourceGraph = sourceGraphFuture.join();
-                targetGraph = targetGraphFuture.join();
-            } finally {
-                graphExecutor.shutdown();
-            }
-
-            log.info("Both AST graphs built successfully");
-
-            log.info("Fetching MR diffs...");
-            List<Diff> rawDiffs = repoGateway.getMrDiffs(request.projectId(), request.mrIid(), null);
-            List<ChangedLine> rawLines = diffParser.parse(rawDiffs);
-            log.info("Parsed {} changed lines from {} file diffs", rawLines.size(), rawDiffs.size());
-
-            List<ChangedLine> changedLines = semanticDiffFilter.filter(rawLines, sourceGraph, targetGraph);
-            log.info("After semantic filter: {} lines ({} removed as MOVED)",
-                    changedLines.size(), rawLines.size() - changedLines.size());
-
-            List<ChangeGroup> groups = changeGrouper.group(changedLines, sourceGraph);
-            log.info("Grouped into {} change groups", groups.size());
-
-            changeGroupEnrichment.enrich(groups, sourceGraph, targetGraph, sourceRepoDir, targetRepoDir);
-
-            int totalSnippets = groups.stream().mapToInt(g -> g.enrichments().size()).sum();
-            int totalSnippetLines = groups.stream()
-                    .flatMap(g -> g.enrichments().stream())
-                    .mapToInt(s -> s.lines().size()).sum();
-            ReviewStats stats = new ReviewStats(
-                    changedLines.size(), groups.size(), totalSnippets, totalSnippetLines);
-
-            log.info("Review context built: {} groups, {} snippets, {} snippet lines",
-                    groups.size(), totalSnippets, totalSnippetLines);
-
-            return new ReviewContext(
-                    request.projectId(), request.mrIid(),
-                    request.sourceBranch(), request.targetBranch(),
-                    mr.getTitle(), mr.getDescription(),
-                    groups, stats
-            );
-
+            sourceGraph = sourceGraphFuture.join();
+            targetGraph = targetGraphFuture.join();
         } finally {
-            if (sourceProvider != null)
-                astGraphService.invalidate(sourceProvider.projectKey());
-            if (targetProvider != null)
-                astGraphService.invalidate(targetProvider.projectKey());
-            repoGateway.cleanup(sourceRepoDir);
-            repoGateway.cleanup(targetRepoDir);
+            graphExecutor.shutdown();
         }
-    }
 
-    /**
-     * Auto-detect branches from GitLab MR metadata.
-     */
-    public ReviewContext buildReviewContext(long projectId, long mrIid) throws Exception {
-        MergeRequest mr = repoGateway.getMergeRequest(projectId, mrIid, null);
-        return buildReviewContext(new ReviewRequest(
-                projectId, mrIid,
-                mr.getSourceBranch(),
-                mr.getTargetBranch()
-        ));
+        log.info("Both AST graphs built successfully");
+
+        log.info("Fetching MR diffs...");
+        List<Diff> rawDiffs = repoGateway.getMrDiffs(request.owner(), request.repo(), request.mrIid(), null);
+        List<ChangedLine> rawLines = diffParser.parse(rawDiffs);
+        log.info("Parsed {} changed lines from {} file diffs", rawLines.size(), rawDiffs.size());
+
+        List<ChangedLine> changedLines = semanticDiffFilter.filter(rawLines, sourceGraph, targetGraph);
+        log.info("After semantic filter: {} lines ({} removed as MOVED)",
+                changedLines.size(), rawLines.size() - changedLines.size());
+
+        List<ChangeGroup> groups = changeGrouper.group(changedLines, sourceGraph);
+        log.info("Grouped into {} change groups", groups.size());
+
+        changeGroupEnrichment.enrich(groups, sourceGraph, targetGraph, sourceProvider.localProjectRoot().get(), targetProvider.localProjectRoot().get());
+
+        int totalSnippets = groups.stream().mapToInt(g -> g.enrichments().size()).sum();
+        int totalSnippetLines = groups.stream()
+                .flatMap(g -> g.enrichments().stream())
+                .mapToInt(s -> s.lines().size()).sum();
+        ReviewStats stats = new ReviewStats(
+                changedLines.size(), groups.size(), totalSnippets, totalSnippetLines);
+
+        log.info("Review context built: {} groups, {} snippets, {} snippet lines",
+                groups.size(), totalSnippets, totalSnippetLines);
+
+        return new ReviewContext(
+                request.repo(), request.mrIid(),
+                mr.getSourceBranch(), mr.getTargetBranch(),
+                mr.getTitle(), mr.getDescription(),
+                groups, stats
+        );
     }
 }

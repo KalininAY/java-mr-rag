@@ -1,5 +1,6 @@
 package com.example.mrrag.app.repo;
 
+import jakarta.validation.constraints.NotBlank;
 import org.gitlab4j.api.models.Diff;
 import org.gitlab4j.api.models.MergeRequest;
 import org.springframework.lang.Nullable;
@@ -16,88 +17,69 @@ public interface CodeRepositoryGateway {
     /**
      * Клонирует проект GitLab в указанный каталог.
      *
-     * @param path       путь к локальной директории репозитория
-     * @param projectUrl ссылка на проект
-     * @param branch     ветка, которую нужно клонировать
-     * @param commit     ветка, которую нужно клонировать
-     * @param token      персональный токен; если null — используется токен по умолчанию
-     * @return путь к локальной директории репози тория
+     * @param owner  наименование владельца/группы (не может быть пустым или null)
+     * @param repo   наименование репозитория проекта (не может быть пустым или null)
+     * @param branch имя ветки (не может быть пустым или null); если в запросе не указана — подставляется ветка по умолчанию (например, main)
+     * @param commit коммит из ветки, который нужно клонировать; может быть null, тогда используется ветка по умолчанию
+     * @param token  персональный токен; если null — используется токен по умолчанию
+     * @return путь к локальной директории репозитория
      * @throws CodeRepositoryException если клонирование не удалось
      */
-    Path cloneProject(Path path, String projectUrl, String branch, @Nullable String commit, @Nullable String token);
+    Path cloneProject(@NotBlank String owner, @NotBlank String repo, @NotBlank String branch, @Nullable String commit, @Nullable String token);
 
     /**
-     * Обновляет локальный репозиторий (pull/fetch).
+     * Получает Merge Request по owner/repo и mrIid через GitLab API.
      *
-     * @param repoDir путь к локальному репозиторию
-     * @param branch  ветка, которую нужно обновить
-     * @param token   персональный токен; если null — используется токен по умолчанию
-     * @throws CodeRepositoryException если обновление не удалось
-     */
-    void updateRepository(Path repoDir, String branch, @Nullable String token);
-
-    /**
-     * Выполняет checkout указанной ветки или коммита в локальном репозитории.
-     *
-     * @param repoDir        путь к локальному репозиторию
-     * @param branchOrCommit ветка или коммит, на который нужно перейти
-     * @param token          персональный токен; если null — используется токен по умолчанию
-     * @throws CodeRepositoryException если checkout не удался
-     */
-    void checkout(Path repoDir, String branchOrCommit, @Nullable String token);
-
-
-    /**
-     * Получает Merge Request по projectId и mrIid через GitLab API.
-     *
-     * @param projectId идентификатор проекта в GitLab
-     * @param mrIid     внутренний идентификатор MR
-     * @param token     персональный токен; если null — используется токен по умолчанию
+     * @param owner  наименование владельца/группы (не может быть пустым или null)
+     * @param repo   наименование репозитория проекта (не может быть пустым или null)
+     * @param mrIid  внутренний идентификатор MR (должен быть положительным числом)
+     * @param token  персональный токен; если null — используется токен по умолчанию
      * @return объект MergeRequest
-     * @throws CodeRepositoryException если получение MR не удалось
+     * @throws CodeRepositoryException если проект или MR не найден, или токен недоступен
      */
-    MergeRequest getMergeRequest(long projectId, long mrIid, @Nullable String token);
+    MergeRequest getMergeRequest(@NotBlank String owner, @NotBlank String repo, long mrIid, @Nullable String token);
 
     /**
      * Получает diffs текущего Merge Request через GitLab API.
      *
-     * @param projectId идентификатор проекта в GitLab
-     * @param mrIid     внутренний идентификатор MR
-     * @param token     персональный токен; если null — используется токен по умолчанию
-     * @return список diff‑записей для MR
-     * @throws CodeRepositoryException если получение diffs не удалось
+     * @param owner  наименование владельца/группы (не может быть пустым или null)
+     * @param repo   наименование репозитория проекта (не может быть пустым или null)
+     * @param mrIid  внутренний идентификатор MR (должен быть положительным числом)
+     * @param token  персональный токен; если null — используется токен по умолчанию
+     * @return список diff‑записей для MR; никогда не возвращает null
+     * @throws CodeRepositoryException если проект или MR не найден, или токен недоступен
      */
-    List<Diff> getMrDiffs(long projectId, long mrIid, @Nullable String token);
-
+    List<Diff> getMrDiffs(@NotBlank String owner, @NotBlank String repo, long mrIid, @Nullable String token);
 
     /**
      * Получает сырой контент файла по пути и ревизии.
      *
-     * @param projectId идентификатор проекта GitLab
-     * @param branch    ветка
-     * @param filePath  относительный путь к файлу в репозитории
-     * @param token     персональный токен; если null — используется токен по умолчанию
+     * @param owner    наименование владельца/группы (не может быть пустым или null)
+     * @param repo     наименование репозитория проекта (не может быть пустым или null)
+     * @param branch   ветка (не может быть пустой или null)
+     * @param filePath относительный путь к файлу в репозитории (не может быть пустым или null)
+     * @param token    персональный токен; если null — используется токен по умолчанию
      * @return содержимое файла как строка (UTF‑8)
-     * @throws CodeRepositoryException если получение содержимого файла не удалось
+     * @throws CodeRepositoryException если файл не найден, проект недоступен или токен недостаточен
      */
-    String getFileContent(long projectId, String branch, String filePath, @Nullable String token);
-
+    String getFileContent(@NotBlank String owner, @NotBlank String repo, @NotBlank String branch, @NotBlank String filePath, @Nullable String token);
 
     /**
      * Получает дерево репозитория (список файлов/директорий) по ревизии.
      *
-     * @param projectId идентификатор проекта GitLab
-     * @param branch    ветка
-     * @param token     персональный токен; если null — используется токен по умолчанию
-     * @return список TreeItem (имя, тип, путь и т.п.)
+     * @param owner  наименование владельца/группы (не может быть пустым или null)
+     * @param repo   наименование репозитория проекта (не может быть пустым или null)
+     * @param branch ветка (не может быть пустой или null)
+     * @param token  персональный токен; если null — используется токен по умолчанию
+     * @return список TreeItem (имя, тип, путь и т.п.); никогда не возвращает null
      */
-    List<TreeItem> getRepositoryTree(long projectId, String branch, @Nullable String token);
+    List<TreeItem> getRepositoryTree(@NotBlank String owner, @NotBlank String repo, @NotBlank String branch, @Nullable String token);
 
     /**
      * Удаляет локальный клон репозитория.
      *
-     * @param repoDir путь к локальной директории репозитория
-     * @throws CodeRepositoryException если удаление не удалось
+     * @param repoDir путь к локальной директории репозитория (не может быть null)
+     * @throws CodeRepositoryException если удаление не удалось (например, каталог не существует, доступ запрещён)
      */
     void cleanup(Path repoDir);
 }

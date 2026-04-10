@@ -28,21 +28,5 @@ public record ReviewRequest(
                 requiredMode = Schema.RequiredMode.REQUIRED
         )
         @NotNull
-        Long mrIid,
-
-        @Schema(
-                description = "Исходная ветка MR (source branch)",
-                example = "feature/my-branch",
-                requiredMode = Schema.RequiredMode.REQUIRED
-        )
-        @NotBlank
-        String sourceBranch,
-
-        @Schema(
-                description = "Целевая ветка MR (target branch)",
-                example = "main",
-                requiredMode = Schema.RequiredMode.REQUIRED
-        )
-        @NotBlank
-        String targetBranch
+        Long mrIid
 ) {}

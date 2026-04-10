@@ -5,9 +5,7 @@ import com.example.mrrag.app.repo.CodeRepositoryException;
 import com.example.mrrag.app.repo.TreeItem;
 import com.example.mrrag.app.repo.CodeRepositoryGateway;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.lang3.Validate;
 
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -52,47 +50,21 @@ import java.util.List;
  * }</pre>
  */
 @Slf4j
-public class GitLabProjectSourceProvider implements ProjectSourceProvider {
+public class GitLabRemoteSourceProvider extends GitLabSourceProvider {
 
     private final CodeRepositoryGateway gateway;
-    private final long projectId;
-    private final String branch;
-    private final String commit;
-    private final String token;
-    private final Boolean force;
 
-
-    public GitLabProjectSourceProvider(CodeRepositoryGateway gateway, RemoteProjectRequest req) {
-        Validate.notNull(req, "RemoteProjectRequest is null");
-        Validate.notNull(req.projectId(), "projectId is null");
-
+    public GitLabRemoteSourceProvider(CodeRepositoryGateway gateway, RemoteProjectRequest req) {
+        super(req);
         this.gateway = gateway;
-        this.projectId = req.projectId();
-        this.branch = req.branch();
-        this.commit = req.commit();
-        this.token = req.token();
-        this.force = req.force();
     }
 
-    /**
-     * Returns a stable cache key for this GitLab project + ref combination.
-     *
-     * <p>Virtual root: {@code /gitlab/<projectId>} (no real directory — just a
-     * stable, unique path for use as map key).
-     * Fingerprint: {@code "git:<ref>"} when {@code ref} is a 40-char hex SHA,
-     * {@code "ref:<ref>"} otherwise (branch or tag — less stable, but usable).
-     */
-    @Override
-    public ProjectKey projectKey() {
-        String fingerprint = isFullSha(branch) ? "git:" + branch : "ref:" + branch;
-        return new ProjectKey(Path.of("/gitlab/" + projectId), fingerprint);
-    }
 
     @Override
     public List<ProjectSource> getSources() {
-        log.info("Fetching .java tree from GitLab: projectId={}, revision={}", projectId, branch);
+        log.info("Fetching .java tree from GitLab: projectId={}, revision={}", owner, branch);
 
-        List<TreeItem> tree = gateway.getRepositoryTree(projectId, branch, token);
+        List<TreeItem> tree = gateway.getRepositoryTree(owner, repo, branch, token);
 
         List<String> javaPaths = tree.stream()
                 .filter(item -> item.type().equals("BLOB"))
@@ -101,12 +73,12 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
                 .toList();
 
         log.info("Found {} .java files in project {} at ref={}",
-                javaPaths.size(), projectId, branch);
+                javaPaths.size(), owner, branch);
 
         List<ProjectSource> sources = new ArrayList<>(javaPaths.size());
         for (String filePath : javaPaths) {
             try {
-                String fileContent = gateway.getFileContent(projectId, branch, filePath, token);
+                String fileContent = gateway.getFileContent(owner, repo, branch, filePath, token);
                 sources.add(new ProjectSource(filePath, fileContent));
             } catch (CodeRepositoryException ex) {
                 log.warn("Skipping {} — fetch error: {}", filePath, ex.getMessage());
@@ -114,16 +86,9 @@ public class GitLabProjectSourceProvider implements ProjectSourceProvider {
         }
 
         log.info("Loaded {}/{} .java files from GitLab (project={}, ref={})",
-                sources.size(), javaPaths.size(), projectId, branch);
+                sources.size(), javaPaths.size(), owner, branch);
         return sources;
     }
 
 
-    /**
-     * A ref is treated as a full commit SHA when it is exactly 40 hex characters.
-     */
-    private static boolean isFullSha(String ref) {
-        return ref != null && ref.length() == 40 && ref.chars().allMatch(c ->
-                (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
-    }
 }

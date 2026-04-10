@@ -6,7 +6,7 @@ import java.util.List;
  * Full enriched review context returned to the caller.
  */
 public record ReviewContext(
-        long projectId,
+        String repo,
         long mrIid,
         String sourceBranch,
         String targetBranch,
