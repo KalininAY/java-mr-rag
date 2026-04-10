@@ -1,17 +1,25 @@
 package com.example.mrrag.app.controller.requestDTO;
 
 import io.swagger.v3.oas.annotations.media.Schema;
-import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotBlank;
 
 @Schema(description = "Запрос на анализ исходного кода по проекту GitLab")
 public record RemoteProjectRequest(
         @Schema(
-                description = "Числовой идентификатор проекта в GitLab",
-                example = "123",
+                description = "Owner (группа или пользователь) проекта в GitLab, например group/subgroup",
+                example = "mygroup/subgroup",
                 requiredMode = Schema.RequiredMode.REQUIRED
         )
-        @NotNull
-        Long projectId,
+        @NotBlank
+        String owner,
+
+        @Schema(
+                description = "Название проекта (репозитория) в GitLab",
+                example = "myrepo",
+                requiredMode = Schema.RequiredMode.REQUIRED
+        )
+        @NotBlank
+        String repo,
 
         @Schema(
                 description = "Ветка или тег для клонирования. Если не указана — используется ветка по умолчанию (например, main)",
