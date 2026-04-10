@@ -6,12 +6,12 @@ import jakarta.validation.constraints.NotBlank;
 @Schema(description = "Запрос на анализ исходного кода по проекту GitLab")
 public record RemoteProjectRequest(
         @Schema(
-                description = "Owner (группа или пользователь) проекта в GitLab, например group/subgroup",
+                description = "Namespace проекта в GitLab, например group/subgroup",
                 example = "mygroup/subgroup",
                 requiredMode = Schema.RequiredMode.REQUIRED
         )
         @NotBlank
-        String owner,
+        String namespace,
 
         @Schema(
                 description = "Название проекта (репозитория) в GitLab",

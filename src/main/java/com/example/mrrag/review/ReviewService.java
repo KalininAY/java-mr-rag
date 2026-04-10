@@ -48,9 +48,9 @@ public class ReviewService {
 
     public ReviewContext buildReviewContext(ReviewRequest request) {
         log.info("Building review context for project={} mrIid={}",
-                request.owner() + "/" + request.repo(), request.mrIid());
+                request.namespace() + "/" + request.repo(), request.mrIid());
 
-        MergeRequest mr = repoGateway.getMergeRequest(request.owner(), request.repo(), request.mrIid(), null);
+        MergeRequest mr = repoGateway.getMergeRequest(request.namespace(), request.repo(), request.mrIid(), null);
 
         // --- Parallel clone ---
         log.info("Cloning source branch '{}' and target branch '{}' in parallel...",
@@ -59,10 +59,10 @@ public class ReviewService {
 
         GitLabLocalSourceProvider sourceProvider = new GitLabLocalSourceProvider(
                 repoGateway,
-                new RemoteProjectRequest(request.owner(), request.repo(), mr.getSourceBranch(), null, null, true));
+                new RemoteProjectRequest(request.namespace(), request.repo(), mr.getSourceBranch(), null, null, true));
         GitLabLocalSourceProvider targetProvider = new GitLabLocalSourceProvider(
                 repoGateway,
-                new RemoteProjectRequest(request.owner(), request.repo(), mr.getTargetBranch(), null, null, true));
+                new RemoteProjectRequest(request.namespace(), request.repo(), mr.getTargetBranch(), null, null, true));
 
 
         log.info("Both branches cloned successfully: source={}, target={}",
@@ -100,7 +100,7 @@ public class ReviewService {
         log.info("Both AST graphs built successfully");
 
         log.info("Fetching MR diffs...");
-        List<Diff> rawDiffs = repoGateway.getMrDiffs(request.owner(), request.repo(), request.mrIid(), null);
+        List<Diff> rawDiffs = repoGateway.getMrDiffs(request.namespace(), request.repo(), request.mrIid(), null);
         List<ChangedLine> rawLines = diffParser.parse(rawDiffs);
         log.info("Parsed {} changed lines from {} file diffs", rawLines.size(), rawDiffs.size());
 

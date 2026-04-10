@@ -85,7 +85,7 @@ public class GraphApiController {
                                 .filter(e -> e.kind() == k).count()));
 
         return new GraphBuildStats(
-                request.owner() + " " + request.repo(), request.branch(),
+                request.namespace(), request.repo(), request.branch(),
                 "(virtual — no clone)",
                 0, 0,
                 graph.nodes.size(), 0,
@@ -143,7 +143,7 @@ public class GraphApiController {
 
 
         return new GraphBuildStats(
-                request.owner(), request.branch(),
+                request.namespace(), request.repo(), request.branch(),
                 "workspaceDir",
                 0, 0,
                 graph.nodes.size(), 0,

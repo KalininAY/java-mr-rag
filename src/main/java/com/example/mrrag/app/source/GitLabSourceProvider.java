@@ -6,7 +6,7 @@ import org.apache.commons.lang3.Validate;
 import java.nio.file.Path;
 
 public abstract class GitLabSourceProvider implements ProjectSourceProvider {
-    protected final String owner;
+    protected final String namespace;
     protected final String repo;
     protected final String branch;
     protected final String commit;
@@ -16,14 +16,14 @@ public abstract class GitLabSourceProvider implements ProjectSourceProvider {
 
     public GitLabSourceProvider(RemoteProjectRequest req) {
         Validate.notNull(req, "RemoteProjectRequest is null");
-        Validate.notNull(req.owner(), "owner is null");
+        Validate.notNull(req.namespace(), "namespace is null");
         Validate.notNull(req.repo(), "repo is null");
-        this.owner = req.owner();
+        this.namespace = req.namespace();
         this.repo = req.repo();
-        this.branch = req.branch() == null || req.branch().isBlank() ? "main" : req.branch();
+        this.branch = req.branch() == null || req.branch().isBlank() ? "master" : req.branch();
         this.commit = req.commit();
         this.token = req.token();
-        this.force = req.force();
+        this.force = req.force() != null;
     }
 
     /**
@@ -37,7 +37,7 @@ public abstract class GitLabSourceProvider implements ProjectSourceProvider {
     @Override
     public ProjectKey projectKey() {
         String fingerprint = isFullSha(branch) ? "git:" + branch : "ref:" + branch;
-        return new ProjectKey(Path.of("/gitlab/" + owner), fingerprint);
+        return new ProjectKey(Path.of("/gitlab/" + namespace), fingerprint);
     }
 
 

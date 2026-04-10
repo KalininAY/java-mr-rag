@@ -18,7 +18,7 @@ public class GitLabLocalSourceProvider extends GitLabSourceProvider {
 
     @Override
     public List<ProjectSource> getSources() {
-        path = gateway.cloneProject(owner, repo, branch, commit, token);
+        path = gateway.cloneProject(namespace, repo, branch, commit, force, token);
         return new LocalProjectSourceProvider(path).getSources();
     }
 

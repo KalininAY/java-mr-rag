@@ -1,9 +1,11 @@
 package com.example.mrrag.app.repo;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.transport.URIish;
+import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.gitlab4j.api.GitLabApi;
 import org.gitlab4j.api.GitLabApiException;
 import org.gitlab4j.api.models.Commit;
@@ -25,6 +27,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 
+@Slf4j
 @Validated
 @Service
 @RequiredArgsConstructor
@@ -64,28 +67,41 @@ public class GitLabGateway implements CodeRepositoryGateway {
     }
 
     @Override
-    public Path cloneProject(String owner, String repo, String branch, String commit, String token) {
+    public Path cloneProject(String namespace, String repo, String branch, String commit, boolean force, String token) {
         if (commit == null)
-            commit = getLastCommit(owner, repo, branch, token).getId();
+            commit = getLastCommit(namespace, repo, branch, token).getId();
+
+        if (token == null)
+            token = defaultToken;
 
         Git git = null;
-        Path path = Path.of(workspaceDir, getClonePath(owner, repo, branch, commit, token));
+        Path path = Path.of(workspaceDir, getClonePath(namespace, repo, branch, commit, token));
+        if (path.toFile().exists() && !force)
+            return path;
+        else if (path.toFile().exists())
+            deleteDirectory(path.toFile());
+
+        log.debug("Beginning clone project '{}/{}' for branch '{}', commit {}", namespace, repo, branch, commit);
         try {
-            URIish uri = new URIish(getProjectUrl(defaultUrl, owner, repo));
+            URIish uri = new URIish(getProjectUrl(defaultUrl, namespace, repo));
             git = Git.cloneRepository()
+                    .setCredentialsProvider(new UsernamePasswordCredentialsProvider("oauth2", token))
                     .setURI(uri.toString())
                     .setDirectory(path.toFile())
                     .setBranch(branch)
                     .setCloneAllBranches(false)
+                    .setDepth(1)
                     .call();
 
             if (commit != null && !commit.isBlank())
                 git.checkout()
                         .setName(commit)
                         .call();
+            log.debug("End clone project '{}/{}' for branch '{}', commit {}", namespace, repo, branch, commit);
             return path;
         } catch (GitAPIException | URISyntaxException e) {
-            throw new CodeRepositoryException("Failed to clone project '%s/%s', branch '%s', commit '%s', path '%s'".formatted(owner, repo, branch, commit, path), e);
+            log.error("Failed clone project '{}/{}' for branch '{}', commit {}", namespace, repo, branch, commit);
+            throw new CodeRepositoryException("Failed to clone project '%s/%s', branch '%s', commit '%s', path '%s'".formatted(namespace, repo, branch, commit, path), e);
         } finally {
             if (git != null) git.close();
         }
@@ -93,54 +109,58 @@ public class GitLabGateway implements CodeRepositoryGateway {
 
 
     @Override
-    public MergeRequest getMergeRequest(String owner, String repo, long mrIid, String token) {
+    public MergeRequest getMergeRequest(String namespace, String repo, long mrIid, String token) {
         return gitLabApi(token, api -> {
             try {
-                Long projectId = getProjectId(owner, repo, token);
+                Long projectId = getProjectId(namespace, repo, token);
                 return api.getMergeRequestApi().getMergeRequest(projectId, mrIid);
             } catch (GitLabApiException e) {
-                throw new CodeRepositoryException("Failed to get merge request '%s' in project '%s/%s'".formatted(mrIid, owner, repo), e);
+                log.error("Failed to get merge request '{}' project '{}/{}'", mrIid, namespace, repo);
+                throw new CodeRepositoryException("Failed to get merge request '%s' in project '%s/%s'".formatted(mrIid, namespace, repo), e);
             }
         });
     }
 
     @Override
-    public List<Diff> getMrDiffs(String owner, String repo, long mrIid, String token) {
+    public List<Diff> getMrDiffs(String namespace, String repo, long mrIid, String token) {
         return gitLabApi(token, api -> {
             try {
-                Long projectId = api.getProjectApi().getProject(owner, repo).getId();
+                Long projectId = api.getProjectApi().getProject(namespace, repo).getId();
                 return api.getMergeRequestApi().getDiffs(projectId, mrIid);
             } catch (GitLabApiException e) {
-                throw new CodeRepositoryException("Failed to get diffs for merge request '%s' in project '%s/%s'".formatted(mrIid, owner, repo), e);
+                log.error("Failed to get diffs for merge request '{}' project '{}/{}'", mrIid, namespace, repo);
+                throw new CodeRepositoryException("Failed to get diffs for merge request '%s' in project '%s/%s'".formatted(mrIid, namespace, repo), e);
             }
         });
     }
 
     @Override
-    public String getFileContent(String owner, String repo, String branch, String filePath, String token) {
+    public String getFileContent(String namespace, String repo, String branch, String filePath, String token) {
         return gitLabApi(token, api -> {
-            Long projectId = getProjectId(owner, repo, token);
+            Long projectId = getProjectId(namespace, repo, token);
             try (InputStream is = api.getRepositoryFileApi()
                     .getRawFile(projectId, branch, filePath)) {
                 return new String(is.readAllBytes(), StandardCharsets.UTF_8);
             } catch (IOException | GitLabApiException e) {
-                throw new CodeRepositoryException("Failed to get content file project '%s/%s', branch '%s', filePath = '%s'".formatted(owner, repo, branch, filePath), e);
+                log.error("Failed to get content file project '{}/{}', branch '{}', filepath '{}'", namespace, repo, branch, filePath);
+                throw new CodeRepositoryException("Failed to get content file project '%s/%s', branch '%s', filePath = '%s'".formatted(namespace, repo, branch, filePath), e);
             }
         });
     }
 
 
     @Override
-    public List<TreeItem> getRepositoryTree(String owner, String repo, String branch, String token) {
+    public List<TreeItem> getRepositoryTree(String namespace, String repo, String branch, String token) {
         return gitLabApi(token, api -> {
             try {
-                Long projectId = getProjectId(owner, repo, token);
+                Long projectId = getProjectId(namespace, repo, token);
                 List<org.gitlab4j.api.models.TreeItem> tree = api
                         .getRepositoryApi()
                         .getTree(projectId, null, branch, true);
                 return TreeItem.listFrom(tree);
             } catch (GitLabApiException e) {
-                throw new CodeRepositoryException("Failed get repository tree project '%s/%s', branch '%s'".formatted(owner, repo, branch), e);
+                log.error("Failed get repository tree project '{}/{}', branch '{}'", namespace, repo, branch);
+                throw new CodeRepositoryException("Failed get repository tree project '%s/%s', branch '%s'".formatted(namespace, repo, branch), e);
             }
         });
     }
@@ -154,18 +174,18 @@ public class GitLabGateway implements CodeRepositoryGateway {
         }
     }
 
-    private Long getProjectId(String owner, String repo, String token) {
+    private Long getProjectId(String namespace, String repo, String token) {
         return gitLabApi(token, api -> {
             try {
-                return api.getProjectApi().getProject(owner, repo).getId();
+                return api.getProjectApi().getProject(namespace, repo).getId();
             } catch (GitLabApiException e) {
-                throw new CodeRepositoryException("Failed get project '%s/%s'".formatted(owner, repo), e);
+                throw new CodeRepositoryException("Failed get project '%s/%s'".formatted(namespace, repo), e);
             }
         });
     }
 
-    public String getProjectUrl(String gitLabHost, String owner, String repo) {
-        return gitLabHost + "/" + owner + "/" + repo + ".git";
+    public String getProjectUrl(String gitLabHost, String namespace, String repo) {
+        return gitLabHost + "/" + namespace + "/" + repo + ".git";
     }
 
     private void deleteDirectory(File dir) {
@@ -186,56 +206,56 @@ public class GitLabGateway implements CodeRepositoryGateway {
     }
 
     public String getClonePath(
-            String owner,
+            String namespace,
             String repo,
             String branch,
             String commitId,
             String token
     ) {
         if (commitId == null)
-            commitId = getLastCommit(owner, repo, branch, token).getId();
+            commitId = getLastCommit(namespace, repo, branch, token).getId();
 
-        String timestamp = getCommitTimestampDirName(owner, repo, commitId, token);
+        String timestamp = getCommitTimestampDirName(namespace, repo, commitId, token);
         String branchSafe = branch.replaceAll("[^a-zA-Z0-9._-]", "_");
         String commitSafe = commitId.substring(0, Math.min(7, commitId.length()));
 
-        // owner: заменяем '/' на подчёркивания, чтобы не было пути в пути
-        String ownerSafe = owner.replaceAll("[/\\\\:*?\"<>|]", "_");
+        // namespace: заменяем '/' на подчёркивания, чтобы не было пути в пути
+        String namespaceSafe = namespace.replaceAll("[/\\\\:*?\"<>|]", "_");
 
-        return String.format("%s_%s__%s__%s__%s", ownerSafe, repo, timestamp, branchSafe, commitSafe);
+        return String.format("%s_%s__%s__%s__%s", namespaceSafe, repo, timestamp, branchSafe, commitSafe);
     }
 
     public String getCommitTimestampDirName(
-            String owner,
+            String namespace,
             String repo,
             String commitId,
             String token
     ) {
-        Commit commit = getCommit(owner, repo, commitId, token);
+        Commit commit = getCommit(namespace, repo, commitId, token);
         Instant instant = commit.getCommittedDate().toInstant();
         return instant.atZone(ZoneOffset.UTC)
                 .format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
 
     }
 
-    private Commit getLastCommit(String owner, String repo, String branch, String token) {
+    private Commit getLastCommit(String namespace, String repo, String branch, String token) {
         return gitLabApi(token, api -> {
             try {
-                Project project = api.getProjectApi().getProject(owner + "/" + repo);
+                Project project = api.getProjectApi().getProject(namespace + "/" + repo);
                 return api.getRepositoryApi().getBranch(project.getId(), branch).getCommit();
             } catch (GitLabApiException e) {
-                throw new CodeRepositoryException("Failed get commit project '%s/%s', branch '%s'".formatted(owner, repo, branch), e);
+                throw new CodeRepositoryException("Failed get commit project '%s/%s', branch '%s'".formatted(namespace, repo, branch), e);
             }
         });
     }
 
-    private Commit getCommit(String owner, String repo, String commit, String token) {
+    private Commit getCommit(String namespace, String repo, String commit, String token) {
         return gitLabApi(token, api -> {
             try {
-                Project project = api.getProjectApi().getProject(owner + "/" + repo);
+                Project project = api.getProjectApi().getProject(namespace + "/" + repo);
                 return api.getCommitsApi().getCommit(project.getId(), commit);
             } catch (GitLabApiException e) {
-                throw new CodeRepositoryException("Failed get commit project '%s/%s', commit '%s'".formatted(owner, repo, commit), e);
+                throw new CodeRepositoryException("Failed get commit project '%s/%s', commit '%s'".formatted(namespace, repo, commit), e);
             }
         });
     }

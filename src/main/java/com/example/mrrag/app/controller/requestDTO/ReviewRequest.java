@@ -4,15 +4,15 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
-@Schema(description = "Запрос на анализ ревью (Merge Request) в проекте GitLab по owner/repo и mrIid")
+@Schema(description = "Запрос на анализ ревью (Merge Request) в проекте GitLab по namespace/repo и mrIid")
 public record ReviewRequest(
         @Schema(
-                description = "Owner (группа или пользователь) проекта в GitLab, например group/subgroup",
+                description = "Namespace проекта в GitLab, например group/subgroup",
                 example = "mygroup/subgroup",
                 requiredMode = Schema.RequiredMode.REQUIRED
         )
         @NotBlank
-        String owner,
+        String namespace,
 
         @Schema(
                 description = "Название проекта (репозитория) в GitLab",
@@ -29,4 +29,5 @@ public record ReviewRequest(
         )
         @NotNull
         Long mrIid
-) {}
+) {
+}
