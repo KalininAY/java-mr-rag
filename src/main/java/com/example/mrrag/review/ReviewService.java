@@ -85,31 +85,28 @@ public class ReviewService {
 // 2026-04-08 16:54:41.365  INFO 5304 --- [onPool-worker-6] c.example.mrrag.graph.GraphBuilderImpl   : AST graph built: 7385 nodes, 506 edge-sources
 // 2026-04-08 16:54:41.783  INFO 5304 --- [onPool-worker-1] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromSources: merged graph — 45172 nodes, 6032 edge-sources
 
-        ExecutorService graphExecutor = Executors.newFixedThreadPool(2);
         ProjectGraph sourceGraph;
         ProjectGraph targetGraph;
-        try {
-            CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
-                try {
-                    return astGraphService.buildGraph(sourceProvider, false);
-                } catch (Exception e) {
-                    throw new RuntimeException("Failed to build source AST graph", e);
-                }
-            }, graphExecutor);
 
-            CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(() -> {
-                try {
-                    return astGraphService.buildGraph(targetProvider, false);
-                } catch (Exception e) {
-                    throw new RuntimeException("Failed to build target AST graph", e);
-                }
-            }, graphExecutor);
+        CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
+            try {
+                return astGraphService.buildGraph(sourceProvider, false);
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to build source AST graph", e);
+            }
+        });
 
-            sourceGraph = sourceGraphFuture.join();
-            targetGraph = targetGraphFuture.join();
-        } finally {
-            graphExecutor.shutdown();
-        }
+        CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(() -> {
+            try {
+                return astGraphService.buildGraph(targetProvider, false);
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to build target AST graph", e);
+            }
+        });
+
+        sourceGraph = sourceGraphFuture.join();
+        targetGraph = targetGraphFuture.join();
+
 
         log.info("Both AST graphs built successfully");
 
