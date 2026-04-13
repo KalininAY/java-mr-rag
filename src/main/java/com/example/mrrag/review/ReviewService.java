@@ -69,7 +69,7 @@ public class ReviewService {
                 mr.getSourceBranch(), mr.getSourceBranch());
         // --- Parallel AST graph build ---
         log.info("Building AST graphs in parallel...");
-        log.info("Both branches cloned successfully: source={}, target={}",
+
 // 15:12:00
 // 2026-04-08 15:32:46.216 DEBUG 7224 --- [onPool-worker-2] s.support.compiler.jdt.JDTTreeBuilder    : Could not find declaration for variable Assertions at (D:/PROJS/java-mr-rag/mr-rag-workspace/EPVV-mr765/to-master-2026-04-08_12-30-31-243/src/test/java/suites/AllureTest.java:87).
 // 2026-04-08 15:32:51.704  INFO 7224 --- [onPool-worker-2] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromModel: running 15 passes in parallel via ForkJoinPool
