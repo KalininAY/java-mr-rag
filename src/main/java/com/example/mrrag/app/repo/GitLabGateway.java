@@ -112,8 +112,8 @@ public class GitLabGateway implements CodeRepositoryGateway {
     public MergeRequest getMergeRequest(String namespace, String repo, long mrIid, String token) {
         return gitLabApi(token, api -> {
             try {
-                Long projectId = getProjectId(namespace, repo, token);
-                return api.getMergeRequestApi().getMergeRequest(projectId, mrIid);
+                String projectPath = "%s/%s".formatted(namespace, repo);
+                return api.getMergeRequestApi().getMergeRequest(projectPath, mrIid);
             } catch (GitLabApiException e) {
                 log.error("Failed to get merge request '{}' project '{}/{}'", mrIid, namespace, repo);
                 throw new CodeRepositoryException("Failed to get merge request '%s' in project '%s/%s'".formatted(mrIid, namespace, repo), e);
@@ -125,8 +125,9 @@ public class GitLabGateway implements CodeRepositoryGateway {
     public List<Diff> getMrDiffs(String namespace, String repo, long mrIid, String token) {
         return gitLabApi(token, api -> {
             try {
-                Long projectId = api.getProjectApi().getProject(namespace, repo).getId();
-                return api.getMergeRequestApi().getDiffs(projectId, mrIid);
+                String projectPath = "%s/%s".formatted(namespace, repo);
+                return api.getMergeRequestApi().getMergeRequestChanges(projectPath, mrIid).getChanges();
+
             } catch (GitLabApiException e) {
                 log.error("Failed to get diffs for merge request '{}' project '{}/{}'", mrIid, namespace, repo);
                 throw new CodeRepositoryException("Failed to get diffs for merge request '%s' in project '%s/%s'".formatted(mrIid, namespace, repo), e);
@@ -137,9 +138,9 @@ public class GitLabGateway implements CodeRepositoryGateway {
     @Override
     public String getFileContent(String namespace, String repo, String branch, String filePath, String token) {
         return gitLabApi(token, api -> {
-            Long projectId = getProjectId(namespace, repo, token);
+            String projectPath = "%s/%s".formatted(namespace, repo);
             try (InputStream is = api.getRepositoryFileApi()
-                    .getRawFile(projectId, branch, filePath)) {
+                    .getRawFile(projectPath, branch, filePath)) {
                 return new String(is.readAllBytes(), StandardCharsets.UTF_8);
             } catch (IOException | GitLabApiException e) {
                 log.error("Failed to get content file project '{}/{}', branch '{}', filepath '{}'", namespace, repo, branch, filePath);
@@ -153,10 +154,10 @@ public class GitLabGateway implements CodeRepositoryGateway {
     public List<TreeItem> getRepositoryTree(String namespace, String repo, String branch, String token) {
         return gitLabApi(token, api -> {
             try {
-                Long projectId = getProjectId(namespace, repo, token);
+                String projectPath = "%s/%s".formatted(namespace, repo);
                 List<org.gitlab4j.api.models.TreeItem> tree = api
                         .getRepositoryApi()
-                        .getTree(projectId, null, branch, true);
+                        .getTree(projectPath, null, branch, true);
                 return TreeItem.listFrom(tree);
             } catch (GitLabApiException e) {
                 log.error("Failed get repository tree project '{}/{}', branch '{}'", namespace, repo, branch);
