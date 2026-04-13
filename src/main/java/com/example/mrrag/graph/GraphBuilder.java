@@ -20,10 +20,10 @@ public interface GraphBuilder {
      * local clones, GitLab API responses, or any future VCS backend.
      *
      * @param provider supplies the raw {@code .java} files to analyse
+     * @param force for skip cache and rebuild graph
      * @return fully populated (or partial) {@link ProjectGraph}
-     * @throws Exception on any IO / API / parse error
      */
-    ProjectGraph buildGraph(ProjectSourceProvider provider) throws Exception;
+    ProjectGraph buildGraph(ProjectSourceProvider provider, boolean force);
 
     /**
      * Evict any cached graph for the given local clone directory.

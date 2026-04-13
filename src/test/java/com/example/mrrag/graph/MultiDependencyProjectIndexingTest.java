@@ -133,14 +133,15 @@ class MultiDependencyProjectIndexingTest {
                     PosixFilePermission.GROUP_EXECUTE,
                     PosixFilePermission.OTHERS_EXECUTE));
             Files.setPosixFilePermissions(path, perms);
-        } catch (UnsupportedOperationException | IOException ignored) {}
+        } catch (UnsupportedOperationException | IOException ignored) {
+        }
     }
 
     private static Path findRepoRoot() {
         try {
             Path candidate = Path.of(
-                    MultiDependencyProjectIndexingTest.class
-                            .getProtectionDomain().getCodeSource().getLocation().toURI())
+                            MultiDependencyProjectIndexingTest.class
+                                    .getProtectionDomain().getCodeSource().getLocation().toURI())
                     .toAbsolutePath().normalize();
             while (candidate != null) {
                 if (Files.exists(candidate.resolve("gradlew"))
@@ -165,14 +166,14 @@ class MultiDependencyProjectIndexingTest {
 
     @Test
     void projectClassesAreIndexed() throws Exception {
-        Path ws          = workspaceDir("projectClassesAreIndexed");
+        Path ws = workspaceDir("projectClassesAreIndexed");
         Path projectRoot = ws.resolve("project");
         Files.createDirectories(projectRoot);
         copyTree(fixtureRoot(), projectRoot);
 
-        AstGraphService service  = buildService(ws.resolve("cache"));
-        var             provider = new LocalProjectSourceProvider(projectRoot);
-        ProjectGraph    graph    = service.buildGraph(provider);
+        AstGraphService service = buildService(ws.resolve("cache"));
+        var provider = new LocalProjectSourceProvider(projectRoot);
+        ProjectGraph graph = service.buildGraph(provider, false);
 
         assertThat(graph.nodes).isNotEmpty();
         Set<String> nodeIds = graph.nodes.keySet();
@@ -182,14 +183,14 @@ class MultiDependencyProjectIndexingTest {
 
     @Test
     void userServiceDeclaresExpectedMethods() throws Exception {
-        Path ws          = workspaceDir("userServiceDeclaresExpectedMethods");
+        Path ws = workspaceDir("userServiceDeclaresExpectedMethods");
         Path projectRoot = ws.resolve("project");
         Files.createDirectories(projectRoot);
         copyTree(fixtureRoot(), projectRoot);
 
-        AstGraphService service  = buildService(ws.resolve("cache"));
-        var             provider = new LocalProjectSourceProvider(projectRoot);
-        ProjectGraph    graph    = service.buildGraph(provider);
+        AstGraphService service = buildService(ws.resolve("cache"));
+        var provider = new LocalProjectSourceProvider(projectRoot);
+        ProjectGraph graph = service.buildGraph(provider, false);
 
         String userServiceId = graph.nodes.keySet().stream()
                 .filter(id -> id.equals("com.example.multi.service.UserService"))
@@ -198,7 +199,7 @@ class MultiDependencyProjectIndexingTest {
                 .as("com.example.multi.service.UserService must be a graph node")
                 .isNotNull();
 
-        var declares     = graph.outgoing(userServiceId, EdgeKind.DECLARES);
+        var declares = graph.outgoing(userServiceId, EdgeKind.DECLARES);
         var declaredNames = declares.stream().map(e -> e.callee()).toList();
         assertThat(declaredNames).as("must declare getProfile").anyMatch(id -> id.contains("getProfile"));
         assertThat(declaredNames).as("must declare evict").anyMatch(id -> id.contains("evict"));
@@ -207,17 +208,17 @@ class MultiDependencyProjectIndexingTest {
 
     @Test
     void depSegmentsAreSavedToGlobalDepsDir() throws Exception {
-        Path ws          = workspaceDir("depSegmentsAreSavedToGlobalDepsDir");
+        Path ws = workspaceDir("depSegmentsAreSavedToGlobalDepsDir");
         Path projectRoot = prepareProjectDir(ws.resolve("project"));
-        Path cacheDir    = ws.resolve("cache");
+        Path cacheDir = ws.resolve("cache");
 
-        AstGraphService service  = buildService(cacheDir);
-        var             provider = new LocalProjectSourceProvider(projectRoot);
-        ProjectKey      key      = provider.projectKey();
-        service.buildGraph(provider);
+        AstGraphService service = buildService(cacheDir);
+        var provider = new LocalProjectSourceProvider(projectRoot);
+        ProjectKey key = provider.projectKey();
+        service.buildGraph(provider, false);
 
-        ProjectGraphCacheStore store    = buildStore(cacheDir);
-        var                    segments = store.tryLoadAllSegments(key);
+        ProjectGraphCacheStore store = buildStore(cacheDir);
+        var segments = store.tryLoadAllSegments(key);
 
         assertThat(segments).as("Segment cache must be present").isPresent();
         Map<String, ProjectGraph> parts = segments.get();
@@ -237,23 +238,23 @@ class MultiDependencyProjectIndexingTest {
 
     @Test
     void secondCallUsesDiskCache() throws Exception {
-        Path ws          = workspaceDir("secondCallUsesDiskCache");
+        Path ws = workspaceDir("secondCallUsesDiskCache");
         Path projectRoot = ws.resolve("project");
         Files.createDirectories(projectRoot);
         copyTree(fixtureRoot(), projectRoot);
         Path cacheDir = ws.resolve("cache");
 
-        AstGraphService service  = buildService(cacheDir);
-        var             provider = new LocalProjectSourceProvider(projectRoot);
-        ProjectKey      key      = provider.projectKey();
+        AstGraphService service = buildService(cacheDir);
+        var provider = new LocalProjectSourceProvider(projectRoot);
+        ProjectKey key = provider.projectKey();
 
-        ProjectGraph first = service.buildGraph(provider);
+        ProjectGraph first = service.buildGraph(provider, false);
         assertThat(first.nodes).isNotEmpty();
 
         service.invalidate(key);
 
         // second call: build a fresh provider for the same path
-        ProjectGraph second = service.buildGraph(new LocalProjectSourceProvider(projectRoot));
+        ProjectGraph second = service.buildGraph(new LocalProjectSourceProvider(projectRoot), false);
         assertThat(second.nodes.keySet())
                 .as("Reloaded graph must contain the same nodes")
                 .containsAll(first.nodes.keySet());

@@ -73,7 +73,7 @@ public class GraphApiController {
         ProjectSourceProvider provider =
                 new GitLabRemoteSourceProvider(gatewayRepo, request);
 
-        ProjectGraph graph = graphService.buildGraph(provider);
+        ProjectGraph graph = graphService.buildGraph(provider, request.force());
 
         Map<NodeKind, Long> nodesByKind = Arrays.stream(NodeKind.values())
                 .collect(Collectors.toMap(k -> k,
@@ -126,7 +126,7 @@ public class GraphApiController {
         ProjectSourceProvider sourceProvider =
                 new GitLabLocalSourceProvider(gatewayRepo, request);
 
-        ProjectGraph graph = graphService.buildGraph(sourceProvider);
+        ProjectGraph graph = graphService.buildGraph(sourceProvider, request.force());
 
         Map<NodeKind, Long> nodesByKind = Arrays.stream(NodeKind.values())
                 .collect(Collectors.toMap(

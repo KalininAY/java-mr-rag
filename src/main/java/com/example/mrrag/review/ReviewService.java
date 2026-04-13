@@ -91,7 +91,7 @@ public class ReviewService {
         try {
             CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
                 try {
-                    return astGraphService.buildGraph(sourceProvider);
+                    return astGraphService.buildGraph(sourceProvider, false);
                 } catch (Exception e) {
                     throw new RuntimeException("Failed to build source AST graph", e);
                 }
@@ -99,7 +99,7 @@ public class ReviewService {
 
             CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(() -> {
                 try {
-                    return astGraphService.buildGraph(targetProvider);
+                    return astGraphService.buildGraph(targetProvider, false);
                 } catch (Exception e) {
                     throw new RuntimeException("Failed to build target AST graph", e);
                 }

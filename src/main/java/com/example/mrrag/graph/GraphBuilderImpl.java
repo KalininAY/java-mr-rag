@@ -9,6 +9,7 @@ import com.example.mrrag.graph.raw.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
 import spoon.Launcher;
 import spoon.compiler.ModelBuildingException;
 import spoon.reflect.CtModel;
@@ -28,7 +29,7 @@ import java.util.concurrent.*;
  * are delegated to {@link AstGraphUtils}.
  *
  * <p>The only public entry point for graph construction is
- * {@link #buildGraph(ProjectSourceProvider)}. The {@link ProjectKey} that
+ * {@link #buildGraph(ProjectSourceProvider, boolean)}. The {@link ProjectKey} that
  * drives cache lookups is supplied by the provider itself via
  * {@link ProjectSourceProvider#projectKey()} — callers never construct keys
  * manually.
@@ -54,7 +55,7 @@ import java.util.concurrent.*;
  * </ul>
  */
 @Slf4j
-@Component
+@Service
 @RequiredArgsConstructor
 public class GraphBuilderImpl implements GraphBuilder {
 
@@ -83,7 +84,7 @@ public class GraphBuilderImpl implements GraphBuilder {
      * </ol>
      */
     @Override
-    public ProjectGraph buildGraph(ProjectSourceProvider provider) {
+    public ProjectGraph buildGraph(ProjectSourceProvider provider, boolean force) {
         ProjectKey key = provider.projectKey();
         log.info("buildGraph: key={}", key);
 
