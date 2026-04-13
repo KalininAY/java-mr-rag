@@ -111,6 +111,7 @@ public class ReviewService {
         List<ChangeGroup> groups = changeGrouper.group(changedLines, sourceGraph);
         log.info("Grouped into {} change groups", groups.size());
 
+        //TODO дальше не работает, поскольку загружается из кэша граф и в провайдерах нет указания на директорию
         changeGroupEnrichment.enrich(groups, sourceGraph, targetGraph, sourceProvider.localProjectRoot().get(), targetProvider.localProjectRoot().get());
 
         int totalSnippets = groups.stream().mapToInt(g -> g.enrichments().size()).sum();
