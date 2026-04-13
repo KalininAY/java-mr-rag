@@ -1,7 +1,5 @@
 package com.example.mrrag.review.model;
 
-import com.example.mrrag.review.pipeline.GroupRepresentation;
-
 import java.util.List;
 
 /**
