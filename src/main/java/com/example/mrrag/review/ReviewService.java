@@ -69,7 +69,21 @@ public class ReviewService {
                 mr.getSourceBranch(), mr.getSourceBranch());
         // --- Parallel AST graph build ---
         log.info("Building AST graphs in parallel...");
+        log.info("Both branches cloned successfully: source={}, target={}",
+// 15:12:00
+// 2026-04-08 15:32:46.216 DEBUG 7224 --- [onPool-worker-2] s.support.compiler.jdt.JDTTreeBuilder    : Could not find declaration for variable Assertions at (D:/PROJS/java-mr-rag/mr-rag-workspace/EPVV-mr765/to-master-2026-04-08_12-30-31-243/src/test/java/suites/AllureTest.java:87).
+// 2026-04-08 15:32:51.704  INFO 7224 --- [onPool-worker-2] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromModel: running 15 passes in parallel via ForkJoinPool
+// 2026-04-08 15:34:20.491  INFO 7224 --- [onPool-worker-1] c.example.mrrag.graph.GraphBuilderImpl   : AST graph built: 45080 nodes, 6002 edge-sources
+// 2026-04-08 15:34:21.042 DEBUG 7224 --- [onPool-worker-4] c.e.m.graph.raw.ProjectGraphCacheStore   : Saved 1 segment(s) — bundle: mr-rag-workspace\graph-cache\from-C4548_part7-2026-04-08_12-30-31-103___C4548_part7___dc3dd9f, global deps: mr-rag-workspace\graph-cache\deps
+// 2026-04-08 15:34:21.042 DEBUG 7224 --- [onPool-worker-4] c.example.mrrag.graph.GraphBuilderImpl   : buildGraph: saved to disk cache for ProjectKey[projectRoot=D:\PROJS\java-mr-rag\mr-rag-workspace\EPVV-mr765\from-C4548_part7-2026-04-08_12-30-31-103, fingerprint=git:dc3dd9f3cf28cb2a1ea8e0aba141ddb16710c05b]
+// 2026-04-08 15:35:33.601  INFO 7224 --- [onPool-worker-2] c.example.mrrag.graph.GraphBuilderImpl   : AST graph built: 45437 nodes, 6044 edge-sources
+// 2026-04-08 15:35:33.601  INFO 7224 --- [nio-8080-exec-2] com.example.mrrag.review.ReviewService   : Both AST graphs built successfully
 
+// 2026-04-08 16:48:41
+// 2026-04-08 16:54:15.890  INFO 5304 --- [onPool-worker-6] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromModel: running 15 passes in parallel via ForkJoinPool
+// 2026-04-08 16:53:49.023  INFO 5304 --- [onPool-worker-2] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromSources: merged graph — 45531 nodes, 6074 edge-sources
+// 2026-04-08 16:54:41.365  INFO 5304 --- [onPool-worker-6] c.example.mrrag.graph.GraphBuilderImpl   : AST graph built: 7385 nodes, 506 edge-sources
+// 2026-04-08 16:54:41.783  INFO 5304 --- [onPool-worker-1] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromSources: merged graph — 45172 nodes, 6032 edge-sources
 
         ExecutorService graphExecutor = Executors.newFixedThreadPool(2);
         ProjectGraph sourceGraph;
