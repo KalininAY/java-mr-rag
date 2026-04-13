@@ -1,7 +1,7 @@
 package com.example.mrrag.app.controller;
 
+import com.example.mrrag.app.repo.CodeRepositoryException;
 import lombok.extern.slf4j.Slf4j;
-import org.gitlab4j.api.GitLabApiException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -21,16 +21,16 @@ public class GlobalExceptionHandler {
         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
     }
 
-    @ExceptionHandler(GitLabApiException.class)
-    public ProblemDetail handleGitLab(GitLabApiException ex) {
-        log.error("GitLab API error", ex);
-        return ProblemDetail.forStatusAndDetail(
-                HttpStatus.BAD_GATEWAY, "GitLab API error: " + ex.getMessage());
-    }
-
     @ExceptionHandler(IllegalArgumentException.class)
     public ProblemDetail handleIllegal(IllegalArgumentException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+    }
+
+    @ExceptionHandler(CodeRepositoryException.class)
+    public ProblemDetail handleCodeRepo(Exception ex) {
+        log.error("Code repository problem", ex);
+        return ProblemDetail.forStatusAndDetail(
+                HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());
     }
 
     @ExceptionHandler(Exception.class)
@@ -39,4 +39,6 @@ public class GlobalExceptionHandler {
         return ProblemDetail.forStatusAndDetail(
                 HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());
     }
+
+
 }

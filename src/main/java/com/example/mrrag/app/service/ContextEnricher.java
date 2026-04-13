@@ -65,7 +65,7 @@ public class ContextEnricher implements ChangeGroupEnrichmentPort {
             ProjectGraph targetGraph,
             Path sourceRepoDir,
             Path targetRepoDir
-    ) throws Exception {
+    ) {
         for (ChangeGroup group : groups) {
             enrichGroup(group, sourceGraph, targetGraph, sourceRepoDir, targetRepoDir);
         }

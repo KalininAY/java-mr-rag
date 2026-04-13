@@ -18,5 +18,5 @@ public interface ChangeGroupEnrichmentPort {
             ProjectGraph sourceGraph,
             ProjectGraph targetGraph,
             Path sourceRepoDir,
-            Path targetRepoDir) throws Exception;
+            Path targetRepoDir);
 }

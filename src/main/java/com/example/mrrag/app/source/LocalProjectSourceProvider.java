@@ -1,5 +1,7 @@
 package com.example.mrrag.app.source;
 
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -27,16 +29,18 @@ import java.util.stream.Stream;
  * {@code projectRoot} with forward slashes — matching paths GitLab reports in diff output.
  */
 @Slf4j
-public class LocalCloneProjectSourceProvider implements ProjectSourceProvider {
+@Setter
+@NoArgsConstructor
+public class LocalProjectSourceProvider implements ProjectSourceProvider {
 
-    private static final java.util.Set<String> EXCLUDED_DIRS = java.util.Set.of(
+    protected static final java.util.Set<String> EXCLUDED_DIRS = java.util.Set.of(
             "build", "target", "out", ".gradle", ".git",
             "generated", "generated-sources", "generated-test-sources"
     );
 
-    private final Path projectRoot;
+    protected Path projectRoot;
 
-    public LocalCloneProjectSourceProvider(Path projectRoot) {
+    public LocalProjectSourceProvider(Path projectRoot) {
         this.projectRoot = projectRoot;
     }
 
@@ -46,7 +50,7 @@ public class LocalCloneProjectSourceProvider implements ProjectSourceProvider {
     }
 
     @Override
-    public List<ProjectSource> getSources() throws IOException {
+    public List<ProjectSource> getSources() {
         log.info("Scanning local clone for .java files: {}", projectRoot);
 
         List<Path> sourceRoots = resolveSourceRoots();
@@ -59,16 +63,18 @@ public class LocalCloneProjectSourceProvider implements ProjectSourceProvider {
             if (!Files.isDirectory(srcRoot)) continue;
             try (Stream<Path> walk = Files.walk(srcRoot)) {
                 walk.filter(Files::isRegularFile)
-                    .filter(p -> p.toString().endsWith(".java"))
-                    .forEach(absPath -> {
-                        try {
-                            String content = Files.readString(absPath, StandardCharsets.UTF_8);
-                            String rel = relPath(rootStr, absPath.toAbsolutePath().toString());
-                            result.add(new ProjectSource(rel, content));
-                        } catch (IOException ex) {
-                            log.warn("Skipping {} — read error: {}", absPath, ex.getMessage());
-                        }
-                    });
+                        .filter(p -> p.toString().endsWith(".java"))
+                        .forEach(absPath -> {
+                            try {
+                                String content = Files.readString(absPath, StandardCharsets.UTF_8);
+                                String rel = relPath(rootStr, absPath.toAbsolutePath().toString());
+                                result.add(new ProjectSource(rel, content));
+                            } catch (IOException ex) {
+                                log.warn("Skipping {} — read error: {}", absPath, ex.getMessage());
+                            }
+                        });
+            } catch (IOException ex) {
+                log.debug("Skip path source file, message ex = " + ex.getMessage());
             }
         }
 
@@ -76,7 +82,7 @@ public class LocalCloneProjectSourceProvider implements ProjectSourceProvider {
         return result;
     }
 
-    private List<Path> resolveSourceRoots() throws IOException {
+    protected List<Path> resolveSourceRoots() {
         List<Path> candidates = List.of(
                 projectRoot.resolve("src/main/java"),
                 projectRoot.resolve("src/test/java")
@@ -89,14 +95,16 @@ public class LocalCloneProjectSourceProvider implements ProjectSourceProvider {
         List<Path> fallback = new ArrayList<>();
         try (Stream<Path> top = Files.list(projectRoot)) {
             top.filter(Files::isDirectory)
-               .filter(p -> !EXCLUDED_DIRS.contains(p.getFileName().toString()))
-               .filter(p -> !p.getFileName().toString().startsWith("."))
-               .forEach(fallback::add);
+                    .filter(p -> !EXCLUDED_DIRS.contains(p.getFileName().toString()))
+                    .filter(p -> !p.getFileName().toString().startsWith("."))
+                    .forEach(fallback::add);
+        } catch (IOException ex) {
+            log.debug("Skip resolve source root, message ex = " + ex.getMessage());
         }
         return fallback.isEmpty() ? List.of(projectRoot) : fallback;
     }
 
-    private static String relPath(String root, String abs) {
+    protected static String relPath(String root, String abs) {
         if (abs.startsWith(root)) {
             return abs.substring(root.length()).replaceFirst("^[/\\\\]", "").replace("\\", "/");
         }

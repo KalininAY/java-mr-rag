@@ -1,7 +1,7 @@
 package com.example.mrrag.app.controller;
 
 import com.example.mrrag.app.service.AstGraphService;
-import com.example.mrrag.app.source.LocalCloneProjectSourceProvider;
+import com.example.mrrag.app.source.LocalProjectSourceProvider;
 import com.example.mrrag.graph.AstGraphUtils;
 import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.ProjectGraph;
@@ -56,7 +56,7 @@ public class GraphDebugController {
     @GetMapping("/stats")
     public Map<String, Object> stats(@RequestParam String repoDir) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(new LocalCloneProjectSourceProvider(root));
+        ProjectGraph graph = graphService.buildGraph(new LocalProjectSourceProvider(root), true);
 
         var build = linkedGraphBuilder.build(graph);
         String s = build.byId("bugbusters.modules.extensions.allure.model.AllureStep#findPlaceFrom()").toMarkdown();
@@ -103,7 +103,7 @@ public class GraphDebugController {
     public Map<String, Object> file(@RequestParam String repoDir,
                                     @RequestParam String diffPath) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(new LocalCloneProjectSourceProvider(root));
+        ProjectGraph graph = graphService.buildGraph(new LocalProjectSourceProvider(root), true);
 
         String normalized = AstGraphUtils.normalizeFilePath(diffPath, graph);
         List<GraphNode> nodes = graph.nodesAtLine(normalized, -1);
@@ -151,7 +151,7 @@ public class GraphDebugController {
                                     @RequestParam String diffPath,
                                     @RequestParam int line) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(new LocalCloneProjectSourceProvider(root));
+        ProjectGraph graph = graphService.buildGraph(new LocalProjectSourceProvider(root), true);
 
         String normalized = AstGraphUtils.normalizeFilePath(diffPath, graph);
         List<GraphNode> enclosing = graph.nodesAtLine(normalized, line);
