@@ -15,22 +15,17 @@ import org.springframework.stereotype.Component;
 import java.util.*;
 
 /**
- * Core Context pipeline algorithm.
- *
+ * RAG context pipeline for MR review.
+ * <p>
+ * Stages match {@link #run}:
  * <ol>
- *   <li><b>Diffs</b> — taken as already-parsed {@link ChangeGroup} list.</li>
- *   <li><b>Split into groups</b> — classify each group by {@link ChangeType}.</li>
- *   <li><b>Per group: find relevant classes</b> — {@link GraphNode}s of kind
- *       CLASS / INTERFACE / ENUM from source <em>and</em> target graphs whose
- *       file path matches the group's changed files.</li>
- *   <li><b>Per group: find relevant nodes</b> — members of those classes plus
- *       nodes directly at the changed lines.</li>
- *   <li><b>Per change type: apply strategy → collect context</b> — the
- *       appropriate {@link ContextStrategy} is selected; its results are stored
- *       in a shared {@link ContextCollector}.  Context may duplicate across
- *       groups by design.</li>
- *   <li><b>Build representations</b> — one {@link GroupRepresentation} per
- *       group via {@link GroupRepresentationBuilder}.</li>
+ *   <li><b>Parse</b> — {@link DiffParser}: GitLab {@link Diff}s → {@link ChangedLine}s.</li>
+ *   <li><b>Filter</b> — ordered {@link ContextFilter} chain (each sees the previous output).</li>
+ *   <li><b>Group</b> — {@link ChangeGrouper}: lines → {@link ChangeGroup}s (AST-aware when graph present).</li>
+ *   <li><b>Classify</b> — {@link #classifyGroup} → {@link ChangeType} per group.</li>
+ *   <li><b>Collect context</b> — per type, {@link ContextStrategy}s → {@link ContextCollector}
+ *       (also resolves relevant classes/nodes for logging / future use).</li>
+ *   <li><b>Represent</b> — {@link GroupRepresentationBuilder}: one {@link GroupRepresentation} per group.</li>
  * </ol>
  */
 @Slf4j
@@ -59,11 +54,15 @@ public class ContextPipeline {
         Set<ChangedLine> changedLines = diffParser.parse(diffs);
         log.info("ContextPipeline.step1: {} changedLines", changedLines.size());
 
-        //Step 2: filter ChangedLine
-        Set<ChangedLine> filteredLines =
-                filters.stream().reduce(changedLines,
-                        (filteredLinesTmp, it) -> it.filter(filteredLinesTmp, sourceGraph, targetGraph),
-                        (c1, c2) -> c1);
+        // Step 2: ordered filter chain via reduce (sequential stream — combiner unused)
+        Set<ChangedLine> filteredLines = filters.stream()
+                .reduce(
+                        changedLines,
+                        (acc, filter) -> filter.filter(acc, sourceGraph, targetGraph),
+                        (left, right) -> {
+                            throw new UnsupportedOperationException(
+                                    "ContextFilter chain is sequential; parallel combine is undefined");
+                        });
         log.info("ContextPipeline.step2: {} filteredLines", filteredLines.size());
 
         //Step 3: group line

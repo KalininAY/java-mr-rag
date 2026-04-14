@@ -1,16 +1,24 @@
 package com.example.mrrag.review.model;
 
 /**
- * Semantic type of a ChangeGroup — derived from the mix of ChangedLine types
- * and the AST node kinds touched by the group.
+ * Semantic label for a {@link com.example.mrrag.review.model.ChangeGroup}, computed in
+ * {@link com.example.mrrag.review.pipeline.ContextPipeline#classifyGroup(com.example.mrrag.review.model.ChangeGroup)}.
+ * <p>
+ * It is <em>not</em> a 1:1 mapping from {@link com.example.mrrag.review.model.ChangedLine.LineType}:
+ * {@code CONTEXT} lines do not set the add/delete flags; classification uses only
+ * {@code ADD} / {@code DELETE} presence and, for {@link #CROSS_SCOPE}, distinct file paths
+ * within the same merged group.
  */
 public enum ChangeType {
-    /** Only ADD lines — new code introduced */
+    /** Group has ADD lines and no DELETE lines (CONTEXT ignored). */
     ADDITION,
-    /** Only DELETE lines — code removed */
+    /** Group has DELETE lines and no ADD lines. */
     DELETION,
-    /** Mix of ADD + DELETE in the same AST scope — in-place modification */
+    /** Both ADD and DELETE lines appear in the group (same file after {@code classifyGroup} rules). */
     MODIFICATION,
-    /** Lines span multiple AST scopes (cross-file or multi-method) */
+    /**
+     * More than one distinct {@link com.example.mrrag.review.model.ChangedLine#filePath()} in the group
+     * (e.g. after cross-file merge in {@link com.example.mrrag.review.pipeline.ChangeGrouper}).
+     */
     CROSS_SCOPE
 }
