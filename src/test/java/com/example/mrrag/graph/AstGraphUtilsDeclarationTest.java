@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.CtLambda;
+import spoon.reflect.declaration.CtClass;
 import spoon.reflect.declaration.CtField;
 import spoon.reflect.declaration.CtMethod;
 import spoon.reflect.visitor.filter.TypeFilter;
@@ -13,6 +14,27 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AstGraphUtilsDeclarationTest {
+
+    @Test
+    void declarationOf_class_preservesNewlinesBetweenAnnotationAndKeyword() {
+        String src = """
+                package p;
+
+                @SuppressWarnings("unused")
+                public class Steps {
+                }
+                """;
+        CtModel model = buildModel(src, "p/Steps.java");
+        CtClass<?> c = model.getElements(new TypeFilter<>(CtClass.class)).stream()
+                .filter(x -> "Steps".equals(x.getSimpleName()))
+                .findFirst()
+                .orElseThrow();
+        String[] lines = src.split("\n", -1);
+        String decl = AstGraphUtils.declarationOf(lines, c.getPosition());
+        assertTrue(decl.contains("\n"), "declaration should keep line breaks for markdown: " + decl);
+        assertTrue(decl.contains("@SuppressWarnings"), decl);
+        assertTrue(decl.contains("public class Steps"), decl);
+    }
 
     @Test
     void declarationOf_method_excludesBody() {
@@ -34,7 +56,7 @@ class AstGraphUtilsDeclarationTest {
         assertTrue(decl.contains("int bar"), decl);
         assertTrue(decl.contains("String x"), decl);
         assertFalse(decl.contains("return"), decl);
-        assertFalse(decl.contains("{"), () -> decl);
+        assertFalse(decl.contains("{"), decl);
     }
 
     @Test

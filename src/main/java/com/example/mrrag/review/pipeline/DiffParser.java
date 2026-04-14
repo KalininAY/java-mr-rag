@@ -1,4 +1,4 @@
-package com.example.mrrag.review;
+package com.example.mrrag.review.pipeline;
 
 import com.example.mrrag.review.model.ChangedLine;
 import lombok.extern.slf4j.Slf4j;
@@ -38,7 +38,7 @@ public class DiffParser {
 
     /**
      * Parse a single file's unified diff string.
-     *
+     * <p>
      * Unified diff format:
      * @@ -oldStart,oldCount +newStart,newCount @@
      * -deleted line
@@ -70,7 +70,7 @@ public class DiffParser {
                 oldLine++;
             } else {
                 // context line (starts with space)
-                String content = raw.length() > 0 ? raw.substring(1) : "";
+                String content = !raw.isEmpty() ? raw.substring(1) : "";
                 lines.add(new ChangedLine(filePath, newLine, oldLine, content, ChangedLine.LineType.CONTEXT));
                 newLine++;
                 oldLine++;

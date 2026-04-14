@@ -3,10 +3,11 @@ package com.example.mrrag;
 import com.example.mrrag.graph.GraphQueryService;
 import com.example.mrrag.review.model.ChangedLine;
 import com.example.mrrag.review.model.ChangeGroup;
-import com.example.mrrag.review.ChangeGrouper;
+import com.example.mrrag.review.pipeline.ChangeGrouper;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -16,7 +17,7 @@ class ChangeGrouperTest {
 
     @Test
     void singleFileContiguousChangesOneGroup() {
-        List<ChangedLine> lines = List.of(
+        Set<ChangedLine> lines = Set.of(
                 line("Foo.java", 10, ChangedLine.LineType.ADD),
                 line("Foo.java", 11, ChangedLine.LineType.ADD),
                 line("Foo.java", 12, ChangedLine.LineType.DELETE)
@@ -27,7 +28,7 @@ class ChangeGrouperTest {
 
     @Test
     void twoFilesProduceTwoGroups() {
-        List<ChangedLine> lines = List.of(
+        Set<ChangedLine> lines = Set.of(
                 line("Foo.java", 10, ChangedLine.LineType.ADD),
                 line("Bar.java", 20, ChangedLine.LineType.DELETE)
         );
@@ -37,7 +38,7 @@ class ChangeGrouperTest {
 
     @Test
     void emptyLinesProduceNoGroups() {
-        assertThat(grouper.group(List.of())).isEmpty();
+        assertThat(grouper.group(Set.of())).isEmpty();
     }
 
     private ChangedLine line(String file, int lineNo, ChangedLine.LineType type) {

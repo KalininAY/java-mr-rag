@@ -1,4 +1,4 @@
-package com.example.mrrag.review;
+package com.example.mrrag.review.pipeline;
 
 import com.example.mrrag.graph.GraphQueryService;
 import com.example.mrrag.graph.model.GraphNode;
