@@ -11,7 +11,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.nio.file.Path;
 import java.util.*;
 
 /**
@@ -33,13 +32,7 @@ public class DeletionContextStrategy implements ContextStrategy {
     }
 
     @Override
-    public List<EnrichmentSnippet> collectContext(
-            ChangeGroup group,
-            ProjectGraph sourceGraph,
-            ProjectGraph targetGraph,
-            Path sourceRepoDir,
-            Path targetRepoDir
-    ) {
+    public List<EnrichmentSnippet> collectContext(ChangeGroup group, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         List<EnrichmentSnippet> snippets = new ArrayList<>();
 
         List<ChangedLine> deleted = group.changedLines().stream()
@@ -49,8 +42,8 @@ public class DeletionContextStrategy implements ContextStrategy {
         for (ChangedLine cl : deleted) {
             if (snippets.size() >= maxSnippetsPerGroup) break;
 
-            String file    = AstGraphUtils.normalizeFilePath(cl.filePath(), targetGraph);
-            int    oldLine = cl.oldLineNumber();
+            String file = AstGraphUtils.normalizeFilePath(cl.filePath(), targetGraph);
+            int oldLine = cl.oldLineNumber();
             if (oldLine <= 0) continue;
 
             List<GraphNode> declared = targetGraph.byLine
@@ -63,9 +56,9 @@ public class DeletionContextStrategy implements ContextStrategy {
                 if (usageEdges.isEmpty()) continue;
 
                 EnrichmentSnippet.SnippetType type = switch (decl.kind()) {
-                    case METHOD   -> EnrichmentSnippet.SnippetType.METHOD_CALLERS;
-                    case FIELD    -> EnrichmentSnippet.SnippetType.FIELD_USAGES;
-                    default       -> EnrichmentSnippet.SnippetType.VARIABLE_USAGES;
+                    case METHOD -> EnrichmentSnippet.SnippetType.METHOD_CALLERS;
+                    case FIELD -> EnrichmentSnippet.SnippetType.FIELD_USAGES;
+                    default -> EnrichmentSnippet.SnippetType.VARIABLE_USAGES;
                 };
 
                 List<String> usageLines = usageEdges.stream()

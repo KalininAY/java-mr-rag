@@ -1,11 +1,11 @@
 package com.example.mrrag.review.strategy.impl;
 
-import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.AstGraphUtils;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.strategy.ContextStrategy;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -25,6 +25,7 @@ import java.util.*;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class ModificationContextStrategy implements ContextStrategy {
 
     private final AdditionContextStrategy additionStrategy;
@@ -36,60 +37,41 @@ public class ModificationContextStrategy implements ContextStrategy {
     @Value("${app.enrichment.maxSnippetLines:30}")
     private int maxSnippetLines;
 
-    public ModificationContextStrategy(
-            AdditionContextStrategy additionStrategy,
-            DeletionContextStrategy deletionStrategy
-    ) {
-        this.additionStrategy = additionStrategy;
-        this.deletionStrategy = deletionStrategy;
-    }
-
     @Override
     public boolean supports(ChangeType changeType) {
         return changeType == ChangeType.MODIFICATION || changeType == ChangeType.CROSS_SCOPE;
     }
 
     @Override
-    public List<EnrichmentSnippet> collectContext(
-            ChangeGroup group,
-            ProjectGraph sourceGraph,
-            ProjectGraph targetGraph,
-            Path sourceRepoDir,
-            Path targetRepoDir
-    ) {
+    public List<EnrichmentSnippet> collectContext(ChangeGroup group, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         List<EnrichmentSnippet> snippets = new ArrayList<>();
 
         // 1. Enclosing method body
-        collectContainingMethod(group, sourceGraph, sourceRepoDir, snippets);
+        collectContainingMethod(group, sourceGraph, snippets);
 
         // 2. Edges on ADD lines (re-use addition strategy)
         if (snippets.size() < maxSnippetsPerGroup) {
             List<EnrichmentSnippet> addCtx = additionStrategy.collectContext(
-                    group, sourceGraph, targetGraph, sourceRepoDir, targetRepoDir);
+                    group, sourceGraph, targetGraph);
             addCtx.stream()
-                  .limit(maxSnippetsPerGroup - snippets.size())
-                  .forEach(snippets::add);
+                    .limit(maxSnippetsPerGroup - snippets.size())
+                    .forEach(snippets::add);
         }
 
         // 3. Deleted declarations impact (re-use deletion strategy)
         if (snippets.size() < maxSnippetsPerGroup) {
             List<EnrichmentSnippet> delCtx = deletionStrategy.collectContext(
-                    group, sourceGraph, targetGraph, sourceRepoDir, targetRepoDir);
+                    group, sourceGraph, targetGraph);
             delCtx.stream()
-                  .limit(maxSnippetsPerGroup - snippets.size())
-                  .forEach(snippets::add);
+                    .limit(maxSnippetsPerGroup - snippets.size())
+                    .forEach(snippets::add);
         }
 
         log.debug("ModificationContextStrategy: group={} snippets={}", group.id(), snippets.size());
         return snippets;
     }
 
-    private void collectContainingMethod(
-            ChangeGroup group,
-            ProjectGraph graph,
-            Path repoDir,
-            List<EnrichmentSnippet> snippets
-    ) {
+    private void collectContainingMethod(ChangeGroup group, ProjectGraph graph, List<EnrichmentSnippet> snippets) {
         if (snippets.size() >= maxSnippetsPerGroup) return;
 
         ChangedLine first = group.changedLines().stream()
@@ -99,7 +81,7 @@ public class ModificationContextStrategy implements ContextStrategy {
         if (first == null) return;
 
         String file = AstGraphUtils.normalizeFilePath(first.filePath(), graph);
-        int    line = first.lineNumber() > 0 ? first.lineNumber() : first.oldLineNumber();
+        int line = first.lineNumber() > 0 ? first.lineNumber() : first.oldLineNumber();
 
         graph.nodesAtLine(file, line).stream()
                 .filter(n -> n.kind() == NodeKind.METHOD)
@@ -124,7 +106,7 @@ public class ModificationContextStrategy implements ContextStrategy {
         try {
             List<String> all = Files.readAllLines(file);
             int start = Math.max(0, from - 1);
-            int end   = Math.min(all.size(), to);
+            int end = Math.min(all.size(), to);
             if (start >= end) return List.of();
             return all.subList(start, end).stream()
                     .map(l -> l.length() > 200 ? l.substring(0, 200) + "..." : l)

@@ -1,5 +1,6 @@
 package com.example.mrrag.review.pipeline;
 
+import com.example.mrrag.review.ContextCollector;
 import com.example.mrrag.review.model.*;
 import org.springframework.stereotype.Component;
 
@@ -8,7 +9,7 @@ import java.util.List;
 /**
  * Builds a {@link GroupRepresentation} for a single ChangeGroup,
  * combining its diff lines with the context snippets collected by
- * the {@link RagPipeline}.
+ * the {@link ContextPipeline}.
  */
 @Component
 public class GroupRepresentationBuilder {
@@ -16,7 +17,7 @@ public class GroupRepresentationBuilder {
     /**
      * Assemble a representation from the group, its classified change type,
      * and the context snippets already collected by the pipeline's
-     * {@link com.example.mrrag.review.strategy.ContextCollector}.
+     * {@link ContextCollector}.
      */
     public GroupRepresentation build(
             ChangeGroup group,

@@ -17,8 +17,6 @@ import java.util.*;
  * <h2>Key operations</h2>
  * <ul>
  *   <li>{@link #methodsInFile} / {@link #findContainingMethod} — locate METHOD nodes.</li>
- *   <li> /  — detect purely moved symbols
- *       for {@link com.example.mrrag.review.SemanticDiffFilter}.</li>
  *   <li>{@link #astKeysForLines} — collect qualified IDs touched by a set of changed lines
  *       for cross-file merge in {@link com.example.mrrag.review.ChangeGrouper}.</li>
  * </ul>

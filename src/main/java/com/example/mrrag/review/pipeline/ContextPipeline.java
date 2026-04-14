@@ -4,18 +4,21 @@ import com.example.mrrag.graph.AstGraphUtils;
 import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
+import com.example.mrrag.review.ChangeGrouper;
+import com.example.mrrag.review.DiffParser;
+import com.example.mrrag.review.filter.ContextFilter;
 import com.example.mrrag.review.model.*;
-import com.example.mrrag.review.strategy.ContextCollector;
+import com.example.mrrag.review.ContextCollector;
 import com.example.mrrag.review.strategy.ContextStrategy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.gitlab4j.api.models.Diff;
 import org.springframework.stereotype.Component;
 
-import java.nio.file.Path;
 import java.util.*;
 
 /**
- * Core RAG pipeline algorithm.
+ * Core Context pipeline algorithm.
  *
  * <ol>
  *   <li><b>Diffs</b> — taken as already-parsed {@link ChangeGroup} list.</li>
@@ -36,9 +39,12 @@ import java.util.*;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class RagPipeline {
+public class ContextPipeline {
 
     private final List<ContextStrategy> strategies;
+    private final List<ContextFilter> filters;
+    private final DiffParser diffParser;
+    private final ChangeGrouper changeGrouper;
     private final GroupRepresentationBuilder representationBuilder;
 
     // -----------------------------------------------------------------------
@@ -46,36 +52,40 @@ public class RagPipeline {
     // -----------------------------------------------------------------------
 
     /**
-     * Execute the full RAG pipeline.
+     * Execute the full Context pipeline.
      *
-     * @param groups        change groups produced by ChangeGrouper
-     * @param sourceGraph   AST graph of the source (feature) branch
-     * @param targetGraph   AST graph of the target (base) branch
-     * @param sourceRepoDir local path to the cloned source branch
-     * @param targetRepoDir local path to the cloned target branch
+     * @param diffs       source diffs from MR
+     * @param sourceGraph AST graph of the source (feature) branch
+     * @param targetGraph AST graph of the target (base) branch
      * @return one {@link GroupRepresentation} per input group, in original order
      */
-    public List<GroupRepresentation> run(
-            List<ChangeGroup> groups,
-            ProjectGraph sourceGraph,
-            ProjectGraph targetGraph,
-            Path sourceRepoDir,
-            Path targetRepoDir
-    ) {
-        log.info("RagPipeline.run: {} groups", groups.size());
+    public List<GroupRepresentation> run(List<Diff> diffs, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+        log.info("ContextPipeline.run: {} diffs", diffs.size());
 
-        // Step 1: diffs already passed in as ChangeGroups
+        // Step 1: parse diffs to ChangedLine
+        List<ChangedLine> changedLines = diffParser.parse(diffs);
+        log.info("ContextPipeline.step1: {} changedLines", changedLines.size());
 
-        // Step 2: classify groups by ChangeType
+        //Step 2: filter ChangedLine
+        List<Collection<ChangedLine>> filteredLines =
+                filters.stream().map(it -> it.filter(changedLines, sourceGraph, targetGraph)).toList();
+        log.info("ContextPipeline.step2: {} filteredLines", filteredLines.size());
+
+        //Step 3: group line
+        List<ChangeGroup> groups = changeGrouper.group(changedLines, sourceGraph);
+        log.info("ContextPipeline.step3: {} groups", groups.size());
+
+        // Step 4: classify groups by ChangeType
         Map<ChangeType, List<ChangeGroup>> byType = classifyGroups(groups);
+        log.info("ContextPipeline.step4: {} classifyGroups", byType.size());
         byType.forEach((t, gs) -> log.info("  ChangeType={}: {} group(s)", t, gs.size()));
 
         // Shared collector — context may overlap across groups intentionally
         ContextCollector collector = new ContextCollector();
 
-        // Steps 3–5: per group find classes/nodes, per type collect context
+        // Steps 6: per group find classes/nodes, per type collect context
         for (Map.Entry<ChangeType, List<ChangeGroup>> entry : byType.entrySet()) {
-            ChangeType type      = entry.getKey();
+            ChangeType type = entry.getKey();
             List<ChangeGroup> gs = entry.getValue();
 
             List<ContextStrategy> applicable = strategies.stream()
@@ -102,8 +112,7 @@ public class RagPipeline {
 
                 // Step 5: apply strategies → add to collector
                 for (ContextStrategy strategy : applicable) {
-                    List<EnrichmentSnippet> ctx = strategy.collectContext(
-                            group, sourceGraph, targetGraph, sourceRepoDir, targetRepoDir);
+                    List<EnrichmentSnippet> ctx = strategy.collectContext(group, sourceGraph, targetGraph);
                     collector.addAll(group.id(), ctx);
                 }
             }
@@ -114,9 +123,9 @@ public class RagPipeline {
         // Step 6: build per-group representations
         List<GroupRepresentation> result = new ArrayList<>(groups.size());
         for (ChangeGroup group : groups) {
-            ChangeType type               = classifyGroup(group);
-            List<EnrichmentSnippet> ctx   = collector.get(group.id());
-            GroupRepresentation repr      = representationBuilder.build(group, type, ctx);
+            ChangeType type = classifyGroup(group);
+            List<EnrichmentSnippet> ctx = collector.get(group.id());
+            GroupRepresentation repr = representationBuilder.build(group, type, ctx);
             result.add(repr);
             log.debug("Representation: group={} type={} snippets={}",
                     group.id(), type, ctx.size());
@@ -143,19 +152,19 @@ public class RagPipeline {
      * the number of distinct files involved.
      */
     public static ChangeType classifyGroup(ChangeGroup group) {
-        boolean hasAdd    = false;
+        boolean hasAdd = false;
         boolean hasDelete = false;
         Set<String> files = new HashSet<>();
 
         for (ChangedLine l : group.changedLines()) {
-            if (l.type() == ChangedLine.LineType.ADD)    hasAdd    = true;
+            if (l.type() == ChangedLine.LineType.ADD) hasAdd = true;
             if (l.type() == ChangedLine.LineType.DELETE) hasDelete = true;
             files.add(l.filePath());
         }
 
-        if (files.size() > 1)       return ChangeType.CROSS_SCOPE;
-        if (hasAdd && hasDelete)    return ChangeType.MODIFICATION;
-        if (hasDelete)              return ChangeType.DELETION;
+        if (files.size() > 1) return ChangeType.CROSS_SCOPE;
+        if (hasAdd && hasDelete) return ChangeType.MODIFICATION;
+        if (hasDelete) return ChangeType.DELETION;
         return ChangeType.ADDITION;
     }
 
@@ -185,7 +194,7 @@ public class RagPipeline {
         graph.nodes.values().stream()
                 .filter(n -> file.equals(n.filePath()))
                 .filter(n -> n.kind() == NodeKind.CLASS
-                          || n.kind() == NodeKind.INTERFACE)
+                        || n.kind() == NodeKind.INTERFACE)
                 .forEach(out::add);
     }
 

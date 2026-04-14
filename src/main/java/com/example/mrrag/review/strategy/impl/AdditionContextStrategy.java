@@ -39,13 +39,7 @@ public class AdditionContextStrategy implements ContextStrategy {
     }
 
     @Override
-    public List<EnrichmentSnippet> collectContext(
-            ChangeGroup group,
-            ProjectGraph sourceGraph,
-            ProjectGraph targetGraph,
-            Path sourceRepoDir,
-            Path targetRepoDir
-    ) {
+    public List<EnrichmentSnippet> collectContext(ChangeGroup group, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         List<EnrichmentSnippet> snippets = new ArrayList<>();
         Set<String> seenDecl = new HashSet<>();
 
@@ -75,18 +69,15 @@ public class AdditionContextStrategy implements ContextStrategy {
                     if (target == null) continue;
 
                     switch (edge.kind()) {
-                        case INVOKES ->
-                                emitDeclaration(target, sourceRepoDir, snippets,
-                                        EnrichmentSnippet.SnippetType.METHOD_DECLARATION,
-                                        "Declaration of method '" + target.simpleName() + "' called in added code");
-                        case READS_FIELD, WRITES_FIELD ->
-                                emitDeclaration(target, sourceRepoDir, snippets,
-                                        EnrichmentSnippet.SnippetType.FIELD_DECLARATION,
-                                        "Declaration of field '" + target.simpleName() + "' accessed in added code");
-                        case READS_LOCAL_VAR, WRITES_LOCAL_VAR ->
-                                emitDeclaration(target, sourceRepoDir, snippets,
-                                        EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION,
-                                        "Declaration of variable '" + target.simpleName() + "' used in added code");
+                        case INVOKES -> emitDeclaration(target, snippets,
+                                EnrichmentSnippet.SnippetType.METHOD_DECLARATION,
+                                "Declaration of method '" + target.simpleName() + "' called in added code");
+                        case READS_FIELD, WRITES_FIELD -> emitDeclaration(target, snippets,
+                                EnrichmentSnippet.SnippetType.FIELD_DECLARATION,
+                                "Declaration of field '" + target.simpleName() + "' accessed in added code");
+                        case READS_LOCAL_VAR, WRITES_LOCAL_VAR -> emitDeclaration(target, snippets,
+                                EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION,
+                                "Declaration of variable '" + target.simpleName() + "' used in added code");
                         default -> {
                         }
                     }
@@ -99,12 +90,12 @@ public class AdditionContextStrategy implements ContextStrategy {
     }
 
     private void emitDeclaration(
-            GraphNode node, Path repoDir,
+            GraphNode node,
             List<EnrichmentSnippet> snippets,
             EnrichmentSnippet.SnippetType type,
             String explanation
     ) {
-        List<String> lines = readLines(repoDir, node.filePath(), node.startLine(),
+        List<String> lines = node.sourceSnippet()readLines(node.filePath(), node.startLine(),
                 Math.min(node.endLine(), node.startLine() + maxSnippetLines - 1));
         if (lines.isEmpty()) return;
         snippets.add(new EnrichmentSnippet(
@@ -120,7 +111,7 @@ public class AdditionContextStrategy implements ContextStrategy {
         try {
             List<String> all = Files.readAllLines(file);
             int start = Math.max(0, from - 1);
-            int end   = Math.min(all.size(), to);
+            int end = Math.min(all.size(), to);
             if (start >= end) return List.of();
             return all.subList(start, end).stream()
                     .map(l -> l.length() > 200 ? l.substring(0, 200) + "..." : l)

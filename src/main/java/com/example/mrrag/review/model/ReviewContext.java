@@ -11,14 +11,13 @@ import java.util.List;
  * that will be fed to the LLM prompt builder.
  */
 public record ReviewContext(
+        String namespace,
         String repo,
         long mrIid,
         String sourceBranch,
         String targetBranch,
         String mrTitle,
         String mrDescription,
-        List<ChangeGroup> groups,
-        /** RAG pipeline output — one per group, in same order as {@code groups}. */
-        List<GroupRepresentation> representations,
-        ReviewStats stats
-) {}
+        List<GroupRepresentation> representations
+) {
+}

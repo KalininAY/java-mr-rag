@@ -1,4 +1,4 @@
-package com.example.mrrag.review.strategy;
+package com.example.mrrag.review;
 
 import com.example.mrrag.review.model.EnrichmentSnippet;
 
@@ -47,14 +47,6 @@ public class ContextCollector {
     public List<EnrichmentSnippet> get(String groupId) {
         return Collections.unmodifiableList(
                 byGroup.getOrDefault(groupId, List.of()));
-    }
-
-    /**
-     * Returns {@code true} if a snippet at the same file+line range was
-     * already added by any group in this collector instance.
-     */
-    public boolean isGloballySeen(EnrichmentSnippet snippet) {
-        return globalSeenKeys.contains(snippetKey(snippet));
     }
 
     /** Total number of snippets across all groups. */

@@ -4,6 +4,7 @@ import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.ChangeGroup;
 import com.example.mrrag.review.model.ChangeType;
 import com.example.mrrag.review.model.EnrichmentSnippet;
+import com.example.mrrag.review.pipeline.ContextPipeline;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -12,7 +13,7 @@ import java.util.List;
  * Strategy that resolves context snippets for a specific {@link ChangeType}.
  *
  * <p>Implementations are discovered via Spring's {@code @Component} scanning
- * and injected as {@code List<ContextStrategy>} into {@link com.example.mrrag.review.pipeline.RagPipeline}.
+ * and injected as {@code List<ContextStrategy>} into {@link ContextPipeline}.
  */
 public interface ContextStrategy {
 
@@ -28,15 +29,7 @@ public interface ContextStrategy {
      * @param group        the change group to enrich
      * @param sourceGraph  AST graph of the source (feature) branch
      * @param targetGraph  AST graph of the target (base) branch
-     * @param sourceRepoDir local path to the cloned source branch
-     * @param targetRepoDir local path to the cloned target branch
      * @return list of collected context snippets (may be empty, never null)
      */
-    List<EnrichmentSnippet> collectContext(
-            ChangeGroup group,
-            ProjectGraph sourceGraph,
-            ProjectGraph targetGraph,
-            Path sourceRepoDir,
-            Path targetRepoDir
-    );
+    List<EnrichmentSnippet> collectContext(ChangeGroup group, ProjectGraph sourceGraph, ProjectGraph targetGraph);
 }
