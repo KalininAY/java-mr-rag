@@ -69,9 +69,12 @@ public class GroupRepresentationBuilder {
                   .append(s.filePath()).append(":")
                   .append(s.startLine()).append("`  \n");
                 sb.append("  _").append(s.explanation()).append("_\n");
-                if (!s.lines().isEmpty()) {
+                String src = s.sourceSnippet();
+                if (src != null && !src.isBlank()) {
                     sb.append("  ```java\n");
-                    s.lines().forEach(line -> sb.append("  ").append(line).append('\n'));
+                    for (String line : src.split("\n", -1)) {
+                        sb.append("  ").append(line).append('\n');
+                    }
                     sb.append("  ```\n");
                 }
                 sb.append('\n');
