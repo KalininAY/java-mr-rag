@@ -6,7 +6,9 @@ import org.gitlab4j.api.models.Diff;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Parses GitLab Diff objects (unified diff format) into structured ChangedLine lists.
@@ -20,8 +22,8 @@ public class DiffParser {
      * Only ADD and DELETE lines are included; CONTEXT lines are also preserved
      * to help grouper understand proximity.
      */
-    public List<ChangedLine> parse(List<Diff> diffs) {
-        List<ChangedLine> result = new ArrayList<>();
+    public Set<ChangedLine> parse(List<Diff> diffs) {
+        Set<ChangedLine> result = new LinkedHashSet<>();
         for (Diff diff : diffs) {
             if (diff.getDiff() == null || diff.getDiff().isBlank()) continue;
             if (isNonJavaFile(diff.getNewPath())) continue;

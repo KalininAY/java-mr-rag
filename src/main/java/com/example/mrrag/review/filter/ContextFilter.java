@@ -3,7 +3,7 @@ package com.example.mrrag.review.filter;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.ChangedLine;
 
-import java.util.Collection;
+import java.util.Set;
 
 /**
  * Определяет метод для фильтрации изменных строк из Diff Merge Request
@@ -18,5 +18,5 @@ public interface ContextFilter {
      * @param targetGraph текущий граф
      * @return отфильрованные строки/линии
      */
-    Collection<ChangedLine> filter(Collection<ChangedLine> lines, ProjectGraph sourceGraph, ProjectGraph targetGraph);
+    Set<ChangedLine> filter(Set<ChangedLine> lines, ProjectGraph sourceGraph, ProjectGraph targetGraph);
 }

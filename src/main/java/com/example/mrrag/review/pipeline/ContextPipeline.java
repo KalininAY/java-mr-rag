@@ -63,16 +63,18 @@ public class ContextPipeline {
         log.info("ContextPipeline.run: {} diffs", diffs.size());
 
         // Step 1: parse diffs to ChangedLine
-        List<ChangedLine> changedLines = diffParser.parse(diffs);
+        Set<ChangedLine> changedLines = diffParser.parse(diffs);
         log.info("ContextPipeline.step1: {} changedLines", changedLines.size());
 
         //Step 2: filter ChangedLine
-        List<Collection<ChangedLine>> filteredLines =
-                filters.stream().map(it -> it.filter(changedLines, sourceGraph, targetGraph)).toList();
+        Set<ChangedLine> filteredLines =
+                filters.stream().reduce(changedLines,
+                        (filteredLinesTmp, it) -> it.filter(filteredLinesTmp, sourceGraph, targetGraph),
+                        (c1, c2) -> c1);
         log.info("ContextPipeline.step2: {} filteredLines", filteredLines.size());
 
         //Step 3: group line
-        List<ChangeGroup> groups = changeGrouper.group(changedLines, sourceGraph);
+        List<ChangeGroup> groups = changeGrouper.group(filteredLines, sourceGraph);
         log.info("ContextPipeline.step3: {} groups", groups.size());
 
         // Step 4: classify groups by ChangeType

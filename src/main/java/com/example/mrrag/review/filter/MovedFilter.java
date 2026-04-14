@@ -17,7 +17,7 @@ public class MovedFilter implements ContextFilter {
     private final GraphQueryService graphQuery;
 
     @Override
-    public Collection<ChangedLine> filter(Collection<ChangedLine> lines, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+    public Set<ChangedLine> filter(Set<ChangedLine> lines, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         Set<String> movedMethodIds = graphQuery.findMovedMethodIds(sourceGraph, targetGraph);
         Set<String> movedFieldIds = graphQuery.findMovedFieldIds(sourceGraph, targetGraph);
 
@@ -35,7 +35,7 @@ public class MovedFilter implements ContextFilter {
         deleteLinesToRemove.addAll(graphQuery.methodLineRanges(targetGraph, movedMethodIds));
         deleteLinesToRemove.addAll(graphQuery.fieldDeclLines(targetGraph, movedFieldIds));
 
-        List<ChangedLine> result = new ArrayList<>();
+        Set<ChangedLine> result = new LinkedHashSet<>();
         int removed = 0;
         for (ChangedLine line : lines) {
             if (line.type() == ChangedLine.LineType.CONTEXT) {

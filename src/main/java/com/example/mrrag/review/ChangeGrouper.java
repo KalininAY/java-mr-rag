@@ -50,7 +50,7 @@ public class ChangeGrouper {
     // -----------------------------------------------------------------------
 
     /** Group without AST graph (line-distance fallback). */
-    public List<ChangeGroup> group(List<ChangedLine> lines) {
+    public List<ChangeGroup> group(Set<ChangedLine> lines) {
         return group(lines, null);
     }
 
@@ -60,7 +60,7 @@ public class ChangeGrouper {
      * @param lines changed lines from the diff parser / SemanticDiffFilter
      * @param graph AST graph of the source branch (may be {@code null} for fallback)
      */
-    public List<ChangeGroup> group(List<ChangedLine> lines, ProjectGraph graph) {
+    public List<ChangeGroup> group(Set<ChangedLine> lines, ProjectGraph graph) {
         List<ChangedLine> meaningful = lines.stream()
                 .filter(l -> l.type() == ChangedLine.LineType.CONTEXT || !isStructural(l.content()))
                 .toList();

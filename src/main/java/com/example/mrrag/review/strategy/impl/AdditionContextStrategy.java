@@ -95,8 +95,7 @@ public class AdditionContextStrategy implements ContextStrategy {
             EnrichmentSnippet.SnippetType type,
             String explanation
     ) {
-        List<String> lines = node.sourceSnippet()readLines(node.filePath(), node.startLine(),
-                Math.min(node.endLine(), node.startLine() + maxSnippetLines - 1));
+        List<String> lines = node.sourceSnippet().lines().toList();
         if (lines.isEmpty()) return;
         snippets.add(new EnrichmentSnippet(
                 type,
@@ -105,20 +104,4 @@ public class AdditionContextStrategy implements ContextStrategy {
         ));
     }
 
-    private List<String> readLines(Path repoDir, String relPath, int from, int to) {
-        Path file = repoDir.resolve(relPath);
-        if (!Files.exists(file)) return List.of();
-        try {
-            List<String> all = Files.readAllLines(file);
-            int start = Math.max(0, from - 1);
-            int end = Math.min(all.size(), to);
-            if (start >= end) return List.of();
-            return all.subList(start, end).stream()
-                    .map(l -> l.length() > 200 ? l.substring(0, 200) + "..." : l)
-                    .toList();
-        } catch (IOException e) {
-            log.warn("Cannot read {}: {}", file, e.getMessage());
-            return List.of();
-        }
-    }
 }
