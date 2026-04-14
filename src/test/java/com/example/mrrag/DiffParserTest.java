@@ -1,7 +1,7 @@
 package com.example.mrrag;
 
 import com.example.mrrag.review.model.ChangedLine;
-import com.example.mrrag.review.DiffParser;
+import com.example.mrrag.review.pipeline.DiffParser;
 import org.gitlab4j.api.models.Diff;
 import org.junit.jupiter.api.Test;
 
