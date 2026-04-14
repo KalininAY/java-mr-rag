@@ -89,12 +89,10 @@ public class ModificationContextStrategy implements ContextStrategy {
                 .ifPresent(method -> {
                     if (snippets.size() >= maxSnippetsPerGroup) return;
                     int end = Math.min(method.endLine(), method.startLine() + maxSnippetLines - 1);
-                    List<String> lines = readLines(repoDir, method.filePath(), method.startLine(), end);
-                    if (lines.isEmpty()) return;
                     snippets.add(new EnrichmentSnippet(
                             EnrichmentSnippet.SnippetType.METHOD_BODY,
                             method.filePath(), method.startLine(), end, method.simpleName(),
-                            lines,
+                            method.sourceSnippet(),
                             "Body of enclosing method '" + method.simpleName() + "'"
                     ));
                 });

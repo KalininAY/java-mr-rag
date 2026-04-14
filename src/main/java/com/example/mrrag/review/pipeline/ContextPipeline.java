@@ -47,10 +47,6 @@ public class ContextPipeline {
     private final ChangeGrouper changeGrouper;
     private final GroupRepresentationBuilder representationBuilder;
 
-    // -----------------------------------------------------------------------
-    // Public API
-    // -----------------------------------------------------------------------
-
     /**
      * Execute the full Context pipeline.
      *
@@ -85,7 +81,7 @@ public class ContextPipeline {
         // Shared collector — context may overlap across groups intentionally
         ContextCollector collector = new ContextCollector();
 
-        // Steps 6: per group find classes/nodes, per type collect context
+        // Steps 5: per group find classes/nodes, per type collect context
         for (Map.Entry<ChangeType, List<ChangeGroup>> entry : byType.entrySet()) {
             ChangeType type = entry.getKey();
             List<ChangeGroup> gs = entry.getValue();
@@ -94,25 +90,23 @@ public class ContextPipeline {
                     .filter(s -> s.supports(type))
                     .toList();
 
-            if (applicable.isEmpty()) {
-                log.warn("RagPipeline: no ContextStrategy for ChangeType={}", type);
-            }
+            if (applicable.isEmpty()) log.warn("ContextPipeline: no ContextStrategy for ChangeType={}", type);
+
 
             for (ChangeGroup group : gs) {
-
-                // Step 3: relevant classes in source + target graphs
+                // Step 5.1: relevant classes in source + target graphs
                 List<GraphNode> relevantClasses =
                         findRelevantClasses(group, sourceGraph, targetGraph);
                 log.debug("Group {} ({}): {} relevant class(es)",
                         group.id(), type, relevantClasses.size());
 
-                // Step 4: relevant nodes — members of those classes + nodes at changed lines
+                // Step 5.2: relevant nodes — members of those classes + nodes at changed lines
                 List<GraphNode> relevantNodes =
                         findRelevantNodes(group, relevantClasses, sourceGraph, targetGraph);
                 log.debug("Group {} ({}): {} relevant node(s)",
                         group.id(), type, relevantNodes.size());
 
-                // Step 5: apply strategies → add to collector
+                // Step 5.3: apply strategies → add to collector
                 for (ContextStrategy strategy : applicable) {
                     List<EnrichmentSnippet> ctx = strategy.collectContext(group, sourceGraph, targetGraph);
                     collector.addAll(group.id(), ctx);
@@ -120,7 +114,7 @@ public class ContextPipeline {
             }
         }
 
-        log.info("RagPipeline: context collected — {} total snippet(s)", collector.totalSize());
+        log.info("ContextPipeline: context collected — {} total snippet(s)", collector.totalSize());
 
         // Step 6: build per-group representations
         List<GroupRepresentation> result = new ArrayList<>(groups.size());
@@ -133,13 +127,9 @@ public class ContextPipeline {
                     group.id(), type, ctx.size());
         }
 
-        log.info("RagPipeline: {} representation(s) built", result.size());
+        log.info("ContextPipeline: {} representation(s) built", result.size());
         return result;
     }
-
-    // -----------------------------------------------------------------------
-    // Step 2: classify
-    // -----------------------------------------------------------------------
 
     private Map<ChangeType, List<ChangeGroup>> classifyGroups(List<ChangeGroup> groups) {
         Map<ChangeType, List<ChangeGroup>> result = new LinkedHashMap<>();
@@ -170,15 +160,7 @@ public class ContextPipeline {
         return ChangeType.ADDITION;
     }
 
-    // -----------------------------------------------------------------------
-    // Step 3: find relevant classes (CLASS / INTERFACE / ENUM nodes)
-    // -----------------------------------------------------------------------
-
-    private List<GraphNode> findRelevantClasses(
-            ChangeGroup group,
-            ProjectGraph sourceGraph,
-            ProjectGraph targetGraph
-    ) {
+    private List<GraphNode> findRelevantClasses(ChangeGroup group, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         Set<String> changedFiles = new HashSet<>();
         for (ChangedLine l : group.changedLines()) changedFiles.add(l.filePath());
 
@@ -200,16 +182,7 @@ public class ContextPipeline {
                 .forEach(out::add);
     }
 
-    // -----------------------------------------------------------------------
-    // Step 4: find relevant nodes by classes (members + nodes at changed lines)
-    // -----------------------------------------------------------------------
-
-    private List<GraphNode> findRelevantNodes(
-            ChangeGroup group,
-            List<GraphNode> relevantClasses,
-            ProjectGraph sourceGraph,
-            ProjectGraph targetGraph
-    ) {
+    private List<GraphNode> findRelevantNodes(ChangeGroup group, List<GraphNode> relevantClasses, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         List<GraphNode> result = new ArrayList<>();
 
         // Members declared inside the relevant classes (via DECLARES edges)

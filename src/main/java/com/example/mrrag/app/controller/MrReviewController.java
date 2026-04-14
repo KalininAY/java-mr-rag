@@ -1,8 +1,6 @@
 package com.example.mrrag.app.controller;
 
 import com.example.mrrag.app.controller.requestDTO.ReviewRequest;
-import com.example.mrrag.review.model.ChangeGroup;
-import com.example.mrrag.review.model.ChangeGroupMarkdown;
 import com.example.mrrag.review.model.GroupRepresentation;
 import com.example.mrrag.review.model.ReviewContext;
 import com.example.mrrag.review.ReviewService;

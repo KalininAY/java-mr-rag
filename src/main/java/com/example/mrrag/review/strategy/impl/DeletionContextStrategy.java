@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Strategy for {@link ChangeType#DELETION}.
@@ -61,20 +62,20 @@ public class DeletionContextStrategy implements ContextStrategy {
                     default -> EnrichmentSnippet.SnippetType.VARIABLE_USAGES;
                 };
 
-                List<String> usageLines = usageEdges.stream()
+                String usageLines = usageEdges.stream()
                         .filter(e -> e.kind() != EdgeKind.DECLARES)
                         .limit(10)
                         .map(e -> e.filePath() + ":" + e.line())
                         .distinct()
-                        .toList();
+                        .collect(Collectors.joining());
 
-                if (usageLines.isEmpty()) continue;
+                if (usageLines.isBlank()) continue;
 
                 snippets.add(new EnrichmentSnippet(
                         type,
                         decl.filePath(), decl.startLine(), decl.endLine(), decl.simpleName(),
                         usageLines,
-                        decl.simpleName() + " is deleted but still referenced in " + usageLines.size() + " place(s)"
+                        decl.simpleName() + " is deleted but still referenced in " + usageLines.lines() + " place(s)"
                 ));
             }
         }

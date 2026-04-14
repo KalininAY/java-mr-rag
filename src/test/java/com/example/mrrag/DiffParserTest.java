@@ -6,6 +6,7 @@ import org.gitlab4j.api.models.Diff;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -25,7 +26,7 @@ class DiffParserTest {
                   }
                 """);
 
-        List<ChangedLine> lines = parser.parse(List.of(diff));
+        Set<ChangedLine> lines = parser.parse(List.of(diff));
 
         assertThat(lines).isNotEmpty();
         long addedCount = lines.stream().filter(l -> l.type() == ChangedLine.LineType.ADD).count();
@@ -44,7 +45,7 @@ class DiffParserTest {
                   }
                 """);
 
-        List<ChangedLine> lines = parser.parse(List.of(diff));
+        Set<ChangedLine> lines = parser.parse(List.of(diff));
         long deletedCount = lines.stream().filter(l -> l.type() == ChangedLine.LineType.DELETE).count();
         assertThat(deletedCount).isEqualTo(1);
     }
@@ -55,7 +56,7 @@ class DiffParserTest {
         diff.setNewPath("README.md");
         diff.setDiff("@@ -1,1 +1,2 @@\n+some text\n");
 
-        List<ChangedLine> lines = parser.parse(List.of(diff));
+        Set<ChangedLine> lines = parser.parse(List.of(diff));
         assertThat(lines).isEmpty();
     }
 }
