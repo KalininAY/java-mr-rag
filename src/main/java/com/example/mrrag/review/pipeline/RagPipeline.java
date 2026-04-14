@@ -185,8 +185,7 @@ public class RagPipeline {
         graph.nodes.values().stream()
                 .filter(n -> file.equals(n.filePath()))
                 .filter(n -> n.kind() == NodeKind.CLASS
-                          || n.kind() == NodeKind.INTERFACE
-                          || n.kind() == NodeKind.ENUM)
+                          || n.kind() == NodeKind.INTERFACE)
                 .forEach(out::add);
     }
 
