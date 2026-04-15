@@ -18,18 +18,20 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>Three-phase grouping:
  * <ol>
- *   <li><b>Code-block grouping (intra-file)</b> – changed lines inside the same method
- *       body are grouped together.  Lines outside any method are bucketed by the
- *       single top-level CLASS/INTERFACE of the file (so {@code package} declaration
- *       and class signature share one group); if no unique top-level type exists the
- *       line gets its own group as before.</li>
- *   <li><b>Import attachment</b> – ADD/DELETE {@code import} lines are not kept as
- *       separate groups.  Each import is dissolved into every same-file group whose
- *       changed lines reference the imported simple name.  An import that matches no
- *       group in the same file is attached to the class-signature group (or kept as
- *       its own group if no class-signature group exists).</li>
- *   <li><b>Cross-file AST merge</b> – groups from different files are merged when they
- *       share resolved symbol references via Union-Find on qualified node/edge IDs.</li>
+ *   <li><b>Code-block grouping (intra-file)</b> – import lines are excluded from
+ *       this phase entirely (collected separately).  The remaining lines inside the
+ *       same method body are grouped together.  Lines outside any method are
+ *       bucketed by the single top-level CLASS/INTERFACE of the file (so
+ *       {@code package} declaration and class signature share one group); if no
+ *       unique top-level type exists the line gets its own group.</li>
+ *   <li><b>Import attachment</b> – ADD/DELETE {@code import} lines (collected
+ *       directly from the original input, not from Phase-1 groups) are attached to
+ *       every same-file group whose non-CONTEXT lines reference the imported simple
+ *       name as a word.  Unmatched imports fall back to the class-signature group;
+ *       if that also doesn’t exist they are emitted as a standalone group.</li>
+ *   <li><b>Cross-file AST merge</b> – groups from different files are merged when
+ *       they share resolved symbol references via Union-Find on qualified
+ *       node/edge IDs.</li>
  * </ol>
  */
 @Slf4j
@@ -56,9 +58,20 @@ public class ChangeGrouper {
      * @param graph AST graph of the source branch (may be {@code null} for fallback)
      */
     public List<ChangeGroup> group(Set<ChangedLine> lines, ProjectGraph graph) {
-        List<ChangeGroup> phase1 = codeBlockGroup(lines, graph);
+        // Split input upfront: imports are processed separately in Phase 2.
+        List<ChangedLine> importLines = new ArrayList<>();
+        List<ChangedLine> codeLines  = new ArrayList<>();
+        for (ChangedLine l : lines) {
+            if (isImportLine(l) && l.type() != ChangedLine.LineType.CONTEXT) {
+                importLines.add(l);
+            } else {
+                codeLines.add(l);
+            }
+        }
+
+        List<ChangeGroup> phase1 = codeBlockGroup(codeLines, graph);
         log.debug("Phase 1 (code-block): {} groups", phase1.size());
-        List<ChangeGroup> phase2 = attachImports(phase1, graph);
+        List<ChangeGroup> phase2 = attachImports(phase1, importLines);
         log.debug("Phase 2 (import-attach): {} groups", phase2.size());
         List<ChangeGroup> phase3 = semanticMerge(phase2, graph);
         log.debug("Phase 3 (cross-file AST): {} groups", phase3.size());
@@ -84,8 +97,8 @@ public class ChangeGrouper {
         int outOfMethodCounter = -1;
 
         // Pre-compute the single top-level type bucket key for this file (may be absent).
-        // "package" declarations and other out-of-method lines are assigned to that
-        // bucket so they share a group with the class signature line.
+        // "package" declarations and other out-of-method lines share its bucket so they
+        // end up in the same group as the class signature line.
         final Integer topLevelKey;
         if (graph != null) {
             topLevelKey = graphQuery.findTopLevelType(graph, file)
@@ -96,10 +109,6 @@ public class ChangeGrouper {
         }
 
         for (ChangedLine line : lines) {
-            // Import lines are handled separately in Phase 2 — skip them here
-            // so they do not pollute the code-block buckets.
-            if (isImportLine(line)) continue;
-
             int lineNo = effectiveLine(line);
             Integer bucketKey;
 
@@ -108,7 +117,6 @@ public class ChangeGrouper {
                 if (method.isPresent()) {
                     bucketKey = method.get().startLine();
                 } else if (topLevelKey != null) {
-                    // out-of-method but there is a unique top-level type: share its bucket
                     bucketKey = topLevelKey;
                 } else {
                     bucketKey = outOfMethodCounter--;
@@ -123,7 +131,7 @@ public class ChangeGrouper {
         for (List<ChangedLine> bucket : buckets.values()) {
             if (bucket.stream().allMatch(l -> l.type() == ChangedLine.LineType.CONTEXT)) continue;
             String id = "G" + groupCounter.incrementAndGet();
-            groups.add(new ChangeGroup(id, file, bucket, new ArrayList<>()));
+            groups.add(new ChangeGroup(id, file, new ArrayList<>(bucket), new ArrayList<>()));
         }
         return groups;
     }
@@ -133,93 +141,79 @@ public class ChangeGrouper {
     // -----------------------------------------------------------------------
 
     /**
-     * For every ADD/DELETE {@code import} line found in Phase-1 singleton groups,
-     * dissolve that group and attach the import line directly to each same-file
-     * group whose changed content contains the imported simple name.
+     * Attaches each ADD/DELETE import line (collected directly from the raw input
+     * before Phase 1) to every same-file group that references the imported simple
+     * name in a non-CONTEXT line.
      *
-     * <p>Attachment rules:
+     * <p>Fallback chain when no referencing group is found:
      * <ol>
-     *   <li>Collect all import lines that ended up as singleton groups (or are mixed
-     *       into a group that consists only of imports and CONTEXT lines).</li>
-     *   <li>For each such import, determine the imported simple name via
-     *       {@link GraphQueryService#resolveImportSimpleName}.</li>
-     *   <li>Search all other groups in the same file for non-CONTEXT lines whose
-     *       {@code content} contains the simple name as a word.</li>
-     *   <li>Add the import line to every matching group.</li>
-     *   <li>If no group matched, fall back: attach to the class-signature group
-     *       (the one whose changed lines include a line matching {@code class .* \{}
-     *       or {@code interface .* \{}), or keep as its own group if none exists.</li>
+     *   <li>Attach to the class-signature group of the same file (group containing
+     *       a {@code class/interface ... \{} declaration line).</li>
+     *   <li>If no class-signature group exists either, emit the import as a
+     *       standalone singleton group.</li>
      * </ol>
      */
-    private List<ChangeGroup> attachImports(List<ChangeGroup> groups, ProjectGraph graph) {
-        // Separate import-only groups from regular groups
-        List<ChangeGroup> importGroups = new ArrayList<>();
-        List<ChangeGroup> regularGroups = new ArrayList<>();
+    private List<ChangeGroup> attachImports(List<ChangeGroup> groups, List<ChangedLine> importLines) {
+        if (importLines.isEmpty()) return groups;
 
-        for (ChangeGroup g : groups) {
-            if (isImportOnlyGroup(g)) {
-                importGroups.add(g);
-            } else {
-                regularGroups.add(g);
-            }
+        // Make changedLines mutable for in-place insertion (Phase 1 already creates
+        // new ArrayList instances, but guard here to be safe).
+        List<ChangeGroup> result = new ArrayList<>(groups);
+
+        // Index groups by file for O(1) lookup
+        Map<String, List<ChangeGroup>> byFile = new LinkedHashMap<>();
+        for (ChangeGroup g : result) {
+            byFile.computeIfAbsent(g.primaryFile(), k -> new ArrayList<>()).add(g);
         }
 
-        if (importGroups.isEmpty()) return groups;
+        // Orphan imports that couldn't be attached anywhere
+        Map<String, List<ChangedLine>> orphansByFile = new LinkedHashMap<>();
 
-        // Index regular groups by file for fast lookup
-        Map<String, List<ChangeGroup>> regularByFile = new LinkedHashMap<>();
-        for (ChangeGroup g : regularGroups) {
-            regularByFile.computeIfAbsent(g.primaryFile(), k -> new ArrayList<>()).add(g);
-        }
+        for (ChangedLine importLine : importLines) {
+            String file = importLine.filePath();
+            List<ChangeGroup> sameFileGroups = byFile.getOrDefault(file, List.of());
 
-        // Tracks which regular groups received at least one import line
-        // (we mutate changedLines lists in-place via helper)
-        Set<ChangeGroup> orphanImportGroups = new LinkedHashSet<>();
+            Optional<String> simpleName = GraphQueryService.resolveImportSimpleName(importLine.content());
 
-        for (ChangeGroup importGroup : importGroups) {
-            String file = importGroup.primaryFile();
-            List<ChangeGroup> sameFileGroups = regularByFile.getOrDefault(file, List.of());
-
-            for (ChangedLine importLine : importGroup.changedLines()) {
-                if (importLine.type() == ChangedLine.LineType.CONTEXT) continue;
-                if (!isImportLine(importLine)) continue;
-
-                Optional<String> simpleName = GraphQueryService.resolveImportSimpleName(importLine.content());
-                if (simpleName.isEmpty()) {
-                    // wildcard or unresolvable — fall back to class-signature group
-                    attachToClassSignatureOrKeep(importLine, file, sameFileGroups, orphanImportGroups, importGroup);
-                    continue;
-                }
-
+            List<ChangeGroup> targets = List.of();
+            if (simpleName.isPresent()) {
                 String name = simpleName.get();
-                List<ChangeGroup> targets = sameFileGroups.stream()
+                targets = sameFileGroups.stream()
                         .filter(g -> groupReferencesName(g, name))
                         .toList();
-
-                if (targets.isEmpty()) {
-                    attachToClassSignatureOrKeep(importLine, file, sameFileGroups, orphanImportGroups, importGroup);
-                    log.debug("Import '{}' in {} not matched to any group — attached to class-signature group",
-                            name, file);
-                } else {
+                if (!targets.isEmpty()) {
                     for (ChangeGroup target : targets) {
                         target.changedLines().add(0, importLine);
                         log.debug("Import '{}' attached to group {} in {}", name, target.id(), file);
                     }
+                    continue;
                 }
+                log.debug("Import '{}' in {} matched no group — trying class-signature fallback", name, file);
             }
+
+            // Fallback 1: class-signature group
+            Optional<ChangeGroup> classGroup = sameFileGroups.stream()
+                    .filter(g -> g.changedLines().stream().anyMatch(ChangeGrouper::isClassSignatureLine))
+                    .findFirst();
+            if (classGroup.isPresent()) {
+                classGroup.get().changedLines().add(0, importLine);
+                log.debug("Import '{}' attached to class-signature group {} in {}",
+                        importLine.content(), classGroup.get().id(), file);
+                continue;
+            }
+
+            // Fallback 2: keep as orphan — will become a standalone group
+            orphansByFile.computeIfAbsent(file, k -> new ArrayList<>()).add(importLine);
+            log.debug("Import '{}' in {} has no target — will be emitted as standalone group",
+                    importLine.content(), file);
         }
 
-        // Orphan import groups that could not be attached anywhere remain as-is
-        List<ChangeGroup> result = new ArrayList<>(regularGroups);
-        result.addAll(orphanImportGroups);
+        // Emit orphan imports as standalone groups (one group per file)
+        for (var entry : orphansByFile.entrySet()) {
+            String id = "G" + groupCounter.incrementAndGet();
+            result.add(new ChangeGroup(id, entry.getKey(), entry.getValue(), new ArrayList<>()));
+        }
         return result;
-    }
-
-    /** True when every ADD/DELETE line in the group is an import statement. */
-    private static boolean isImportOnlyGroup(ChangeGroup g) {
-        return g.changedLines().stream()
-                .filter(l -> l.type() != ChangedLine.LineType.CONTEXT)
-                .allMatch(ChangeGrouper::isImportLine);
     }
 
     /** True when the line content starts with {@code import } (after stripping). */
@@ -250,32 +244,6 @@ public class ChangeGrouper {
             idx = text.indexOf(word, idx + 1);
         }
         return false;
-    }
-
-    /**
-     * Tries to attach {@code importLine} to the class-signature group in
-     * {@code sameFileGroups} (the group containing a {@code class/interface ... \{}
-     * declaration line).  If no such group exists, adds {@code importGroup} to
-     * {@code orphans} so it is preserved unchanged.
-     */
-    private void attachToClassSignatureOrKeep(
-            ChangedLine importLine,
-            String file,
-            List<ChangeGroup> sameFileGroups,
-            Set<ChangeGroup> orphans,
-            ChangeGroup importGroup) {
-
-        Optional<ChangeGroup> classGroup = sameFileGroups.stream()
-                .filter(g -> g.changedLines().stream().anyMatch(ChangeGrouper::isClassSignatureLine))
-                .findFirst();
-
-        if (classGroup.isPresent()) {
-            classGroup.get().changedLines().add(0, importLine);
-            log.debug("Import '{}' attached to class-signature group {} in {}",
-                    importLine.content(), classGroup.get().id(), file);
-        } else {
-            orphans.add(importGroup);
-        }
     }
 
     private static boolean isClassSignatureLine(ChangedLine l) {
