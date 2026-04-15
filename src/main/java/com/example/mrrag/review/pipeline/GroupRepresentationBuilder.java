@@ -1,5 +1,6 @@
 package com.example.mrrag.review.pipeline;
 
+import com.example.mrrag.graph.markdown.MarkdownRenderUtils;
 import com.example.mrrag.review.model.*;
 import org.springframework.stereotype.Component;
 
@@ -15,10 +16,12 @@ import java.util.stream.Collectors;
  *   <li>Per-file {@code diff} block — all lines received (ADD/DELETE only,
  *       since {@link DiffParser} no longer emits CONTEXT lines).
  *       Each line is prefixed with its line number ({@code @N}).</li>
- *   <li><b>Enclosing context</b> section — one {@code java} block per
- *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet with
- *       start-line annotation, so the reviewer knows where the method sits.</li>
- *   <li><b>Context snippets</b> section — all other enrichment snippets.</li>
+ *   <li><b>Enclosing context</b> section — one block per
+ *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet.
+ *       Lines are numbered in {@code lineNo| text} format via
+ *       {@link MarkdownRenderUtils#appendNumberedSnippet}.</li>
+ *   <li><b>Context snippets</b> section — all other enrichment snippets,
+ *       also with numbered lines.</li>
  * </ol>
  *
  * <p>Deduplication of snippets already in the diff is performed upstream by
@@ -57,7 +60,6 @@ public class GroupRepresentationBuilder {
                 .append("` — ").append(changeType).append("\n");
 
         // --- 1. Per-file diff blocks ---
-        // DiffParser emits only ADD/DELETE, so no filtering needed here.
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
         for (ChangedLine l : group.changedLines()) {
             byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
@@ -90,15 +92,13 @@ public class GroupRepresentationBuilder {
         if (!methodBodies.isEmpty()) {
             sb.append("**Enclosing context (").append(methodBodies.size()).append("):**\n\n");
             for (EnrichmentSnippet s : methodBodies) {
-                // symbol name + file path + start line number
                 sb.append("`").append(s.symbolName()).append("`")
                         .append(" @ `").append(s.filePath())
                         .append(":").append(s.startLine()).append("`\n\n");
                 String src = s.sourceSnippet();
                 if (src != null && !src.isBlank()) {
-                    sb.append("```java\n");
-                    sb.append(src);
-                    if (!src.endsWith("\n")) sb.append('\n');
+                    sb.append("```\n");
+                    MarkdownRenderUtils.appendNumberedSnippet(sb, src, s.startLine(), s.endLine());
                     sb.append("```\n\n");
                 }
             }
@@ -115,8 +115,10 @@ public class GroupRepresentationBuilder {
                 sb.append("  _").append(s.explanation()).append("_\n");
                 String src = s.sourceSnippet();
                 if (src != null && !src.isBlank()) {
-                    sb.append("  ```java\n");
-                    for (String line : src.split("\n", -1)) {
+                    sb.append("  ```\n");
+                    String[] lines = src.split("\n", -1);
+                    for (String line : MarkdownRenderUtils.numberedSnippetLines(
+                            lines, s.startLine(), s.endLine(), true)) {
                         sb.append("  ").append(line).append('\n');
                     }
                     sb.append("  ```\n");

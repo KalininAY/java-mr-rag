@@ -14,6 +14,8 @@ import java.util.stream.Collectors;
  * nodes, so callers can traverse the full graph without any ID look-ups.
  *
  * <p>Renamed from {@code GraphNodeView} (was in {@code com.example.mrrag.view}).
+ *
+ * <p>Line-numbering logic is delegated to {@link MarkdownRenderUtils}.
  */
 public abstract class MarkdownNode {
 
@@ -61,7 +63,7 @@ public abstract class MarkdownNode {
 
     protected List<Integer> edgeLinesTo(String targetId) { return List.of(); }
 
-    // -- toString + toMarkdown (same logic as legacy GraphNodeView) --
+    // -- toString + toMarkdown --
 
     @Override
     public String toString() {
@@ -73,11 +75,9 @@ public abstract class MarkdownNode {
         sb.append("# Content\n");
         sb.append("### ").append(normalizeId(getId())).append('\n');
         if (getStartLine() > 0 && getEndLine() >= getStartLine()) {
-//            sb.append("**File:** `").append(getFilePath()).append("` **Span:** ")
-//                    .append(getStartLine()).append("\u2013").append(getEndLine());
             sb.append("\n\n");
         }
-        appendNumberedSnippet(sb, getContent(), getStartLine(), getEndLine());
+        MarkdownRenderUtils.appendNumberedSnippet(sb, getContent(), getStartLine(), getEndLine());
         sb.append("\n# Context\n");
         for (Field field : collectFields(getClass())) {
             field.setAccessible(true);
@@ -99,70 +99,11 @@ public abstract class MarkdownNode {
         return sb.toString();
     }
 
-    // -- Static helpers (mirrors GraphNodeView logic) --
+    // -- Static helpers --
 
     static String normalizeId(String id) {
         if (id == null) return "";
         return id.replace("#<init>", "#<init>");
-    }
-
-    /**
-     * Numbers each snippet line with the corresponding file line when the snippet line count
-     * matches the graph's {@code startLine\u2013endLine} span (full {@code sourceSnippet}).
-     * If lengths differ (e.g. Spoon {@code toString()} fallback), uses relative 1..N and a short note.
-     */
-    private static void appendNumberedSnippet(StringBuilder sb, String snippet, int startLine, int endLine) {
-        if (startLine == -1) {
-            if (snippet == null || snippet.isBlank()) { sb.append("-1|(external)\n"); return; }
-            String[] lines = snippet.split("\n", -1);
-            for (int i = 0; i < lines.length; i++) sb.append(-(i + 1)).append('|').append(lines[i]).append('\n');
-            return;
-        }
-        if (snippet == null || snippet.isBlank()) { sb.append("0|(empty)\n"); return; }
-        String[] lines = snippet.split("\n", -1);
-        for (String line : numberedSnippetLines(lines, startLine, endLine, true)) {
-            sb.append(line).append('\n');
-        }
-    }
-
-    /**
-     * Produces {@code "lineNo|text"} entries for each line in {@code lines}.
-     *
-     * @param fullSpan {@code true} when {@code lines} represent the complete
-     *                 {@code startLine\u2013endLine} source range (i.e. the full
-     *                 {@code sourceSnippet}). When {@code true} and the array length
-     *                 does not match the expected span, a warning is prepended and
-     *                 relative numbers (1..N) are used instead of absolute ones.
-     *                 {@code false} for declaration-only or other partial text: the
-     *                 span check is skipped and lines are always numbered absolutely
-     *                 starting from {@code startLine}.
-     */
-    private static List<String> numberedSnippetLines(String[] lines, int startLine, int endLine, boolean fullSpan) {
-        List<String> out = new ArrayList<>(lines.length + 1);
-        if (lines.length == 0) {
-            return out;
-        }
-        if (startLine <= 0) {
-            int first = 1;
-            for (int i = 0; i < lines.length; i++) {
-                out.add((first + i) + "|" + lines[i]);
-            }
-            return out;
-        }
-        int expected = (endLine >= startLine) ? (endLine - startLine + 1) : -1;
-        if (fullSpan && expected > 0 && lines.length != expected) {
-            out.add("*Line numbers below are relative (snippet has " + lines.length
-                    + " lines; graph span is " + expected + " lines " + startLine + "\u2013" + endLine + ")*");
-            for (int i = 0; i < lines.length; i++) {
-                out.add((i + 1) + "|" + lines[i]);
-            }
-            return out;
-        }
-        int firstLine = startLine;
-        for (int i = 0; i < lines.length; i++) {
-            out.add((firstLine + i) + "|" + lines[i]);
-        }
-        return out;
     }
 
     private static void appendGroupedCollection(StringBuilder sb, Collection<?> col,
