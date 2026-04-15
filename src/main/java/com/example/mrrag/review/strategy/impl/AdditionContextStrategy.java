@@ -85,6 +85,6 @@ public class AdditionContextStrategy implements ContextStrategy {
         }
 
         log.debug("AdditionContextStrategy: group={} snippets={}", group.id(), snippets.size());
-        return snippets;
+        return filterAlreadyInDiff(group, snippets);
     }
 }

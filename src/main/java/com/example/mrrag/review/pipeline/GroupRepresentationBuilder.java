@@ -4,12 +4,15 @@ import com.example.mrrag.review.model.*;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Builds a {@link GroupRepresentation} for a single ChangeGroup,
  * combining its diff lines with the context snippets collected by
  * the {@link ContextPipeline}.
+ *
+ * <p>Deduplication of snippets already visible in the diff is performed
+ * upstream by {@link com.example.mrrag.review.strategy.ContextStrategy#filterAlreadyInDiff},
+ * not here — this builder only renders what it receives.
  */
 @Component
 public class GroupRepresentationBuilder {
@@ -24,20 +27,13 @@ public class GroupRepresentationBuilder {
             ChangeType changeType,
             List<EnrichmentSnippet> contextSnippets
     ) {
-        // Filter out snippets whose location is already covered by an ADD/DELETE
-        // line inside the group diff (avoids duplicating content visible in the diff).
-        Set<String> diffCoveredKeys = diffCoveredKeys(group);
-        List<EnrichmentSnippet> dedupedSnippets = contextSnippets.stream()
-                .filter(s -> !diffCoveredKeys.contains(snippetKey(s)))
-                .collect(Collectors.toCollection(ArrayList::new));
-
-        String markdown = buildMarkdown(group, changeType, dedupedSnippets);
+        String markdown = buildMarkdown(group, changeType, contextSnippets);
         return new GroupRepresentation(
                 group.id(),
                 changeType,
                 group.primaryFile(),
                 group.changedLines(),
-                dedupedSnippets,
+                contextSnippets,
                 markdown
         );
     }
@@ -56,7 +52,7 @@ public class GroupRepresentationBuilder {
                 .append("` — ").append(changeType).append("\n");
 
         // Group changed lines by file to produce one diff block per file.
-        // Use LinkedHashMap to preserve the order in which files first appear.
+        // LinkedHashMap preserves the order in which files first appear.
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
         for (ChangedLine l : group.changedLines()) {
             byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
@@ -67,11 +63,10 @@ public class GroupRepresentationBuilder {
             sb.append("```diff\n");
             for (ChangedLine l : entry.getValue()) {
                 char prefix = switch (l.type()) {
-                    case ADD    -> '+';
-                    case DELETE -> '-';
+                    case ADD     -> '+';
+                    case DELETE  -> '-';
                     case CONTEXT -> ' ';
                 };
-                // Render line number: prefer new-side, fall back to old-side.
                 int lineNo = l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber();
                 String lineRef = lineNo > 0 ? String.format("@%-4d ", lineNo) : "       ";
                 sb.append(prefix).append(lineRef).append(l.content()).append('\n');
@@ -100,29 +95,5 @@ public class GroupRepresentationBuilder {
             sb.append('\n');
         }
         return sb.toString();
-    }
-
-    // -----------------------------------------------------------------------
-    // Deduplication helpers
-    // -----------------------------------------------------------------------
-
-    /**
-     * Builds a set of {@code "filePath:line"} keys for every ADD/DELETE line in
-     * the group.  Used to suppress context snippets that merely repeat content
-     * already visible in the diff.
-     */
-    private static Set<String> diffCoveredKeys(ChangeGroup group) {
-        Set<String> keys = new HashSet<>();
-        for (ChangedLine l : group.changedLines()) {
-            if (l.type() == ChangedLine.LineType.CONTEXT) continue;
-            int lineNo = l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber();
-            if (lineNo > 0) keys.add(l.filePath() + ":" + lineNo);
-        }
-        return keys;
-    }
-
-    private static String snippetKey(EnrichmentSnippet s) {
-        // A snippet is "covered" when its start line already appears as a diff line.
-        return s.filePath() + ":" + s.startLine();
     }
 }
