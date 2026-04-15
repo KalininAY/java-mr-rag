@@ -6,6 +6,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Read-only query facade over {@link ProjectGraph}.
@@ -17,14 +19,19 @@ import java.util.*;
  * <h2>Key operations</h2>
  * <ul>
  *   <li>{@link #methodsInFile} / {@link #findContainingMethod} — locate METHOD nodes.</li>
+ *   <li>{@link #findTopLevelType} — locate the single top-level CLASS/INTERFACE in a file.</li>
+ *   <li>{@link #resolveImportSimpleName} — extract the simple class name from an import statement.</li>
  *   <li>{@link #astKeysForLines} — collect qualified IDs touched by a set of changed lines
- *       for cross-file merge in {@link com.example.mrrag.review.ChangeGrouper}.</li>
+ *       for cross-file merge in {@link com.example.mrrag.review.pipeline.ChangeGrouper}.</li>
  * </ul>
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class GraphQueryService {
+
+    private static final Pattern IMPORT_PATTERN =
+            Pattern.compile("^\\s*import\\s+(?:static\\s+)?([\\w.]+)\\s*;");
 
     // ------------------------------------------------------------------
     // Method helpers
@@ -46,6 +53,48 @@ public class GraphQueryService {
         return methodsInFile(graph, relPath).stream()
                 .filter(m -> m.startLine() <= lineNo && m.endLine() >= lineNo)
                 .min(Comparator.comparingInt(m -> m.endLine() - m.startLine()));
+    }
+
+    // ------------------------------------------------------------------
+    // Top-level type helpers (for package/import grouping)
+    // ------------------------------------------------------------------
+
+    /**
+     * Returns the single top-level CLASS or INTERFACE node for a file, or empty
+     * if the file contains zero or more than one top-level type.
+     *
+     * <p>Used by {@code ChangeGrouper} to assign {@code package} declarations and
+     * out-of-method lines to the same bucket as the class signature, rather than
+     * creating a separate group for each such line.
+     */
+    public Optional<GraphNode> findTopLevelType(ProjectGraph graph, String relPath) {
+        List<GraphNode> types = graph.nodes.values().stream()
+                .filter(n -> (n.kind() == NodeKind.CLASS || n.kind() == NodeKind.INTERFACE)
+                        && relPath.equals(n.filePath()))
+                .toList();
+        return types.size() == 1 ? Optional.of(types.get(0)) : Optional.empty();
+    }
+
+    /**
+     * Extracts the <em>simple name</em> (last segment) of the imported type from
+     * a raw import-statement content string, e.g.
+     * {@code "import bugbusters.modules.extensions.ExtensionsSystemProperties;"} →
+     * {@code "ExtensionsSystemProperties"}.
+     *
+     * <p>Returns an empty Optional for static imports of members (contains '#')
+     * and for lines that do not match the import pattern.
+     */
+    public static Optional<String> resolveImportSimpleName(String content) {
+        if (content == null) return Optional.empty();
+        Matcher m = IMPORT_PATTERN.matcher(content);
+        if (!m.find()) return Optional.empty();
+        String fqn = m.group(1);
+        // static import of a member: "pkg.Class.MEMBER" — drop the member suffix
+        int dot = fqn.lastIndexOf('.');
+        String simpleName = dot >= 0 ? fqn.substring(dot + 1) : fqn;
+        // skip wildcard imports
+        if ("*".equals(simpleName)) return Optional.empty();
+        return Optional.of(simpleName);
     }
 
     // ------------------------------------------------------------------
