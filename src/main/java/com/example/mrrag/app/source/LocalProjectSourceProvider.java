@@ -57,7 +57,7 @@ public class LocalProjectSourceProvider implements ProjectSourceProvider {
         log.info("Source roots: {}", sourceRoots);
 
         List<ProjectSource> result = new ArrayList<>();
-        String rootStr = projectRoot.toString();
+        Path absRoot = projectRoot.toAbsolutePath().normalize();
 
         for (Path srcRoot : sourceRoots) {
             if (!Files.isDirectory(srcRoot)) continue;
@@ -67,7 +67,7 @@ public class LocalProjectSourceProvider implements ProjectSourceProvider {
                         .forEach(absPath -> {
                             try {
                                 String content = Files.readString(absPath, StandardCharsets.UTF_8);
-                                String rel = relPath(rootStr, absPath.toAbsolutePath().toString());
+                                String rel = relPath(absRoot, absPath.toAbsolutePath().normalize());
                                 result.add(new ProjectSource(rel, content));
                             } catch (IOException ex) {
                                 log.warn("Skipping {} — read error: {}", absPath, ex.getMessage());
@@ -104,10 +104,21 @@ public class LocalProjectSourceProvider implements ProjectSourceProvider {
         return fallback.isEmpty() ? List.of(projectRoot) : fallback;
     }
 
-    protected static String relPath(String root, String abs) {
-        if (abs.startsWith(root)) {
-            return abs.substring(root.length()).replaceFirst("^[/\\\\]", "").replace("\\", "/");
+    /**
+     * Returns the path of {@code abs} relative to {@code root} using forward slashes.
+     * Uses {@link Path#relativize} to correctly handle platform-specific separators
+     * and drive letter case differences on Windows (e.g. {@code C:\} vs {@code c:\}).
+     *
+     * @param root normalised absolute project root
+     * @param abs  normalised absolute path of the source file
+     * @return forward-slash relative path, e.g. {@code src/main/java/Foo.java}
+     */
+    protected static String relPath(Path root, Path abs) {
+        try {
+            return root.relativize(abs).toString().replace("\\", "/");
+        } catch (IllegalArgumentException e) {
+            // Paths on different drives (Windows edge case) — return normalised absolute path
+            return abs.toString().replace("\\", "/");
         }
-        return abs.replace("\\", "/");
     }
 }
