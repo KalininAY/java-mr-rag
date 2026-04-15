@@ -20,43 +20,45 @@ import java.util.regex.Pattern;
  *
  * <p>Grouping pipeline:
  * <ol>
- *   <li><b>Code-block grouping (intra-file)</b> – import lines are excluded from
- *       this phase entirely (collected separately).  Lines inside the same method
- *       body are grouped together.  Adjacent out-of-method lines (gap &le;
+ *   <li><b>Code-block grouping (intra-file)</b> — import lines are excluded from
+ *       this phase entirely (collected separately). Lines inside the same method
+ *       body are grouped together. Adjacent out-of-method lines (gap &le;
  *       {@value #MAX_LINE_GAP_IN_BLOCK}) are merged into one group so that
  *       Javadoc comment lines and their annotated element end up together.
- *       A Javadoc block ({@code /** ... *&#47;}) or annotation line that immediately
- *       precedes a method declaration (gap &le; {@value #MAX_JAVADOC_GAP} from the
- *       last <em>non-blank</em> line of the run) is moved into that method's bucket
- *       rather than treated as out-of-method.
+ *       A Javadoc block or annotation line that immediately precedes a method
+ *       declaration (gap &le; {@value #MAX_JAVADOC_GAP} from the last
+ *       <em>non-blank</em> line) is moved into that method's bucket rather than
+ *       treated as out-of-method — this happens in the main loop, <em>before</em>
+ *       the top-level-type fallback, so it works even when a top-level type
+ *       exists in the graph.
  *       Lines outside any method are bucketed by the single top-level
  *       CLASS/INTERFACE of the file; if no unique top-level type exists, adjacent
  *       lines share a group, and isolated lines each get their own group.</li>
- *   <li><b>Import attachment</b> – ADD/DELETE {@code import} lines are attached to
- *       every same-file group whose non-CONTEXT lines reference the imported simple
- *       name.  Unmatched imports fall back to the class-signature group; otherwise
- *       they become a standalone group flagged
+ *   <li><b>Import attachment</b> — ADD/DELETE {@code import} lines are attached
+ *       to every same-file group whose non-CONTEXT lines reference the imported
+ *       simple name. Unmatched imports fall back to the class-signature group;
+ *       otherwise they become a standalone group flagged
  *       {@link ChangeGroupFlag#SUSPICIOUS_UNUSED_IMPORT}.
- *       Imports are inserted at the position matching their line number rather than
- *       prepended blindly, so the final diff output stays sorted.</li>
- *   <li><b>Annotation-semantic split</b> – if a single method bucket mixes
+ *       Imports are inserted at the position matching their line number rather
+ *       than prepended blindly, so the final diff output stays sorted.</li>
+ *   <li><b>Annotation-semantic split</b> — if a single method bucket mixes
  *       lines adding structurally-different annotations (e.g. {@code @Execution}
  *       vs {@code @JiraTest}) they are split into per-annotation sub-groups.
  *       Annotations from <em>different</em> methods are never conflated by this
  *       phase — they already live in separate buckets from Phase 1.
  *       Without a graph, any bucket whose annotation lines have a gap &gt;
  *       {@value #MAX_LINE_GAP_IN_BLOCK} is skipped (multi-method indicator).</li>
- *   <li><b>Rule-based version/changelog merge (Phase 2.5)</b> – if the diff
+ *   <li><b>Rule-based version/changelog merge (Phase 2.5)</b> — if the diff
  *       touches both a build-descriptor version line and a changelog header line
  *       for the same version string, those groups are merged and flagged
  *       {@link ChangeGroupFlag#VERSION_CHANGELOG_PAIR}.</li>
- *   <li><b>Intra-file def/call linkage (Phase 3a)</b> – within the same file,
+ *   <li><b>Intra-file def/call linkage (Phase 3a)</b> — within the same file,
  *       a group that declares a method {@code foo()} and a group that calls
  *       {@code foo()} are merged so that definition and usage are reviewed
  *       together.</li>
- *   <li><b>Cross-file AST merge (Phase 3b)</b> – groups from different files are
+ *   <li><b>Cross-file AST merge (Phase 3b)</b> — groups from different files are
  *       merged when they share resolved symbol references via Union-Find, subject
- *       to {@link #MAX_CROSS_FILE_CLUSTER_SIZE}.  If a file appears in more than
+ *       to {@link #MAX_CROSS_FILE_CLUSTER_SIZE}. If a file appears in more than
  *       one raw cluster, those clusters are merged transitively before the size
  *       cap is applied.</li>
  * </ol>
@@ -81,7 +83,6 @@ public class ChangeGrouper {
 
     /**
      * Maximum number of distinct files allowed in a single cross-file cluster.
-     * Clusters that exceed this limit are split greedily by shared-key count.
      */
     static final int MAX_CROSS_FILE_CLUSTER_SIZE = 3;
 
@@ -168,7 +169,7 @@ public class ChangeGrouper {
             topLevelKey = null;
         }
 
-        // Build a map: method startLine -> method endLine, for Javadoc/annotation attachment.
+        // method startLine -> endLine map, used for pre-method attachment
         Map<Integer, Integer> methodStartToEnd = new LinkedHashMap<>();
         if (graph != null) {
             for (GraphNode n : graph.nodes.values()) {
@@ -178,7 +179,12 @@ public class ChangeGrouper {
             }
         }
 
+        // methodKey -> lines bucket
         Map<Integer, List<ChangedLine>> methodBuckets = new LinkedHashMap<>();
+        // tracks which method key a line was attached to as 'pre-method' (javadoc/annotation)
+        // so GroupRepresentationBuilder can later add a METHOD_SIGNATURE context snippet.
+        // key = methodStartLine, value = true (just a presence set)
+        Set<Integer> preMethodBucketKeys = new LinkedHashSet<>();
         List<ChangedLine> outOfMethodLines = new ArrayList<>();
 
         for (ChangedLine line : sorted) {
@@ -189,8 +195,21 @@ public class ChangeGrouper {
                     methodBuckets.computeIfAbsent(method.get().startLine(), k -> new ArrayList<>()).add(line);
                     continue;
                 }
+                // Not inside any method body — try attaching to the nearest method below
+                // (covers Javadoc blocks and annotation lines above a method declaration).
+                // This check must happen BEFORE the topLevelKey fallback so that it works
+                // even when a top-level type exists in the graph.
+                if (!methodStartToEnd.isEmpty()) {
+                    Integer nearestMethod = findNearestMethodAfter(lineNo, methodStartToEnd);
+                    if (nearestMethod != null) {
+                        methodBuckets.computeIfAbsent(nearestMethod, k -> new ArrayList<>()).add(line);
+                        preMethodBucketKeys.add(nearestMethod);
+                        log.debug("Pre-method line @{} attached to method @{} in {}", lineNo, nearestMethod, file);
+                        continue;
+                    }
+                }
             }
-            // Falls through to out-of-method
+            // Final fallback: top-level type bucket or plain out-of-method list
             if (topLevelKey != null) {
                 methodBuckets.computeIfAbsent(topLevelKey, k -> new ArrayList<>()).add(line);
             } else {
@@ -198,51 +217,20 @@ public class ChangeGrouper {
             }
         }
 
-        // Re-classify Javadoc/annotation out-of-method lines into the method bucket they precede.
-        //
-        // A contiguous run of out-of-method lines that ends within MAX_JAVADOC_GAP lines of a
-        // method start is pulled into that method's bucket. The anchor used for the gap calculation
-        // is the last *non-blank* line of the run — trailing blank change lines must not push the
-        // anchor past the method declaration they document.
-        //
-        // This handles two cases:
-        //   (a) Javadoc blocks: /** ... */ immediately before a method
-        //   (b) Annotation lines (@Foo, @Bar) above a method that weren't caught by
-        //       findContainingMethod (annotations are outside the method body in the AST)
-        if (!outOfMethodLines.isEmpty() && !methodStartToEnd.isEmpty()) {
-            List<ChangedLine> remaining = new ArrayList<>();
-            List<ChangedLine> currentRun = new ArrayList<>();
-            int runEnd = Integer.MIN_VALUE;          // last line of current run (including blanks)
-            int runEndNonBlank = Integer.MIN_VALUE;  // last non-blank line of current run
-
-            for (ChangedLine l : outOfMethodLines) {
-                int ln = effectiveLine(l);
-                // Continue current run or flush and start a new one
-                if (!currentRun.isEmpty() && ln - runEnd > MAX_LINE_GAP_IN_BLOCK) {
-                    flushRun(currentRun, runEndNonBlank, methodStartToEnd, methodBuckets, remaining, file);
-                    currentRun = new ArrayList<>();
-                    runEnd = Integer.MIN_VALUE;
-                    runEndNonBlank = Integer.MIN_VALUE;
-                }
-                currentRun.add(l);
-                runEnd = ln;
-                if (!isBlankContent(l)) runEndNonBlank = ln;
-            }
-            // Flush last run
-            if (!currentRun.isEmpty()) {
-                flushRun(currentRun, runEndNonBlank, methodStartToEnd, methodBuckets, remaining, file);
-            }
-            outOfMethodLines = remaining;
-        }
-
         List<ChangeGroup> groups = new ArrayList<>();
 
-        for (List<ChangedLine> bucket : methodBuckets.values()) {
+        for (Map.Entry<Integer, List<ChangedLine>> entry : methodBuckets.entrySet()) {
+            List<ChangedLine> bucket = entry.getValue();
             if (bucket.stream().allMatch(l -> l.type() == ChangedLine.LineType.CONTEXT)) continue;
-            // Sort bucket lines by effective line number before creating the group
             bucket.sort(Comparator.comparingInt(this::effectiveLine));
-            groups.add(ChangeGroup.of("G" + groupCounter.incrementAndGet(), file,
-                    new ArrayList<>(bucket), new ArrayList<>()));
+            ChangeGroup g = ChangeGroup.of("G" + groupCounter.incrementAndGet(), file,
+                    new ArrayList<>(bucket), new ArrayList<>());
+            // Tag groups that contain pre-method lines so the context pipeline
+            // can add a METHOD_SIGNATURE snippet for them.
+            if (preMethodBucketKeys.contains(entry.getKey())) {
+                g.metadata().put("preMethodKey", String.valueOf(entry.getKey()));
+            }
+            groups.add(g);
         }
 
         if (!outOfMethodLines.isEmpty()) {
@@ -253,39 +241,18 @@ public class ChangeGrouper {
     }
 
     /**
-     * Attempts to attach a completed run of out-of-method lines to the nearest method
-     * that starts within {@value #MAX_JAVADOC_GAP} lines after the run's last non-blank
-     * line. If no such method exists the run is appended to {@code remaining}.
-     */
-    private void flushRun(List<ChangedLine> run,
-                           int runEndNonBlank,
-                           Map<Integer, Integer> methodStartToEnd,
-                           Map<Integer, List<ChangedLine>> methodBuckets,
-                           List<ChangedLine> remaining,
-                           String file) {
-        Integer target = findNearestMethodAfter(runEndNonBlank, methodStartToEnd);
-        if (target != null) {
-            List<ChangedLine> bucket = methodBuckets.computeIfAbsent(target, k -> new ArrayList<>());
-            // Prepend: run comes before the method lines already in the bucket
-            bucket.addAll(0, run);
-            log.debug("Run (lastNonBlank={}) attached to method @{} in {}", runEndNonBlank, target, file);
-        } else {
-            remaining.addAll(run);
-        }
-    }
-
-    /**
      * Finds the nearest method whose {@code startLine} is within
-     * {@value #MAX_JAVADOC_GAP} lines after {@code lastNonBlankLine}.
+     * {@value #MAX_JAVADOC_GAP} lines after {@code anchorLine}.
+     * {@code anchorLine} should be the last non-blank line of the run.
      * Returns {@code null} if no such method exists.
      */
-    private Integer findNearestMethodAfter(int lastNonBlankLine,
+    private Integer findNearestMethodAfter(int anchorLine,
                                             Map<Integer, Integer> methodStartToEnd) {
-        if (lastNonBlankLine == Integer.MIN_VALUE) return null;
+        if (anchorLine <= 0) return null;
         Integer best = null;
         int bestDist = Integer.MAX_VALUE;
         for (int start : methodStartToEnd.keySet()) {
-            int dist = start - lastNonBlankLine;
+            int dist = start - anchorLine;
             if (dist >= 0 && dist <= MAX_JAVADOC_GAP && dist < bestDist) {
                 bestDist = dist;
                 best = start;
@@ -294,16 +261,8 @@ public class ChangeGrouper {
         return best;
     }
 
-    /** Returns {@code true} if the changed line has no meaningful content (blank diff line). */
-    private static boolean isBlankContent(ChangedLine l) {
-        String c = l.content();
-        return c == null || c.isBlank();
-    }
-
     /**
      * Merges a pre-sorted list of out-of-method lines into contiguous runs.
-     * Two lines belong to the same run when their effective line numbers differ
-     * by at most {@value #MAX_LINE_GAP_IN_BLOCK}.
      */
     private List<ChangeGroup> mergeAdjacentOutOfMethod(String file, List<ChangedLine> lines) {
         List<ChangeGroup> result = new ArrayList<>();
@@ -390,13 +349,9 @@ public class ChangeGrouper {
         return result;
     }
 
-    /**
-     * Inserts {@code importLine} into {@code lines} at the position that preserves
-     * ascending effective-line order, rather than always prepending at index 0.
-     */
     private void insertImportSorted(List<ChangedLine> lines, ChangedLine importLine) {
         int importLineNo = effectiveLine(importLine);
-        int insertIdx = lines.size(); // default: append
+        int insertIdx = lines.size();
         for (int i = 0; i < lines.size(); i++) {
             if (effectiveLine(lines.get(i)) > importLineNo) {
                 insertIdx = i;
@@ -410,17 +365,6 @@ public class ChangeGrouper {
     // Phase 2 (annotation split): split buckets that mix unrelated annotations
     // -----------------------------------------------------------------------
 
-    /**
-     * Splits a group whose non-CONTEXT lines contain two or more distinct annotation
-     * roots (e.g. {@code @Execution} vs {@code @JiraTest}) into per-root sub-groups.
-     *
-     * <p><b>Important constraint:</b> annotation lines from different method bodies
-     * are <em>never</em> conflated here — they already live in separate Phase-1
-     * buckets.  This phase only splits within a single-method bucket where the
-     * diff adds annotations belonging to semantically different concerns.
-     * A group is considered "multi-method" and therefore skipped when any gap between
-     * consecutive annotation lines exceeds {@value #MAX_LINE_GAP_IN_BLOCK} lines.
-     */
     private List<ChangeGroup> splitAnnotationBuckets(List<ChangeGroup> groups) {
         List<ChangeGroup> result = new ArrayList<>();
         for (ChangeGroup g : groups) {
@@ -430,7 +374,6 @@ public class ChangeGrouper {
     }
 
     private List<ChangeGroup> trySplitAnnotations(ChangeGroup g) {
-        // Collect non-CONTEXT annotation lines
         List<ChangedLine> annLines = new ArrayList<>();
         for (ChangedLine l : g.changedLines()) {
             if (l.type() != ChangedLine.LineType.CONTEXT && extractAnnotationRoot(l.content()) != null) {
@@ -439,9 +382,6 @@ public class ChangeGrouper {
         }
         if (annLines.isEmpty()) return List.of(g);
 
-        // Guard: skip if annotation lines are non-contiguous (multi-method bucket).
-        // Any gap > MAX_LINE_GAP_IN_BLOCK between consecutive annotation lines
-        // means they belong to different methods — do not split.
         annLines.sort(Comparator.comparingInt(this::effectiveLine));
         for (int i = 1; i < annLines.size(); i++) {
             int gap = effectiveLine(annLines.get(i)) - effectiveLine(annLines.get(i - 1));
@@ -498,7 +438,7 @@ public class ChangeGrouper {
     // -----------------------------------------------------------------------
 
     private List<ChangeGroup> versionChangelogMerge(List<ChangeGroup> groups) {
-        Map<String, ChangeGroup> versionByTag  = new LinkedHashMap<>();
+        Map<String, ChangeGroup> versionByTag   = new LinkedHashMap<>();
         Map<String, ChangeGroup> changelogByTag = new LinkedHashMap<>();
 
         for (ChangeGroup g : groups) {
@@ -647,14 +587,12 @@ public class ChangeGrouper {
             }
         }
 
-        // --- Transitive file-overlap merge ---
-        // If the same file appears in two different raw clusters, those clusters
-        // must be merged transitively (e.g. JiraProvider.java shared by G17 & G18).
+        // Transitive file-overlap merge: if the same file appears in two raw clusters,
+        // merge them so JiraProvider.java is not split across G13 and G14.
         Map<Integer, List<Integer>> rawClusterIndices = new LinkedHashMap<>();
         for (int i = 0; i < n; i++) {
             rawClusterIndices.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(i);
         }
-        // Map file -> list of cluster roots that contain a group from this file
         Map<String, List<Integer>> fileToRoots = new LinkedHashMap<>();
         for (var entry : rawClusterIndices.entrySet()) {
             int root = entry.getKey();
@@ -662,7 +600,6 @@ public class ChangeGrouper {
                 fileToRoots.computeIfAbsent(groups.get(idx).primaryFile(), k -> new ArrayList<>()).add(root);
             }
         }
-        // Merge clusters that share a file
         for (List<Integer> roots : fileToRoots.values()) {
             if (roots.size() < 2) continue;
             log.debug("Transitive file-overlap merge: cluster roots {} share a file", roots);
@@ -671,7 +608,6 @@ public class ChangeGrouper {
             }
         }
 
-        // Collect final clusters after transitive merge
         Map<Integer, List<ChangeGroup>> finalClusters = new LinkedHashMap<>();
         for (int i = 0; i < n; i++) {
             finalClusters.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(groups.get(i));
@@ -781,11 +717,15 @@ public class ChangeGrouper {
                 .orElse(cluster.get(0).primaryFile());
         List<ChangedLine> allLines = new ArrayList<>();
         for (ChangeGroup g : cluster) allLines.addAll(g.changedLines());
-        // Sort merged lines by effective line number so the rendered diff is readable.
         allLines.sort(Comparator.comparingInt(this::effectiveLine));
         EnumSet<ChangeGroupFlag> mergedFlags = EnumSet.noneOf(ChangeGroupFlag.class);
         for (ChangeGroup g : cluster) mergedFlags.addAll(g.flags());
-        return new ChangeGroup(id, primary, allLines, new ArrayList<>(), mergedFlags);
+        // Propagate preMethodKey metadata if any sub-group has it
+        Map<String, String> mergedMeta = new LinkedHashMap<>();
+        for (ChangeGroup g : cluster) mergedMeta.putAll(g.metadata());
+        ChangeGroup result = new ChangeGroup(id, primary, allLines, new ArrayList<>(), mergedFlags);
+        result.metadata().putAll(mergedMeta);
+        return result;
     }
 
     // -----------------------------------------------------------------------
