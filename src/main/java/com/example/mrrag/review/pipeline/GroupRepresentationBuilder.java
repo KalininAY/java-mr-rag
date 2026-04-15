@@ -12,18 +12,17 @@ import java.util.stream.Collectors;
  * <p>Output structure per group:
  * <ol>
  *   <li>Header: group id + change type.</li>
- *   <li>Per-file {@code diff} block — ADD/DELETE lines only (no CONTEXT noise).
- *       Each line is prefixed with its new-side line number ({@code @N}).</li>
+ *   <li>Per-file {@code diff} block — all lines received (ADD/DELETE only,
+ *       since {@link DiffParser} no longer emits CONTEXT lines).
+ *       Each line is prefixed with its line number ({@code @N}).</li>
  *   <li><b>Enclosing context</b> section — one {@code java} block per
- *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet: the full
- *       method/lambda that wraps the changed lines, so the reviewer sees where
- *       the diff sits without CONTEXT line clutter.</li>
- *   <li><b>Context snippets</b> section — all other enrichment snippets
- *       (declarations, callers, usages, …) in the usual bullet format.</li>
+ *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet with
+ *       start-line annotation, so the reviewer knows where the method sits.</li>
+ *   <li><b>Context snippets</b> section — all other enrichment snippets.</li>
  * </ol>
  *
- * <p>Deduplication of snippets already visible in the diff is performed
- * upstream by {@link com.example.mrrag.review.strategy.ContextStrategy#filterAlreadyInDiff}.
+ * <p>Deduplication of snippets already in the diff is performed upstream by
+ * {@link com.example.mrrag.review.strategy.ContextStrategy#filterAlreadyInDiff}.
  */
 @Component
 public class GroupRepresentationBuilder {
@@ -57,21 +56,18 @@ public class GroupRepresentationBuilder {
         sb.append("### Change group `").append(group.id())
                 .append("` — ").append(changeType).append("\n");
 
-        // --- 1. Per-file diff blocks (ADD/DELETE only) ---
+        // --- 1. Per-file diff blocks ---
+        // DiffParser emits only ADD/DELETE, so no filtering needed here.
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
         for (ChangedLine l : group.changedLines()) {
             byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
         }
 
         for (Map.Entry<String, List<ChangedLine>> entry : byFile.entrySet()) {
-            List<ChangedLine> diffLines = entry.getValue().stream()
-                    .filter(l -> l.type() != ChangedLine.LineType.CONTEXT)
-                    .toList();
-            if (diffLines.isEmpty()) continue;
-
+            if (entry.getValue().isEmpty()) continue;
             sb.append("**File:** `").append(entry.getKey()).append("`\n\n");
             sb.append("```diff\n");
-            for (ChangedLine l : diffLines) {
+            for (ChangedLine l : entry.getValue()) {
                 char prefix = l.type() == ChangedLine.LineType.ADD ? '+' : '-';
                 int lineNo = l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber();
                 String lineRef = lineNo > 0 ? String.format("@%-4d ", lineNo) : "       ";
@@ -82,7 +78,7 @@ public class GroupRepresentationBuilder {
 
         if (snippets.isEmpty()) return sb.toString();
 
-        // Split snippets into METHOD_BODY (enclosing context) vs. the rest
+        // Split into METHOD_BODY vs. everything else
         List<EnrichmentSnippet> methodBodies = snippets.stream()
                 .filter(s -> s.type() == EnrichmentSnippet.SnippetType.METHOD_BODY)
                 .collect(Collectors.toCollection(ArrayList::new));
@@ -90,13 +86,14 @@ public class GroupRepresentationBuilder {
                 .filter(s -> s.type() != EnrichmentSnippet.SnippetType.METHOD_BODY)
                 .collect(Collectors.toCollection(ArrayList::new));
 
-        // --- 2. Enclosing context section ---
+        // --- 2. Enclosing context (METHOD_BODY snippets) ---
         if (!methodBodies.isEmpty()) {
             sb.append("**Enclosing context (").append(methodBodies.size()).append("):**\n\n");
             for (EnrichmentSnippet s : methodBodies) {
+                // symbol name + file path + start line number
                 sb.append("`").append(s.symbolName()).append("`")
-                        .append(" @ `").append(s.filePath()).append(":")
-                        .append(s.startLine()).append("`\n\n");
+                        .append(" @ `").append(s.filePath())
+                        .append(":").append(s.startLine()).append("`\n\n");
                 String src = s.sourceSnippet();
                 if (src != null && !src.isBlank()) {
                     sb.append("```java\n");
