@@ -25,9 +25,10 @@ import java.util.regex.Pattern;
  *       body are grouped together.  Adjacent out-of-method lines (gap &le;
  *       {@value #MAX_LINE_GAP_IN_BLOCK}) are merged into one group so that
  *       Javadoc comment lines and their annotated element end up together.
- *       A Javadoc block ({@code /** ... *&#47;}) that immediately precedes a
- *       method declaration line (gap &le; {@value #MAX_JAVADOC_GAP}) is moved
- *       into that method's bucket rather than treated as out-of-method.
+ *       A Javadoc block ({@code /** ... *&#47;}) or annotation line that immediately
+ *       precedes a method declaration (gap &le; {@value #MAX_JAVADOC_GAP} from the
+ *       last <em>non-blank</em> line of the run) is moved into that method's bucket
+ *       rather than treated as out-of-method.
  *       Lines outside any method are bucketed by the single top-level
  *       CLASS/INTERFACE of the file; if no unique top-level type exists, adjacent
  *       lines share a group, and isolated lines each get their own group.</li>
@@ -35,12 +36,16 @@ import java.util.regex.Pattern;
  *       every same-file group whose non-CONTEXT lines reference the imported simple
  *       name.  Unmatched imports fall back to the class-signature group; otherwise
  *       they become a standalone group flagged
- *       {@link ChangeGroupFlag#SUSPICIOUS_UNUSED_IMPORT}.</li>
+ *       {@link ChangeGroupFlag#SUSPICIOUS_UNUSED_IMPORT}.
+ *       Imports are inserted at the position matching their line number rather than
+ *       prepended blindly, so the final diff output stays sorted.</li>
  *   <li><b>Annotation-semantic split</b> – if a single method bucket mixes
  *       lines adding structurally-different annotations (e.g. {@code @Execution}
  *       vs {@code @JiraTest}) they are split into per-annotation sub-groups.
  *       Annotations from <em>different</em> methods are never conflated by this
- *       phase — they already live in separate buckets from Phase 1.</li>
+ *       phase — they already live in separate buckets from Phase 1.
+ *       Without a graph, any bucket whose annotation lines have a gap &gt;
+ *       {@value #MAX_LINE_GAP_IN_BLOCK} is skipped (multi-method indicator).</li>
  *   <li><b>Rule-based version/changelog merge (Phase 2.5)</b> – if the diff
  *       touches both a build-descriptor version line and a changelog header line
  *       for the same version string, those groups are merged and flagged
@@ -68,9 +73,9 @@ public class ChangeGrouper {
     private static final int MAX_LINE_GAP_IN_BLOCK = 2;
 
     /**
-     * Maximum gap (in lines) between the last line of a Javadoc block and the
-     * first line of the method it documents, for the Javadoc to be pulled into
-     * that method's bucket.
+     * Maximum gap (in lines) between the last <em>non-blank</em> line of a
+     * Javadoc/annotation run and the first line of the method it documents,
+     * for the run to be pulled into that method's bucket.
      */
     private static final int MAX_JAVADOC_GAP = 1;
 
@@ -163,8 +168,7 @@ public class ChangeGrouper {
             topLevelKey = null;
         }
 
-        // Build a map: method startLine -> method endLine, for Javadoc attachment.
-        // Key: startLine of method node in this file.
+        // Build a map: method startLine -> method endLine, for Javadoc/annotation attachment.
         Map<Integer, Integer> methodStartToEnd = new LinkedHashMap<>();
         if (graph != null) {
             for (GraphNode n : graph.nodes.values()) {
@@ -194,44 +198,39 @@ public class ChangeGrouper {
             }
         }
 
-        // Re-classify Javadoc out-of-method lines into the method bucket they precede.
-        // A contiguous run of out-of-method lines is a Javadoc block when it ends
-        // with */ and the next method starts within MAX_JAVADOC_GAP lines.
+        // Re-classify Javadoc/annotation out-of-method lines into the method bucket they precede.
+        //
+        // A contiguous run of out-of-method lines that ends within MAX_JAVADOC_GAP lines of a
+        // method start is pulled into that method's bucket. The anchor used for the gap calculation
+        // is the last *non-blank* line of the run — trailing blank change lines must not push the
+        // anchor past the method declaration they document.
+        //
+        // This handles two cases:
+        //   (a) Javadoc blocks: /** ... */ immediately before a method
+        //   (b) Annotation lines (@Foo, @Bar) above a method that weren't caught by
+        //       findContainingMethod (annotations are outside the method body in the AST)
         if (!outOfMethodLines.isEmpty() && !methodStartToEnd.isEmpty()) {
             List<ChangedLine> remaining = new ArrayList<>();
-            List<ChangedLine> javadocRun = new ArrayList<>();
-            int runEnd = Integer.MIN_VALUE;
+            List<ChangedLine> currentRun = new ArrayList<>();
+            int runEnd = Integer.MIN_VALUE;          // last line of current run (including blanks)
+            int runEndNonBlank = Integer.MIN_VALUE;  // last non-blank line of current run
 
             for (ChangedLine l : outOfMethodLines) {
                 int ln = effectiveLine(l);
-                // Continue current javadoc run or start new one
-                if (!javadocRun.isEmpty() && ln - runEnd > MAX_LINE_GAP_IN_BLOCK) {
-                    // Flush: try to attach to a method
-                    Integer target = findNearestMethodAfter(runEnd, methodStartToEnd);
-                    if (target != null) {
-                        methodBuckets.computeIfAbsent(target, k -> new ArrayList<>())
-                                .addAll(0, javadocRun);
-                        log.debug("Javadoc run (lines ~{}) attached to method starting @{} in {}",
-                                runEnd, target, file);
-                    } else {
-                        remaining.addAll(javadocRun);
-                    }
-                    javadocRun = new ArrayList<>();
+                // Continue current run or flush and start a new one
+                if (!currentRun.isEmpty() && ln - runEnd > MAX_LINE_GAP_IN_BLOCK) {
+                    flushRun(currentRun, runEndNonBlank, methodStartToEnd, methodBuckets, remaining, file);
+                    currentRun = new ArrayList<>();
+                    runEnd = Integer.MIN_VALUE;
+                    runEndNonBlank = Integer.MIN_VALUE;
                 }
-                javadocRun.add(l);
+                currentRun.add(l);
                 runEnd = ln;
+                if (!isBlankContent(l)) runEndNonBlank = ln;
             }
-            // Flush last javadoc run
-            if (!javadocRun.isEmpty()) {
-                Integer target = findNearestMethodAfter(runEnd, methodStartToEnd);
-                if (target != null) {
-                    methodBuckets.computeIfAbsent(target, k -> new ArrayList<>())
-                            .addAll(0, javadocRun);
-                    log.debug("Javadoc run (lines ~{}) attached to method starting @{} in {}",
-                            runEnd, target, file);
-                } else {
-                    remaining.addAll(javadocRun);
-                }
+            // Flush last run
+            if (!currentRun.isEmpty()) {
+                flushRun(currentRun, runEndNonBlank, methodStartToEnd, methodBuckets, remaining, file);
             }
             outOfMethodLines = remaining;
         }
@@ -240,6 +239,8 @@ public class ChangeGrouper {
 
         for (List<ChangedLine> bucket : methodBuckets.values()) {
             if (bucket.stream().allMatch(l -> l.type() == ChangedLine.LineType.CONTEXT)) continue;
+            // Sort bucket lines by effective line number before creating the group
+            bucket.sort(Comparator.comparingInt(this::effectiveLine));
             groups.add(ChangeGroup.of("G" + groupCounter.incrementAndGet(), file,
                     new ArrayList<>(bucket), new ArrayList<>()));
         }
@@ -252,22 +253,51 @@ public class ChangeGrouper {
     }
 
     /**
+     * Attempts to attach a completed run of out-of-method lines to the nearest method
+     * that starts within {@value #MAX_JAVADOC_GAP} lines after the run's last non-blank
+     * line. If no such method exists the run is appended to {@code remaining}.
+     */
+    private void flushRun(List<ChangedLine> run,
+                           int runEndNonBlank,
+                           Map<Integer, Integer> methodStartToEnd,
+                           Map<Integer, List<ChangedLine>> methodBuckets,
+                           List<ChangedLine> remaining,
+                           String file) {
+        Integer target = findNearestMethodAfter(runEndNonBlank, methodStartToEnd);
+        if (target != null) {
+            List<ChangedLine> bucket = methodBuckets.computeIfAbsent(target, k -> new ArrayList<>());
+            // Prepend: run comes before the method lines already in the bucket
+            bucket.addAll(0, run);
+            log.debug("Run (lastNonBlank={}) attached to method @{} in {}", runEndNonBlank, target, file);
+        } else {
+            remaining.addAll(run);
+        }
+    }
+
+    /**
      * Finds the nearest method whose {@code startLine} is within
-     * {@value #MAX_JAVADOC_GAP} lines after {@code lastJavadocLine}.
+     * {@value #MAX_JAVADOC_GAP} lines after {@code lastNonBlankLine}.
      * Returns {@code null} if no such method exists.
      */
-    private Integer findNearestMethodAfter(int lastJavadocLine,
+    private Integer findNearestMethodAfter(int lastNonBlankLine,
                                             Map<Integer, Integer> methodStartToEnd) {
+        if (lastNonBlankLine == Integer.MIN_VALUE) return null;
         Integer best = null;
         int bestDist = Integer.MAX_VALUE;
         for (int start : methodStartToEnd.keySet()) {
-            int dist = start - lastJavadocLine;
+            int dist = start - lastNonBlankLine;
             if (dist >= 0 && dist <= MAX_JAVADOC_GAP && dist < bestDist) {
                 bestDist = dist;
                 best = start;
             }
         }
         return best;
+    }
+
+    /** Returns {@code true} if the changed line has no meaningful content (blank diff line). */
+    private static boolean isBlankContent(ChangedLine l) {
+        String c = l.content();
+        return c == null || c.isBlank();
     }
 
     /**
@@ -329,7 +359,7 @@ public class ChangeGrouper {
                         .toList();
                 if (!targets.isEmpty()) {
                     for (ChangeGroup target : targets) {
-                        target.changedLines().add(0, importLine);
+                        insertImportSorted(target.changedLines(), importLine);
                         log.debug("Import '{}' attached to group {} in {}", name, target.id(), file);
                     }
                     continue;
@@ -341,7 +371,7 @@ public class ChangeGrouper {
                     .filter(g -> g.changedLines().stream().anyMatch(ChangeGrouper::isClassSignatureLine))
                     .findFirst();
             if (classGroup.isPresent()) {
-                classGroup.get().changedLines().add(0, importLine);
+                insertImportSorted(classGroup.get().changedLines(), importLine);
                 log.debug("Import '{}' attached to class-signature group {} in {}",
                         importLine.content(), classGroup.get().id(), file);
                 continue;
@@ -360,6 +390,22 @@ public class ChangeGrouper {
         return result;
     }
 
+    /**
+     * Inserts {@code importLine} into {@code lines} at the position that preserves
+     * ascending effective-line order, rather than always prepending at index 0.
+     */
+    private void insertImportSorted(List<ChangedLine> lines, ChangedLine importLine) {
+        int importLineNo = effectiveLine(importLine);
+        int insertIdx = lines.size(); // default: append
+        for (int i = 0; i < lines.size(); i++) {
+            if (effectiveLine(lines.get(i)) > importLineNo) {
+                insertIdx = i;
+                break;
+            }
+        }
+        lines.add(insertIdx, importLine);
+    }
+
     // -----------------------------------------------------------------------
     // Phase 2 (annotation split): split buckets that mix unrelated annotations
     // -----------------------------------------------------------------------
@@ -372,11 +418,8 @@ public class ChangeGrouper {
      * are <em>never</em> conflated here — they already live in separate Phase-1
      * buckets.  This phase only splits within a single-method bucket where the
      * diff adds annotations belonging to semantically different concerns.
-     * A group is considered "multi-method" and therefore skipped when it contains
-     * annotation lines whose line numbers span more than one distinct method
-     * start-line according to the graph; without a graph, any bucket whose
-     * annotation lines are non-contiguous (gap &gt; {@value #MAX_LINE_GAP_IN_BLOCK})
-     * is also skipped.
+     * A group is considered "multi-method" and therefore skipped when any gap between
+     * consecutive annotation lines exceeds {@value #MAX_LINE_GAP_IN_BLOCK} lines.
      */
     private List<ChangeGroup> splitAnnotationBuckets(List<ChangeGroup> groups) {
         List<ChangeGroup> result = new ArrayList<>();
@@ -397,13 +440,12 @@ public class ChangeGrouper {
         if (annLines.isEmpty()) return List.of(g);
 
         // Guard: skip if annotation lines are non-contiguous (multi-method bucket).
-        // Non-contiguous means any gap > MAX_LINE_GAP_IN_BLOCK between consecutive
-        // annotation lines — those belong to different methods already.
+        // Any gap > MAX_LINE_GAP_IN_BLOCK between consecutive annotation lines
+        // means they belong to different methods — do not split.
         annLines.sort(Comparator.comparingInt(this::effectiveLine));
         for (int i = 1; i < annLines.size(); i++) {
             int gap = effectiveLine(annLines.get(i)) - effectiveLine(annLines.get(i - 1));
-            if (gap > MAX_LINE_GAP_IN_BLOCK + 1) {
-                // Annotations are far apart — likely different methods; don't split.
+            if (gap > MAX_LINE_GAP_IN_BLOCK) {
                 log.debug("Skipping annotation-split for group {} (non-contiguous annotations, gap={})",
                         g.id(), gap);
                 return List.of(g);
@@ -739,6 +781,8 @@ public class ChangeGrouper {
                 .orElse(cluster.get(0).primaryFile());
         List<ChangedLine> allLines = new ArrayList<>();
         for (ChangeGroup g : cluster) allLines.addAll(g.changedLines());
+        // Sort merged lines by effective line number so the rendered diff is readable.
+        allLines.sort(Comparator.comparingInt(this::effectiveLine));
         EnumSet<ChangeGroupFlag> mergedFlags = EnumSet.noneOf(ChangeGroupFlag.class);
         for (ChangeGroup g : cluster) mergedFlags.addAll(g.flags());
         return new ChangeGroup(id, primary, allLines, new ArrayList<>(), mergedFlags);
