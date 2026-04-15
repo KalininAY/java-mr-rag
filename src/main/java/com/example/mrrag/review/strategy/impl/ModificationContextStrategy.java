@@ -10,18 +10,19 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.*;
 
 /**
  * Strategy for {@link ChangeType#MODIFICATION} and {@link ChangeType#CROSS_SCOPE}.
  *
- * <p>Provides the body of the enclosing method so the reviewer sees the
- * full context of the in-place change. Also delegates to both
- * {@link AdditionContextStrategy} and {@link DeletionContextStrategy}
- * for edges on ADD/DELETE lines respectively.
+ * <p>For every changed ADD/DELETE line across all files in the group, finds
+ * the smallest enclosing METHOD node and adds a {@link EnrichmentSnippet.SnippetType#METHOD_BODY}
+ * snippet for each unique method found. This gives the reviewer the full
+ * surrounding context without CONTEXT-line noise in the diff.
+ *
+ * <p>After collecting enclosing methods, also delegates to
+ * {@link AdditionContextStrategy} and {@link DeletionContextStrategy} for
+ * cross-reference snippets on ADD/DELETE edges.
  */
 @Slf4j
 @Component
@@ -43,75 +44,77 @@ public class ModificationContextStrategy implements ContextStrategy {
     }
 
     @Override
-    public List<EnrichmentSnippet> collectContext(ChangeGroup group, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+    public List<EnrichmentSnippet> collectContext(
+            ChangeGroup group, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+
         List<EnrichmentSnippet> snippets = new ArrayList<>();
 
-        // 1. Enclosing method body
-        collectContainingMethod(group, sourceGraph, snippets);
+        // 1. Enclosing method bodies for every ADD/DELETE line (all files)
+        collectContainingMethods(group, sourceGraph, snippets);
 
-        // 2. Edges on ADD lines (re-use addition strategy)
+        // 2. Cross-reference snippets for ADD lines
         if (snippets.size() < maxSnippetsPerGroup) {
-            List<EnrichmentSnippet> addCtx = additionStrategy.collectContext(
-                    group, sourceGraph, targetGraph);
-            addCtx.stream()
+            additionStrategy.collectContext(group, sourceGraph, targetGraph).stream()
                     .limit(maxSnippetsPerGroup - snippets.size())
                     .forEach(snippets::add);
         }
 
-        // 3. Deleted declarations impact (re-use deletion strategy)
+        // 3. Deletion-impact snippets for DELETE lines
         if (snippets.size() < maxSnippetsPerGroup) {
-            List<EnrichmentSnippet> delCtx = deletionStrategy.collectContext(
-                    group, sourceGraph, targetGraph);
-            delCtx.stream()
+            deletionStrategy.collectContext(group, sourceGraph, targetGraph).stream()
                     .limit(maxSnippetsPerGroup - snippets.size())
                     .forEach(snippets::add);
         }
 
         log.debug("ModificationContextStrategy: group={} snippets={}", group.id(), snippets.size());
-        return snippets;
+        return filterAlreadyInDiff(group, snippets);
     }
 
-    private void collectContainingMethod(ChangeGroup group, ProjectGraph graph, List<EnrichmentSnippet> snippets) {
-        if (snippets.size() >= maxSnippetsPerGroup) return;
+    /**
+     * Iterates over <b>all</b> ADD/DELETE lines in the group (across all files),
+     * finds the smallest enclosing METHOD node for each line, and adds a
+     * {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet per unique method.
+     *
+     * <p>Using the smallest enclosing method (min span) avoids accidentally
+     * picking an outer class or lambda wrapper when nested methods exist.
+     */
+    private void collectContainingMethods(
+            ChangeGroup group, ProjectGraph graph, List<EnrichmentSnippet> snippets) {
 
-        ChangedLine first = group.changedLines().stream()
+        // Track already-added method node IDs to avoid duplicates
+        Set<String> seenMethodIds = new LinkedHashSet<>();
+
+        List<ChangedLine> changedLines = group.changedLines().stream()
                 .filter(l -> l.type() != ChangedLine.LineType.CONTEXT)
                 .filter(l -> l.lineNumber() > 0 || l.oldLineNumber() > 0)
-                .findFirst().orElse(null);
-        if (first == null) return;
+                .toList();
 
-        String file = AstGraphUtils.normalizeFilePath(first.filePath(), graph);
-        int line = first.lineNumber() > 0 ? first.lineNumber() : first.oldLineNumber();
+        for (ChangedLine cl : changedLines) {
+            if (snippets.size() >= maxSnippetsPerGroup) break;
 
-        graph.nodesAtLine(file, line).stream()
-                .filter(n -> n.kind() == NodeKind.METHOD)
-                .min(Comparator.comparingInt(n -> n.endLine() - n.startLine()))
-                .ifPresent(method -> {
-                    if (snippets.size() >= maxSnippetsPerGroup) return;
-                    int end = Math.min(method.endLine(), method.startLine() + maxSnippetLines - 1);
-                    snippets.add(new EnrichmentSnippet(
-                            EnrichmentSnippet.SnippetType.METHOD_BODY,
-                            method.filePath(), method.startLine(), end, method.simpleName(),
-                            method.sourceSnippet(),
-                            "Body of enclosing method '" + method.simpleName() + "'"
-                    ));
-                });
-    }
+            String file = AstGraphUtils.normalizeFilePath(cl.filePath(), graph);
+            int line = cl.lineNumber() > 0 ? cl.lineNumber() : cl.oldLineNumber();
 
-    private List<String> readLines(Path repoDir, String relPath, int from, int to) {
-        Path file = repoDir.resolve(relPath);
-        if (!Files.exists(file)) return List.of();
-        try {
-            List<String> all = Files.readAllLines(file);
-            int start = Math.max(0, from - 1);
-            int end = Math.min(all.size(), to);
-            if (start >= end) return List.of();
-            return all.subList(start, end).stream()
-                    .map(l -> l.length() > 200 ? l.substring(0, 200) + "..." : l)
-                    .toList();
-        } catch (IOException e) {
-            log.warn("Cannot read {}: {}", file, e.getMessage());
-            return List.of();
+            graph.nodesAtLine(file, line).stream()
+                    .filter(n -> n.kind() == NodeKind.METHOD)
+                    // smallest span = most specific enclosing method
+                    .min(Comparator.comparingInt(n -> n.endLine() - n.startLine()))
+                    .ifPresent(method -> {
+                        if (snippets.size() >= maxSnippetsPerGroup) return;
+                        if (!seenMethodIds.add(method.id())) return; // already added
+
+                        int end = Math.min(method.endLine(),
+                                method.startLine() + maxSnippetLines - 1);
+                        snippets.add(new EnrichmentSnippet(
+                                EnrichmentSnippet.SnippetType.METHOD_BODY,
+                                method.filePath(),
+                                method.startLine(),
+                                end,
+                                method.simpleName(),
+                                method.sourceSnippet(),
+                                "Body of enclosing method '" + method.simpleName() + "'"
+                        ));
+                    });
         }
     }
 }
