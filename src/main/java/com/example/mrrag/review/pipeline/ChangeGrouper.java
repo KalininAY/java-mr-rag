@@ -38,18 +38,13 @@ public class ChangeGrouper {
     private final GraphQueryService graphQuery;
     private final AtomicInteger groupCounter = new AtomicInteger(0);
 
-    private static final Pattern STRUCTURAL_CONTENT = Pattern.compile(
-            "^[\\{\\}\\(\\)\\[\\]\\s]*"
-            + "(?:(?:try|catch(?:\\s*\\([^)]*\\))?|finally|else(?:\\s+if\\s*\\([^)]*\\))?)"
-            + "[\\{\\}\\(\\)\\[\\]\\s]*)?"
-            + "$"
-    );
-
     // -----------------------------------------------------------------------
     // Public API
     // -----------------------------------------------------------------------
 
-    /** Group without AST graph (line-distance fallback). */
+    /**
+     * Group without AST graph (line-distance fallback).
+     */
     public List<ChangeGroup> group(Set<ChangedLine> lines) {
         return group(lines, null);
     }
@@ -61,17 +56,7 @@ public class ChangeGrouper {
      * @param graph AST graph of the source branch (may be {@code null} for fallback)
      */
     public List<ChangeGroup> group(Set<ChangedLine> lines, ProjectGraph graph) {
-        List<ChangedLine> meaningful = lines.stream()
-                .filter(l -> l.type() == ChangedLine.LineType.CONTEXT || !isStructural(l.content()))
-                .toList();
-        int dropped = lines.size() - meaningful.size();
-        if (dropped > 0) log.debug("Structural-line filter: dropped {}", dropped);
-
-        List<ChangedLine> merged = mergeMirrorCommentPairs(meaningful);
-        int mirrorMerged = meaningful.size() - merged.size();
-        if (mirrorMerged > 0) log.debug("Mirror-comment merge: collapsed {} lines into pairs", mirrorMerged);
-
-        List<ChangeGroup> phase1 = codeBlockGroup(merged, graph);
+        List<ChangeGroup> phase1 = codeBlockGroup(lines, graph);
         log.debug("Phase 1 (code-block): {} groups", phase1.size());
         List<ChangeGroup> phase2 = semanticMerge(phase1, graph);
         log.debug("Phase 2 (cross-file AST): {} groups", phase2.size());
@@ -79,73 +64,10 @@ public class ChangeGrouper {
     }
 
     // -----------------------------------------------------------------------
-    // Structural-line detection
-    // -----------------------------------------------------------------------
-
-    static boolean isStructural(String text) {
-        if (text == null) return true;
-        String stripped = text.strip();
-        if (stripped.isEmpty()) return true;
-        String content = stripped.startsWith("//") ? stripped.substring(2).strip() : stripped;
-        return STRUCTURAL_CONTENT.matcher(content).matches();
-    }
-
-    // -----------------------------------------------------------------------
-    // Mirror-comment pair merging
-    // -----------------------------------------------------------------------
-
-    private List<ChangedLine> mergeMirrorCommentPairs(List<ChangedLine> lines) {
-        Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
-        for (ChangedLine l : lines) byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
-        List<ChangedLine> result = new ArrayList<>();
-        for (List<ChangedLine> fileLines : byFile.values()) result.addAll(mergeMirrorInFile(fileLines));
-        return result;
-    }
-
-    private List<ChangedLine> mergeMirrorInFile(List<ChangedLine> lines) {
-        int n = lines.size();
-        boolean[] consumed = new boolean[n];
-        List<ChangedLine> out = new ArrayList<>();
-        for (int i = 0; i < n; i++) {
-            if (consumed[i]) continue;
-            ChangedLine del = lines.get(i);
-            if (del.type() != ChangedLine.LineType.DELETE) { out.add(del); continue; }
-            String delNorm = normaliseForMirror(del.content());
-            boolean paired = false;
-            for (int j = i + 1; j < Math.min(n, i + 4); j++) {
-                if (consumed[j]) continue;
-                ChangedLine add = lines.get(j);
-                if (add.type() != ChangedLine.LineType.ADD) continue;
-                String addNorm = normaliseForMirror(uncomment(add.content()));
-                if (delNorm.equals(addNorm) && !delNorm.isBlank()) {
-                    consumed[j] = true; consumed[i] = true;
-                    out.add(del.asContext()); out.add(add);
-                    paired = true;
-                    log.trace("Mirror pair merged: '{}'", delNorm);
-                    break;
-                }
-            }
-            if (!paired) out.add(del);
-        }
-        return out;
-    }
-
-    private static String uncomment(String text) {
-        if (text == null) return "";
-        String s = text.strip();
-        return s.startsWith("//") ? s.substring(2).strip() : s;
-    }
-
-    private static String normaliseForMirror(String text) {
-        if (text == null) return "";
-        return uncomment(text).toLowerCase(java.util.Locale.ROOT);
-    }
-
-    // -----------------------------------------------------------------------
     // Phase 1: code-block grouping within each file
     // -----------------------------------------------------------------------
 
-    private List<ChangeGroup> codeBlockGroup(List<ChangedLine> lines, ProjectGraph graph) {
+    private List<ChangeGroup> codeBlockGroup(Collection<ChangedLine> lines, ProjectGraph graph) {
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
         for (ChangedLine l : lines) byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
         List<ChangeGroup> result = new ArrayList<>();
@@ -155,8 +77,7 @@ public class ChangeGrouper {
         return result;
     }
 
-    private List<ChangeGroup> groupByCodeBlock(String file, List<ChangedLine> lines,
-                                                ProjectGraph graph) {
+    private List<ChangeGroup> groupByCodeBlock(String file, List<ChangedLine> lines, ProjectGraph graph) {
         Map<Integer, List<ChangedLine>> buckets = new LinkedHashMap<>();
         int outOfMethodCounter = -1;
 
@@ -214,7 +135,7 @@ public class ChangeGrouper {
 
         List<ChangeGroup> result = new ArrayList<>();
         for (List<ChangeGroup> cluster : clusters.values()) {
-            if (cluster.size() == 1) { result.add(cluster.get(0)); continue; }
+            if (cluster.size() == 1) { result.add(cluster.getFirst()); continue; }
             log.debug("Cross-file merge: {} groups -> one (files: {})",
                     cluster.size(), cluster.stream().map(ChangeGroup::primaryFile).toList());
             result.add(mergeCluster(cluster));
@@ -226,7 +147,7 @@ public class ChangeGrouper {
         Set<Integer> changedLines = new HashSet<>();
         for (ChangedLine l : group.changedLines()) {
             if (l.type() == ChangedLine.LineType.CONTEXT) continue;
-            if (l.lineNumber()    > 0) changedLines.add(l.lineNumber());
+            if (l.lineNumber() > 0) changedLines.add(l.lineNumber());
             if (l.oldLineNumber() > 0) changedLines.add(l.oldLineNumber());
         }
         return graphQuery.astKeysForLines(graph, group.primaryFile(), changedLines);
@@ -246,7 +167,14 @@ public class ChangeGrouper {
 
     // Union-Find
     private int find(int[] parent, int i) {
-        while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i;
+        while (parent[i] != i) {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        return i;
     }
-    private void union(int[] parent, int a, int b) { parent[find(parent, a)] = find(parent, b); }
+
+    private void union(int[] parent, int a, int b) {
+        parent[find(parent, a)] = find(parent, b);
+    }
 }
