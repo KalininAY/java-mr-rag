@@ -164,7 +164,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             return new ProjectGraph();
         }
 
-        int nThreads = Math.max(1, Runtime.getRuntime().availableProcessors());
+        int nThreads = 1; // Math.max(1, Runtime.getRuntime().availableProcessors());
         List<List<ProjectSource>> batches = SourceBatchPartitioner.partition(sources, nThreads);
 
         log.info("doBuildGraphFromSources: {} files -> {} import-aware batches (threads={})",

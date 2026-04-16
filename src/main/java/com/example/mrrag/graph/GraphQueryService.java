@@ -108,17 +108,14 @@ public class GraphQueryService {
      * <p>Duplicates are eliminated; result order: declared nodes first,
      * then referenced nodes.
      *
-     * @param changedLine the diff line to resolve
-     * @param graph       the AST project graph
+     * @param filePath
+     * @param line
+     * @param graph    the AST project graph
      * @return ordered, deduplicated list of nodes; never {@code null}
      */
-    public List<GraphNode> getNodesWithLine(ChangedLine changedLine, ProjectGraph graph) {
-        int ln = changedLine.lineNumber() > 0
-                ? changedLine.lineNumber()
-                : changedLine.oldLineNumber();
-        if (ln <= 0) return List.of();
+    public List<GraphNode> getNodesWithLine(String filePath, int line, ProjectGraph graph) {
+        if (line <= 0) return List.of();
 
-        String filePath = changedLine.filePath();
         // LinkedHashSet preserves insertion order and eliminates duplicates
         Set<GraphNode> result = new LinkedHashSet<>();
 
@@ -127,7 +124,7 @@ public class GraphQueryService {
         //    are NOT included — they belong to a different changed line (their
         //    own startLine) and must not be attributed to every inner line.
         graph.nodes.values().stream()
-                .filter(n -> filePath.equals(n.filePath()) && n.startLine() == ln)
+                .filter(n -> filePath.equals(n.filePath()) && n.startLine() == line)
                 .forEach(result::add);
 
         // 2. Referenced nodes: edges emitted from this exact (filePath, ln).
@@ -135,7 +132,7 @@ public class GraphQueryService {
         //    collect callees whose edge carries the matching file+line metadata.
         for (List<GraphEdge> edges : graph.edgesFrom.values()) {
             for (GraphEdge edge : edges) {
-                if (edge.line() == ln && filePath.equals(edge.filePath())) {
+                if (edge.line() == line && filePath.equals(edge.filePath())) {
                     GraphNode callee = graph.nodes.get(edge.callee());
                     if (callee != null) result.add(callee);
                 }
@@ -255,7 +252,7 @@ public class GraphQueryService {
      * semantic dependencies.
      */
     public Set<String> astKeysForLines(ProjectGraph graph, String relPath,
-                                        Set<Integer> changedLines) {
+                                       Set<Integer> changedLines) {
         Set<String> result = new HashSet<>();
         if (changedLines.isEmpty()) return result;
 
@@ -281,6 +278,9 @@ public class GraphQueryService {
     // Value types
     // ------------------------------------------------------------------
 
-    /** (filePath, line) pair used in exclusion sets for SemanticDiffFilter. */
-    public record LineKey(String filePath, int line) {}
+    /**
+     * (filePath, line) pair used in exclusion sets for SemanticDiffFilter.
+     */
+    public record LineKey(String filePath, int line) {
+    }
 }

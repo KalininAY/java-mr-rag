@@ -58,24 +58,32 @@ public class AstChangeGrouper {
     // -----------------------------------------------------------------------
 
     /**
-     * Groups {@code changedLines} using the AST {@code graph}.
+     * Groups {@code changedLines} using the AST {@code sourceGraph}.
      *
      * @param changedLines set of changed lines from the diff parser
-     * @param graph        AST graph of the project; must not be {@code null}
+     * @param sourceGraph  AST sourceGraph of the project; must not be {@code null}
      * @return list of {@link ChangeGroup}s built exclusively from AST relationships
      */
-    public List<ChangeGroup> group(Set<ChangedLine> changedLines, ProjectGraph graph) {
-        Objects.requireNonNull(graph, "graph must not be null for AstChangeGrouper");
+    public List<ChangeGroup> group(Set<ChangedLine> changedLines, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+        Objects.requireNonNull(sourceGraph, "sourceGraph must not be null for AstChangeGrouper");
 
         // Step 1: resolve AST anchor nodes for every non-CONTEXT changed line
-        Map<ChangedLine, Set<GraphNode>> lineToNodes = resolveNodes(changedLines, graph);
+        Map<ChangedLine, Set<GraphNode>> lineToNodes = resolveNodes(changedLines, sourceGraph, targetGraph);
         log.debug("Step 1 (resolve nodes): {}/{} lines have at least one AST node",
                 lineToNodes.values().stream().filter(s -> !s.isEmpty()).count(),
                 changedLines.size());
 
         // Step 2: build directed NodeConnections via BFS
-        List<NodeConnection> connections = buildConnections(lineToNodes, graph);
-        log.debug("Step 2 (BFS connections): {} connections found", connections.size());
+        Map<ChangedLine, Set<GraphNode>> addLineToNodes = lineToNodes.entrySet().stream()
+                .filter(it -> it.getKey().type() == ChangedLine.LineType.ADD)
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        Map<ChangedLine, Set<GraphNode>> delLineToNodes = lineToNodes.entrySet().stream()
+                .filter(it -> it.getKey().type() == ChangedLine.LineType.DELETE)
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        List<NodeConnection> connectionsForAdd = buildConnections(addLineToNodes, sourceGraph);
+        List<NodeConnection> connectionsForDel = buildConnections(delLineToNodes, targetGraph);
+        log.debug("Step 2 (BFS connections): for ADD line {}, for DEL lint {} connections found",
+                connectionsForAdd.size(), connectionsForDel.size());
 
         // Step 3: build ChangeGroups from connections
         List<ChangeGroup> groups = buildGroups(connections, lineToNodes, changedLines);
@@ -96,13 +104,17 @@ public class AstChangeGrouper {
      * <p>Lines with no resolvable AST node are stored with an empty set;
      * they will fall through to the per-file fallback group in Step 3.
      */
-    private Map<ChangedLine, Set<GraphNode>> resolveNodes(
-            Set<ChangedLine> lines, ProjectGraph graph) {
+    private Map<ChangedLine, Set<GraphNode>> resolveNodes(Set<ChangedLine> lines, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
 
         Map<ChangedLine, Set<GraphNode>> result = new LinkedHashMap<>();
         for (ChangedLine line : lines) {
+            String filepath = line.filePath();
+            List<GraphNode> nodes;
             if (line.type() == ChangedLine.LineType.CONTEXT) continue;
-            List<GraphNode> nodes = graphQuery.getNodesWithLine(line, graph);
+            if (line.type() == ChangedLine.LineType.ADD)
+                nodes = graphQuery.getNodesWithLine(filepath, line.lineNumber(), sourceGraph);
+            else
+                nodes = graphQuery.getNodesWithLine(filepath, line.oldLineNumber(), targetGraph);
             result.put(line, new LinkedHashSet<>(nodes));
         }
         return result;

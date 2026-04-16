@@ -68,7 +68,7 @@ public class ContextPipeline {
         log.info("ContextPipeline.step2: {} filteredLines", filteredLines.size());
 
         // Step 3: group lines via AST graph
-        List<ChangeGroup> groups = astChangeGrouper.group(filteredLines, sourceGraph);
+        List<ChangeGroup> groups = astChangeGrouper.group(filteredLines, sourceGraph, targetGraph);
         log.info("ContextPipeline.step3: {} groups", groups.size());
 
         // Step 4: classify groups by ChangeType
