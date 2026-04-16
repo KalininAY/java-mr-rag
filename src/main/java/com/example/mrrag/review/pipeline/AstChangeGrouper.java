@@ -20,8 +20,8 @@ import java.util.stream.Collectors;
  * <h2>Algorithm</h2>
  * <ol>
  *   <li><b>Resolve nodes</b> — for each changed line find its AST nodes
- *       (method container, top-level type, exact-line node) by file path and
- *       line number.</li>
+ *       (declared in the line range, referenced/called from the line)
+ *       via {@link GraphQueryService#getNodesWithLine}.</li>
  *   <li><b>Build connections</b> — for every ordered pair of distinct anchor
  *       nodes (A, B) collected in Step 1, run BFS from A toward B (up to
  *       {@value #MAX_BFS_DEPTH} hops). If a path exists, emit a
@@ -89,13 +89,12 @@ public class AstChangeGrouper {
     // -----------------------------------------------------------------------
 
     /**
-     * For each non-CONTEXT changed line, finds all AST nodes whose range
-     * covers the line's effective line number:
-     * <ul>
-     *   <li>the smallest enclosing METHOD node (if any)</li>
-     *   <li>the unique top-level CLASS/INTERFACE of the file (if any)</li>
-     *   <li>any node whose {@code startLine} equals the line number exactly</li>
-     * </ul>
+     * For each non-CONTEXT changed line, delegates to
+     * {@link GraphQueryService#getNodesWithLine} to find all AST nodes
+     * declared in or referenced from the line's effective line number.
+     *
+     * <p>Lines with no resolvable AST node are stored with an empty set;
+     * they will fall through to the per-file fallback group in Step 3.
      */
     private Map<ChangedLine, Set<GraphNode>> resolveNodes(
             Set<ChangedLine> lines, ProjectGraph graph) {
@@ -103,20 +102,8 @@ public class AstChangeGrouper {
         Map<ChangedLine, Set<GraphNode>> result = new LinkedHashMap<>();
         for (ChangedLine line : lines) {
             if (line.type() == ChangedLine.LineType.CONTEXT) continue;
-            Set<GraphNode> nodes = new LinkedHashSet<>();
-            int ln = line.lineNumber() > 0 ? line.lineNumber() : line.oldLineNumber();
-            if (ln > 0) {
-                graphQuery.findContainingMethod(graph, line.filePath(), ln)
-                        .ifPresent(nodes::add);
-                graphQuery.findTopLevelType(graph, line.filePath())
-                        .ifPresent(nodes::add);
-                // exact-line node (field declaration, annotation, etc.)
-                graph.nodes.values().stream()
-                        .filter(n -> line.filePath().equals(n.filePath()) && n.startLine() == ln)
-                        .findFirst()
-                        .ifPresent(nodes::add);
-            }
-            result.put(line, nodes);
+            List<GraphNode> nodes = graphQuery.getNodesWithLine(line, graph);
+            result.put(line, new LinkedHashSet<>(nodes));
         }
         return result;
     }

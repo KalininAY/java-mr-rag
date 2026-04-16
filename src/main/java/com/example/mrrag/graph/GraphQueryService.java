@@ -1,6 +1,7 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.graph.model.*;
+import com.example.mrrag.review.model.ChangedLine;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -20,6 +21,7 @@ import java.util.regex.Pattern;
  * <ul>
  *   <li>{@link #methodsInFile} / {@link #findContainingMethod} — locate METHOD nodes.</li>
  *   <li>{@link #findTopLevelType} — locate the single top-level CLASS/INTERFACE in a file.</li>
+ *   <li>{@link #getNodesWithLine} — all nodes declared or referenced at a changed line.</li>
  *   <li>{@link #resolveImportSimpleName} — extract the simple class name from an import statement.</li>
  *   <li>{@link #astKeysForLines} — collect qualified IDs touched by a set of changed lines
  *       for cross-file merge in {@link com.example.mrrag.review.pipeline.ChangeGrouper}.</li>
@@ -73,6 +75,63 @@ public class GraphQueryService {
                         && relPath.equals(n.filePath()))
                 .toList();
         return types.size() == 1 ? Optional.of(types.get(0)) : Optional.empty();
+    }
+
+    // ------------------------------------------------------------------
+    // Line-level node resolution
+    // ------------------------------------------------------------------
+
+    /**
+     * Returns all graph nodes associated with the given {@link ChangedLine}:
+     * <ul>
+     *   <li><b>Declared nodes</b> — nodes whose range covers the effective line
+     *       number (i.e. {@code startLine ≤ ln ≤ endLine}), found via
+     *       {@link ProjectGraph#nodesAtLine}.</li>
+     *   <li><b>Referenced nodes</b> — nodes that are the callee of any edge
+     *       ({@code INVOKES}, {@code INSTANTIATES}, {@code READS_FIELD}, etc.)
+     *       emitted from this exact file line, resolved by {@code callee} id
+     *       from {@link ProjectGraph#edgesFrom}.</li>
+     * </ul>
+     *
+     * <p>The effective line number is {@code changedLine.lineNumber()} when
+     * positive, falling back to {@code changedLine.oldLineNumber()} for pure
+     * deletions. If neither is positive the method returns an empty list.
+     *
+     * <p>Duplicates are eliminated — a node that is both declared and referenced
+     * on the same line appears only once. Result order: declared nodes first,
+     * then referenced nodes.
+     *
+     * @param changedLine the diff line to resolve
+     * @param graph       the AST project graph
+     * @return ordered, deduplicated list of nodes; never {@code null}
+     */
+    public List<GraphNode> getNodesWithLine(ChangedLine changedLine, ProjectGraph graph) {
+        int ln = changedLine.lineNumber() > 0
+                ? changedLine.lineNumber()
+                : changedLine.oldLineNumber();
+        if (ln <= 0) return List.of();
+
+        String filePath = changedLine.filePath();
+        // LinkedHashSet preserves insertion order and eliminates duplicates
+        Set<GraphNode> result = new LinkedHashSet<>();
+
+        // 1. Declared nodes: startLine <= ln <= endLine
+        //    Uses the byFile index inside nodesAtLine — no full graph scan.
+        result.addAll(graph.nodesAtLine(filePath, ln));
+
+        // 2. Referenced nodes: edges emitted from this exact (filePath, ln)
+        //    edgesFrom is keyed by caller node id, so we scan all edge lists
+        //    and look for edges whose filePath and line match the changed line.
+        for (List<GraphEdge> edges : graph.edgesFrom.values()) {
+            for (GraphEdge edge : edges) {
+                if (edge.line() == ln && filePath.equals(edge.filePath())) {
+                    GraphNode callee = graph.nodes.get(edge.callee());
+                    if (callee != null) result.add(callee);
+                }
+            }
+        }
+
+        return List.copyOf(result);
     }
 
     /**
