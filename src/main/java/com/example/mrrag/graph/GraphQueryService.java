@@ -82,23 +82,30 @@ public class GraphQueryService {
     // ------------------------------------------------------------------
 
     /**
-     * Returns all graph nodes associated with the given {@link ChangedLine}:
+     * Returns all graph nodes whose declaration starts on the same line as the
+     * given {@link ChangedLine}, plus nodes referenced (called/used) from that line.
+     *
+     * <h3>What «starts on the line» means</h3>
+     * Only nodes where {@code startLine == ln} are included as declared nodes.
+     * Nodes that merely <em>contain</em> {@code ln} in their body range
+     * (i.e. {@code startLine < ln ≤ endLine}) are intentionally excluded —
+     * otherwise every line inside a method body would match the enclosing
+     * METHOD node, and every line inside a class would match the CLASS node.
+     *
+     * <h3>Two result categories</h3>
      * <ul>
-     *   <li><b>Declared nodes</b> — nodes whose range covers the effective line
-     *       number (i.e. {@code startLine ≤ ln ≤ endLine}), found via
-     *       {@link ProjectGraph#nodesAtLine}.</li>
-     *   <li><b>Referenced nodes</b> — nodes that are the callee of any edge
+     *   <li><b>Declared nodes</b> — {@code graph.nodes} filtered by
+     *       {@code filePath == ln.filePath && startLine == ln}.</li>
+     *   <li><b>Referenced nodes</b> — callee nodes of any {@link GraphEdge}
      *       ({@code INVOKES}, {@code INSTANTIATES}, {@code READS_FIELD}, etc.)
-     *       emitted from this exact file line, resolved by {@code callee} id
-     *       from {@link ProjectGraph#edgesFrom}.</li>
+     *       where {@code edge.filePath == ln.filePath && edge.line() == ln}.</li>
      * </ul>
      *
      * <p>The effective line number is {@code changedLine.lineNumber()} when
      * positive, falling back to {@code changedLine.oldLineNumber()} for pure
      * deletions. If neither is positive the method returns an empty list.
      *
-     * <p>Duplicates are eliminated — a node that is both declared and referenced
-     * on the same line appears only once. Result order: declared nodes first,
+     * <p>Duplicates are eliminated; result order: declared nodes first,
      * then referenced nodes.
      *
      * @param changedLine the diff line to resolve
@@ -115,13 +122,17 @@ public class GraphQueryService {
         // LinkedHashSet preserves insertion order and eliminates duplicates
         Set<GraphNode> result = new LinkedHashSet<>();
 
-        // 1. Declared nodes: startLine <= ln <= endLine
-        //    Uses the byFile index inside nodesAtLine — no full graph scan.
-        result.addAll(graph.nodesAtLine(filePath, ln));
+        // 1. Declared nodes: only nodes whose declaration starts exactly on ln.
+        //    Nodes that span ln in their body range (startLine < ln <= endLine)
+        //    are NOT included — they belong to a different changed line (their
+        //    own startLine) and must not be attributed to every inner line.
+        graph.nodes.values().stream()
+                .filter(n -> filePath.equals(n.filePath()) && n.startLine() == ln)
+                .forEach(result::add);
 
-        // 2. Referenced nodes: edges emitted from this exact (filePath, ln)
-        //    edgesFrom is keyed by caller node id, so we scan all edge lists
-        //    and look for edges whose filePath and line match the changed line.
+        // 2. Referenced nodes: edges emitted from this exact (filePath, ln).
+        //    edgesFrom is keyed by caller node id; iterate all edge lists and
+        //    collect callees whose edge carries the matching file+line metadata.
         for (List<GraphEdge> edges : graph.edgesFrom.values()) {
             for (GraphEdge edge : edges) {
                 if (edge.line() == ln && filePath.equals(edge.filePath())) {
