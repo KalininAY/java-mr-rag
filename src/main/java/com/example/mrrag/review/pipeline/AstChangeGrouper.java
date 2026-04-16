@@ -86,10 +86,13 @@ public class AstChangeGrouper {
                 connectionsForAdd.size(), connectionsForDel.size());
 
         // Step 3: build ChangeGroups from connections
-        List<ChangeGroup> groups = buildGroups(connections, lineToNodes, changedLines);
-        log.debug("Step 3 (build groups): {} groups produced", groups.size());
+        List<ChangeGroup> groupsForAdd = buildGroups(connectionsForAdd, lineToNodes, changedLines);
+        List<ChangeGroup> groupsForDel = buildGroups(connectionsForDel, lineToNodes, changedLines);
+        log.debug("Step 3 (build groups): for add line {}, for delete line {}  groups produced",
+                groupsForAdd.size(), groupsForDel.size());
 
-        return groups;
+        // Step 4: mergeGroup
+        return groupsForAdd;
     }
 
     // -----------------------------------------------------------------------
