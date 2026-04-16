@@ -78,3 +78,4 @@ graph:
 logging:
   level:
     com.example: DEBUG
+    spoon.support.compiler.jdt: WARN
