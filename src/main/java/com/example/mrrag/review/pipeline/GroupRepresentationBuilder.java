@@ -19,10 +19,14 @@ import java.util.stream.Collectors;
  *   <li>Per-file {@code diff} block — all lines received (ADD/DELETE only).
  *       Each line is prefixed with its line number ({@code @N}).</li>
  *   <li><b>Method signature</b> section (optional) — shown when the group
- *       contains Javadoc or annotation lines that were attached to a method
- *       in Phase 1 (i.e. {@code preMethodKey} is set in group metadata).
- *       Renders the method signature line(s) from the graph so the reviewer
- *       can immediately see which element was annotated/documented.</li>
+ *       carries a non-null {@link ChangeGroup#preMethodKey()} (set by the legacy
+ *       {@link ChangeGrouper} Phase 1). Renders the method signature line(s)
+ *       from the graph so the reviewer can immediately see which element was
+ *       annotated/documented.</li>
+ *   <li><b>Intermediate nodes</b> section (optional) — shown when the group
+ *       carries non-empty {@link ChangeGroup#intermediateNodes()} (set by
+ *       {@link AstChangeGrouper}). Lists the node IDs and their file/line for
+ *       context.</li>
  *   <li><b>Enclosing context</b> section — one block per
  *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet.
  *       Lines are numbered in {@code lineNo| text} format.</li>
@@ -101,15 +105,14 @@ public class GroupRepresentationBuilder {
             sb.append("```\n\n");
         }
 
-        // --- 2. Method signature block (for Javadoc/annotation groups) ---
-        // Rendered when preMethodKey metadata is set and a graph is available.
-        // Shows the declaration line of the method the Javadoc/annotations belong to,
-        // giving reviewers immediate context without opening the file.
+        // --- 2. Method signature block (legacy ChangeGrouper: preMethodKey) ---
         renderMethodSignatureBlock(sb, group, graph);
+
+        // --- 2b. Intermediate nodes block (AstChangeGrouper) ---
+        renderIntermediateNodesBlock(sb, group);
 
         if (snippets.isEmpty()) return sb.toString();
 
-        // Split into METHOD_BODY vs. everything else
         List<EnrichmentSnippet> methodBodies = snippets.stream()
                 .filter(s -> s.type() == EnrichmentSnippet.SnippetType.METHOD_BODY)
                 .collect(Collectors.toCollection(ArrayList::new));
@@ -161,27 +164,12 @@ public class GroupRepresentationBuilder {
 
     /**
      * Appends a "Method signature" block when the group carries a
-     * {@code preMethodKey} metadata entry and the graph is non-null.
-     *
-     * <p>The block looks like:
-     * <pre>
-     * **Method signature:**
-     *
-     * `cleanAttachments` @ `...JiraParameterizedTest.java:74`
-     *
-     * ```java
-     * 74|    boolean cleanAttachments() default false;
-     * ```
-     * </pre>
-     *
-     * For annotation groups the method may span several lines (full signature
-     * with parameter list), so we render from {@code startLine} to the first
-     * line that ends with {@code {}, {@code ;}, or the end of the node,
-     * whichever comes first — capped at 5 lines to avoid dumping the whole body.
+     * non-null {@link ChangeGroup#preMethodKey()} and the graph is non-null.
+     * Used only by groups produced by the legacy {@link ChangeGrouper}.
      */
     private void renderMethodSignatureBlock(StringBuilder sb, ChangeGroup group, ProjectGraph graph) {
         if (graph == null) return;
-        String rawKey = group.metadata().get("preMethodKey");
+        String rawKey = group.preMethodKey();
         if (rawKey == null || rawKey.isBlank()) return;
 
         int methodStartLine;
@@ -191,7 +179,6 @@ public class GroupRepresentationBuilder {
             return;
         }
 
-        // Find the method node in any file of the group that matches this startLine
         GraphNode methodNode = null;
         Set<String> groupFiles = new LinkedHashSet<>();
         for (ChangedLine l : group.changedLines()) groupFiles.add(l.filePath());
@@ -216,7 +203,6 @@ public class GroupRepresentationBuilder {
 
         String src = methodNode.sourceSnippet();
         if (src != null && !src.isBlank()) {
-            // Render only the signature portion: up to the first '{' or ';' line, max 5 lines
             String[] lines = src.split("\n", -1);
             int sigLines = 0;
             StringBuilder sigSrc = new StringBuilder();
@@ -232,6 +218,23 @@ public class GroupRepresentationBuilder {
                     methodNode.startLine() + sigLines - 1);
             sb.append("```\n\n");
         }
+    }
+
+    /**
+     * Appends an "AST intermediates" block listing the bridge nodes found by
+     * {@link AstChangeGrouper} BFS between the two anchor nodes.
+     * Rendered only when {@link ChangeGroup#intermediateNodes()} is non-empty.
+     */
+    private void renderIntermediateNodesBlock(StringBuilder sb, ChangeGroup group) {
+        if (!group.hasIntermediates()) return;
+        sb.append("**AST bridge nodes (").append(group.intermediateNodes().size()).append("):**\n\n");
+        for (GraphNode n : group.intermediateNodes()) {
+            sb.append("- `").append(n.id()).append("` (")
+                    .append(n.kind()).append(") @ `")
+                    .append(n.filePath()).append(":")
+                    .append(n.startLine()).append("`\n");
+        }
+        sb.append('\n');
     }
 
     private static String simpleMethodName(String qualifiedId) {

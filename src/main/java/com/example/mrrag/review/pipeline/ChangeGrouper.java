@@ -16,7 +16,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 /**
- * Groups changed lines into cohesive ChangeGroups.
+ * Legacy grouper retained for reference and no-graph fallback scenarios.
+ * <b>Not used by the active pipeline</b> — {@link ContextPipeline} delegates
+ * to {@link AstChangeGrouper} instead.
  *
  * <p>Grouping pipeline:
  * <ol>
@@ -169,7 +171,6 @@ public class ChangeGrouper {
             topLevelKey = null;
         }
 
-        // method startLine -> endLine map, used for pre-method attachment
         Map<Integer, Integer> methodStartToEnd = new LinkedHashMap<>();
         if (graph != null) {
             for (GraphNode n : graph.nodes.values()) {
@@ -179,11 +180,7 @@ public class ChangeGrouper {
             }
         }
 
-        // methodKey -> lines bucket
         Map<Integer, List<ChangedLine>> methodBuckets = new LinkedHashMap<>();
-        // tracks which method key a line was attached to as 'pre-method' (javadoc/annotation)
-        // so GroupRepresentationBuilder can later add a METHOD_SIGNATURE context snippet.
-        // key = methodStartLine, value = true (just a presence set)
         Set<Integer> preMethodBucketKeys = new LinkedHashSet<>();
         List<ChangedLine> outOfMethodLines = new ArrayList<>();
 
@@ -195,10 +192,6 @@ public class ChangeGrouper {
                     methodBuckets.computeIfAbsent(method.get().startLine(), k -> new ArrayList<>()).add(line);
                     continue;
                 }
-                // Not inside any method body — try attaching to the nearest method below
-                // (covers Javadoc blocks and annotation lines above a method declaration).
-                // This check must happen BEFORE the topLevelKey fallback so that it works
-                // even when a top-level type exists in the graph.
                 if (!methodStartToEnd.isEmpty()) {
                     Integer nearestMethod = findNearestMethodAfter(lineNo, methodStartToEnd);
                     if (nearestMethod != null) {
@@ -209,7 +202,6 @@ public class ChangeGrouper {
                     }
                 }
             }
-            // Final fallback: top-level type bucket or plain out-of-method list
             if (topLevelKey != null) {
                 methodBuckets.computeIfAbsent(topLevelKey, k -> new ArrayList<>()).add(line);
             } else {
@@ -223,14 +215,14 @@ public class ChangeGrouper {
             List<ChangedLine> bucket = entry.getValue();
             if (bucket.stream().allMatch(l -> l.type() == ChangedLine.LineType.CONTEXT)) continue;
             bucket.sort(Comparator.comparingInt(this::effectiveLine));
-            ChangeGroup g = ChangeGroup.of("G" + groupCounter.incrementAndGet(), file,
-                    new ArrayList<>(bucket), new ArrayList<>());
-            // Tag groups that contain pre-method lines so the context pipeline
-            // can add a METHOD_SIGNATURE snippet for them.
-            if (preMethodBucketKeys.contains(entry.getKey())) {
-                g.metadata().put("preMethodKey", String.valueOf(entry.getKey()));
-            }
-            groups.add(g);
+            // Carry preMethodKey as a typed field on the group
+            String preMethodKey = preMethodBucketKeys.contains(entry.getKey())
+                    ? String.valueOf(entry.getKey())
+                    : null;
+            groups.add(ChangeGroup.of(
+                    "G" + groupCounter.incrementAndGet(), file,
+                    new ArrayList<>(bucket), new ArrayList<>(),
+                    EnumSet.noneOf(ChangeGroupFlag.class), preMethodKey));
         }
 
         if (!outOfMethodLines.isEmpty()) {
@@ -240,12 +232,6 @@ public class ChangeGrouper {
         return groups;
     }
 
-    /**
-     * Finds the nearest method whose {@code startLine} is within
-     * {@value #MAX_JAVADOC_GAP} lines after {@code anchorLine}.
-     * {@code anchorLine} should be the last non-blank line of the run.
-     * Returns {@code null} if no such method exists.
-     */
     private Integer findNearestMethodAfter(int anchorLine,
                                             Map<Integer, Integer> methodStartToEnd) {
         if (anchorLine <= 0) return null;
@@ -261,9 +247,6 @@ public class ChangeGrouper {
         return best;
     }
 
-    /**
-     * Merges a pre-sorted list of out-of-method lines into contiguous runs.
-     */
     private List<ChangeGroup> mergeAdjacentOutOfMethod(String file, List<ChangedLine> lines) {
         List<ChangeGroup> result = new ArrayList<>();
         List<ChangedLine> currentRun = new ArrayList<>();
@@ -342,8 +325,9 @@ public class ChangeGrouper {
         }
 
         for (var entry : orphansByFile.entrySet()) {
-            String id = "G" + groupCounter.incrementAndGet();
-            result.add(new ChangeGroup(id, entry.getKey(), entry.getValue(), new ArrayList<>(),
+            result.add(ChangeGroup.of(
+                    "G" + groupCounter.incrementAndGet(),
+                    entry.getKey(), entry.getValue(), new ArrayList<>(),
                     EnumSet.of(ChangeGroupFlag.SUSPICIOUS_UNUSED_IMPORT)));
         }
         return result;
@@ -468,11 +452,12 @@ public class ChangeGrouper {
             log.debug("Version/changelog merge: version={}, files=[{}, {}]",
                     ver, buildGroup.primaryFile(), clGroup.primaryFile());
 
-            String id = "G" + groupCounter.incrementAndGet();
             List<ChangedLine> allLines = new ArrayList<>();
             allLines.addAll(buildGroup.changedLines());
             allLines.addAll(clGroup.changedLines());
-            result.add(new ChangeGroup(id, buildGroup.primaryFile(), allLines, new ArrayList<>(),
+            result.add(ChangeGroup.of(
+                    "G" + groupCounter.incrementAndGet(),
+                    buildGroup.primaryFile(), allLines, new ArrayList<>(),
                     EnumSet.of(ChangeGroupFlag.VERSION_CHANGELOG_PAIR)));
             merged.add(buildGroup);
             merged.add(clGroup);
@@ -587,8 +572,6 @@ public class ChangeGrouper {
             }
         }
 
-        // Transitive file-overlap merge: if the same file appears in two raw clusters,
-        // merge them so JiraProvider.java is not split across G13 and G14.
         Map<Integer, List<Integer>> rawClusterIndices = new LinkedHashMap<>();
         for (int i = 0; i < n; i++) {
             rawClusterIndices.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(i);
@@ -720,12 +703,14 @@ public class ChangeGrouper {
         allLines.sort(Comparator.comparingInt(this::effectiveLine));
         EnumSet<ChangeGroupFlag> mergedFlags = EnumSet.noneOf(ChangeGroupFlag.class);
         for (ChangeGroup g : cluster) mergedFlags.addAll(g.flags());
-        // Propagate preMethodKey metadata if any sub-group has it
-        Map<String, String> mergedMeta = new LinkedHashMap<>();
-        for (ChangeGroup g : cluster) mergedMeta.putAll(g.metadata());
-        ChangeGroup result = new ChangeGroup(id, primary, allLines, new ArrayList<>(), mergedFlags);
-        result.metadata().putAll(mergedMeta);
-        return result;
+        // Propagate preMethodKey from any sub-group that has it
+        String mergedPreMethodKey = cluster.stream()
+                .map(ChangeGroup::preMethodKey)
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(null);
+        return ChangeGroup.of(id, primary, allLines, new ArrayList<>(),
+                mergedFlags, mergedPreMethodKey);
     }
 
     // -----------------------------------------------------------------------

@@ -21,7 +21,9 @@ import java.util.*;
  * <ol>
  *   <li><b>Parse</b> — {@link DiffParser}: GitLab {@link Diff}s → {@link ChangedLine}s.</li>
  *   <li><b>Filter</b> — ordered {@link ContextFilter} chain (each sees the previous output).</li>
- *   <li><b>Group</b> — {@link ChangeGrouper}: lines → {@link ChangeGroup}s (AST-aware when graph present).</li>
+ *   <li><b>Group</b> — {@link AstChangeGrouper}: lines → {@link ChangeGroup}s via pure AST graph.
+ *       {@link ChangeGrouper} is retained as an internal fallback (no-graph scenarios) but
+ *       is not injected here and is not part of the active pipeline.</li>
  *   <li><b>Classify</b> — {@link #classifyGroup} → {@link ChangeType} per group.</li>
  *   <li><b>Collect context</b> — per type, {@link ContextStrategy}s → {@link ContextCollector}
  *       (also resolves relevant classes/nodes for logging / future use).</li>
@@ -36,7 +38,7 @@ public class ContextPipeline {
     private final List<ContextStrategy> strategies;
     private final List<ContextFilter> filters;
     private final DiffParser diffParser;
-    private final ChangeGrouper changeGrouper;
+    private final AstChangeGrouper astChangeGrouper;
     private final GroupRepresentationBuilder representationBuilder;
 
     /**
@@ -65,8 +67,8 @@ public class ContextPipeline {
                         });
         log.info("ContextPipeline.step2: {} filteredLines", filteredLines.size());
 
-        //Step 3: group line
-        List<ChangeGroup> groups = changeGrouper.group(filteredLines, sourceGraph);
+        // Step 3: group lines via AST graph
+        List<ChangeGroup> groups = astChangeGrouper.group(filteredLines, sourceGraph);
         log.info("ContextPipeline.step3: {} groups", groups.size());
 
         // Step 4: classify groups by ChangeType
@@ -87,7 +89,6 @@ public class ContextPipeline {
                     .toList();
 
             if (applicable.isEmpty()) log.warn("ContextPipeline: no ContextStrategy for ChangeType={}", type);
-
 
             for (ChangeGroup group : gs) {
                 // Step 5.1: relevant classes in source + target graphs
@@ -117,7 +118,7 @@ public class ContextPipeline {
         for (ChangeGroup group : groups) {
             ChangeType type = classifyGroup(group);
             List<EnrichmentSnippet> ctx = collector.get(group.id());
-            GroupRepresentation repr = representationBuilder.build(group, type, ctx);
+            GroupRepresentation repr = representationBuilder.build(group, type, ctx, sourceGraph);
             result.add(repr);
             log.debug("Representation: group={} type={} snippets={}",
                     group.id(), type, ctx.size());
@@ -178,7 +179,8 @@ public class ContextPipeline {
                 .forEach(out::add);
     }
 
-    private List<GraphNode> findRelevantNodes(ChangeGroup group, List<GraphNode> relevantClasses, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+    private List<GraphNode> findRelevantNodes(ChangeGroup group, List<GraphNode> relevantClasses,
+                                               ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         List<GraphNode> result = new ArrayList<>();
 
         // Members declared inside the relevant classes (via DECLARES edges)

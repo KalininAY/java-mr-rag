@@ -219,12 +219,11 @@ public class AstChangeGrouper {
     private Set<GraphNode> reconstructIntermediates(
             Map<String, String> parent, String fromId, String toId, ProjectGraph graph) {
 
-        // Walk backwards: to ← ... ← from
         Deque<String> path = new ArrayDeque<>();
         String cur = toId;
         while (parent.containsKey(cur)) {
             cur = parent.get(cur);
-            if (!cur.equals(fromId)) path.addFirst(cur); // exclude from
+            if (!cur.equals(fromId)) path.addFirst(cur);
         }
         Set<GraphNode> intermediates = new LinkedHashSet<>();
         for (String id : path) {
@@ -286,12 +285,11 @@ public class AstChangeGrouper {
 
             String primaryFile = resolvePrimaryFile(groupLines, conn.node1());
 
-            result.add(new ChangeGroup(
+            result.add(ChangeGroup.ofAst(
                     "G" + groupCounter.incrementAndGet(),
                     primaryFile,
                     groupLines,
                     new ArrayList<>(),
-                    Set.of(),
                     new ArrayList<>(conn.intermediateNodes())));
 
             coveredLines.addAll(groupLines);
@@ -301,13 +299,11 @@ public class AstChangeGrouper {
         for (Map.Entry<ChangedLine, Set<GraphNode>> entry : lineToNodes.entrySet()) {
             ChangedLine line = entry.getKey();
             if (!entry.getValue().isEmpty() && !coveredLines.contains(line)) {
-                result.add(new ChangeGroup(
+                result.add(ChangeGroup.of(
                         "G" + groupCounter.incrementAndGet(),
                         line.filePath(),
                         List.of(line),
-                        new ArrayList<>(),
-                        Set.of(),
-                        List.of()));
+                        new ArrayList<>()));
                 coveredLines.add(line);
             }
         }
@@ -323,13 +319,11 @@ public class AstChangeGrouper {
         for (Map.Entry<String, List<ChangedLine>> entry : unresolvedByFile.entrySet()) {
             entry.getValue().sort(Comparator.comparingInt(
                     l -> l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber()));
-            result.add(new ChangeGroup(
+            result.add(ChangeGroup.of(
                     "G" + groupCounter.incrementAndGet(),
                     entry.getKey(),
                     entry.getValue(),
-                    new ArrayList<>(),
-                    Set.of(),
-                    List.of()));
+                    new ArrayList<>()));
         }
 
         return result;
