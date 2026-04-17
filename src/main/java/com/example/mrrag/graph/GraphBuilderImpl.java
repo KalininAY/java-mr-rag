@@ -8,7 +8,6 @@ import com.example.mrrag.graph.model.*;
 import com.example.mrrag.graph.raw.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Service;
 import spoon.Launcher;
 import spoon.compiler.ModelBuildingException;
@@ -164,7 +163,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             return new ProjectGraph();
         }
 
-        int nThreads = Math.max(1, Runtime.getRuntime().availableProcessors());
+        int nThreads = 1; // Math.max(1, Runtime.getRuntime().availableProcessors());
         List<List<ProjectSource>> batches = SourceBatchPartitioner.partition(sources, nThreads);
 
         log.info("doBuildGraphFromSources: {} files -> {} import-aware batches (threads={})",
@@ -198,6 +197,9 @@ public class GraphBuilderImpl implements GraphBuilder {
      * Builds a {@link ProjectGraph} for a single batch of source files.
      * Each call creates an independent {@link Launcher} instance, so batches
      * can safely run concurrently.
+     *
+     * <p>{@code setCommentEnabled(true)} is required so that Spoon attaches
+     * Javadoc comments to their owner elements (used by Pass 18).
      */
     private ProjectGraph buildBatch(List<ProjectSource> sources, Path classpathRoot) {
         Map<String, String[]> sourceLines = new ConcurrentHashMap<>();
@@ -207,7 +209,7 @@ public class GraphBuilderImpl implements GraphBuilder {
 
         Launcher launcher = new Launcher();
         launcher.getEnvironment().setNoClasspath(true);
-        launcher.getEnvironment().setCommentEnabled(false);
+        launcher.getEnvironment().setCommentEnabled(true);  // needed for Javadoc nodes (Pass 18)
         launcher.getEnvironment().setAutoImports(false);
         launcher.getEnvironment().setIgnoreSyntaxErrors(true);
         launcher.getEnvironment().setLevel("ERROR");
@@ -253,10 +255,6 @@ public class GraphBuilderImpl implements GraphBuilder {
         var graph = new ProjectGraph();
         Set<String> repoPaths = sourceLines.keySet();
 
-        // Each Runnable is one independent pass over the Spoon model.
-        // ProjectGraph is thread-safe (ConcurrentHashMap + CopyOnWriteArrayList),
-        // and CtModel is read-only after buildModel() completes, so all passes
-        // can safely run in parallel.
         List<Runnable> passes = new ArrayList<>();
 
         // Pass 1: types (CLASS / INTERFACE / ANNOTATION)
@@ -537,7 +535,78 @@ public class GraphBuilderImpl implements GraphBuilder {
                         file, AstGraphUtils.posLine(ta)));
             }));
 
-        // Run all passes in parallel and wait for completion
+        // Pass 17: import statements → IMPORT nodes + HAS_IMPORT edges
+        //
+        // Real CtImportKind constants (spoon.reflect.declaration.CtImportKind):
+        //   TYPE, ALL_TYPES, ALL_STATIC_MEMBERS, FIELD, METHOD, UNRESOLVED, MODULE
+        // Static imports use: FIELD, METHOD, ALL_STATIC_MEMBERS.
+        if (edgeConfig.isEnabled(EdgeKind.HAS_IMPORT)) {
+            passes.add(() -> model.getElements(new TypeFilter<>(CtCompilationUnit.class)).forEach(cu -> {
+                String file = cu.getFile() != null
+                        ? AstGraphUtils.graphFilePath(cu.getMainType(), projectRoot, repoPaths)
+                        : "";
+                String ownerId = cu.getMainType() != null
+                        ? AstGraphUtils.qualifiedName(cu.getMainType())
+                        : file;
+                if (ownerId == null || ownerId.isBlank()) return;
+
+                cu.getImports().forEach(imp -> {
+                    String ref = imp.getReference().toString();
+                    String importId = "import@" + file + ":" + ref;
+                    int line = imp.getPosition().isValidPosition() ? imp.getPosition().getLine() : -1;
+                    CtImportKind kind = imp.getImportKind();
+                    boolean isStatic = kind == CtImportKind.METHOD
+                            || kind == CtImportKind.FIELD
+                            || kind == CtImportKind.ALL_STATIC_MEMBERS;
+                    String snippet = "import " + (isStatic ? "static " : "") + ref + ";";
+                    graph.addNode(new GraphNode(
+                            importId, NodeKind.IMPORT, ref,
+                            file, line, line,
+                            snippet, snippet, null));
+                    graph.addEdge(new GraphEdge(ownerId, EdgeKind.HAS_IMPORT, importId, file, line));
+                });
+            }));
+        }
+
+        // Pass 18: Javadoc comments → JAVADOC nodes + HAS_JAVADOC edges
+        passes.add(() -> {
+            List<CtElement> candidates = new ArrayList<>();
+            candidates.addAll(model.getElements(new TypeFilter<>(CtType.class)));
+            candidates.addAll(model.getElements(new TypeFilter<>(CtMethod.class)));
+            candidates.addAll(model.getElements(new TypeFilter<>(CtConstructor.class)));
+            candidates.addAll(model.getElements(new TypeFilter<>(CtField.class)));
+
+            candidates.forEach(el -> {
+                el.getComments().stream()
+                        .filter(c -> c instanceof spoon.reflect.code.CtJavaDoc)
+                        .map(c -> (spoon.reflect.code.CtJavaDoc) c)
+                        .forEach(javadoc -> {
+                            String file = AstGraphUtils.graphFilePath(el, projectRoot, repoPaths);
+                            int[] ln = AstGraphUtils.lines(el);
+                            String ownerId = switch (el) {
+                                case CtType<?> t        -> AstGraphUtils.qualifiedName(t);
+                                case CtMethod<?> m      -> AstGraphUtils.typeMemberExecId(m);
+                                case CtConstructor<?> c -> AstGraphUtils.typeMemberExecId(c);
+                                case CtField<?> f       -> AstGraphUtils.fieldId(f);
+                                default                 -> null;
+                            };
+                            if (ownerId == null) return;
+
+                            String javadocId = "javadoc@" + ownerId;
+                            String rawText   = javadoc.getContent();
+                            int dot = rawText.indexOf('.');
+                            String summary = dot >= 0 ? rawText.substring(0, dot + 1).strip() : rawText.strip();
+
+                            graph.addNode(new GraphNode(
+                                    javadocId, NodeKind.JAVADOC, summary,
+                                    file, ln[0], ln[0],
+                                    rawText, summary, null));
+                            graph.addEdge(new GraphEdge(
+                                    ownerId, EdgeKind.HAS_JAVADOC, javadocId, file, ln[0]));
+                        });
+            });
+        });
+
         log.info("doBuildGraphFromModel: running {} passes in parallel via ForkJoinPool", passes.size());
         try {
             ForkJoinPool.commonPool()

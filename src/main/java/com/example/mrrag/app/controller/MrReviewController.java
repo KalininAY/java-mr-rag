@@ -1,8 +1,7 @@
 package com.example.mrrag.app.controller;
 
 import com.example.mrrag.app.controller.requestDTO.ReviewRequest;
-import com.example.mrrag.review.model.ChangeGroup;
-import com.example.mrrag.review.model.ChangeGroupMarkdown;
+import com.example.mrrag.review.model.GroupRepresentation;
 import com.example.mrrag.review.model.ReviewContext;
 import com.example.mrrag.review.ReviewService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -93,17 +92,10 @@ public class MrReviewController {
                 .append(": ").append(ctx.mrTitle()).append("\n");
         sb.append("`").append(ctx.sourceBranch()).append("` \u2192 `")
                 .append(ctx.targetBranch()).append("`\n\n");
-
-        sb.append("**Stats:** ")
-                .append(ctx.stats().totalChangedLines()).append(" changed lines, ")
-                .append(ctx.stats().totalGroups()).append(" groups, ")
-                .append(ctx.stats().totalEnrichmentSnippets()).append(" snippets")
-                .append(" (").append(ctx.stats().totalEnrichmentLines()).append(" lines)\n\n");
-
         sb.append("---\n\n");
 
-        for (ChangeGroup group : ctx.groups()) {
-            sb.append(ChangeGroupMarkdown.render(group));
+        for (GroupRepresentation group : ctx.representations()) {
+            sb.append(group.markdown());
             sb.append("---\n\n");
         }
         return sb.toString();

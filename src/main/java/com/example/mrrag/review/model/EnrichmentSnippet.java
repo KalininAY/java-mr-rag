@@ -1,6 +1,6 @@
 package com.example.mrrag.review.model;
 
-import java.util.List;
+import com.example.mrrag.graph.model.GraphNode;
 
 /**
  * A contextual code snippet attached to a ChangeGroup to help the LLM understand impact.
@@ -11,9 +11,13 @@ public record EnrichmentSnippet(
         int startLine,
         int endLine,
         String symbolName,
-        List<String> lines,
+        String sourceSnippet,
         String explanation
 ) {
+    public EnrichmentSnippet(SnippetType type, GraphNode node, String explanation) {
+        this(type, node.filePath(), node.startLine(), node.endLine(), node.simpleName(), node.sourceSnippet(), explanation);
+    }
+
     public enum SnippetType {
         /** Full declaration of a method (signature + javadoc) */
         METHOD_DECLARATION,

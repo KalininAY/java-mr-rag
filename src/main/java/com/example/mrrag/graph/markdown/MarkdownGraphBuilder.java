@@ -43,6 +43,10 @@ public class MarkdownGraphBuilder {
                 case ANNOTATION        -> new MarkdownClassNode(node);
                 case TYPE_PARAM        -> new MarkdownTypeParamNode(node);
                 case ANNOTATION_ATTRIBUTE -> new MarkdownAnnotationAttribute(node);
+                // IMPORT and JAVADOC nodes are lightweight metadata — represent
+                // them as plain MarkdownClassNode stubs; they are not rendered
+                // in the Markdown output but must not crash the switch.
+                case IMPORT, JAVADOC   -> new MarkdownClassNode(node);
             };
             lg.put(view);
         }
@@ -204,7 +208,7 @@ public class MarkdownGraphBuilder {
                 }
             }
 
-            default -> { /* HAS_BOUND, etc. – not wired into linked layer */ }
+            default -> { /* HAS_BOUND, HAS_IMPORT, HAS_JAVADOC, etc. – not wired into linked layer */ }
         }
     }
 

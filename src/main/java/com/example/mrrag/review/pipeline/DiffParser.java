@@ -1,4 +1,4 @@
-package com.example.mrrag.review;
+package com.example.mrrag.review.pipeline;
 
 import com.example.mrrag.review.model.ChangedLine;
 import lombok.extern.slf4j.Slf4j;
@@ -6,22 +6,30 @@ import org.gitlab4j.api.models.Diff;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Parses GitLab Diff objects (unified diff format) into structured ChangedLine lists.
+ *
+ * <p>Only ADD and DELETE lines are emitted. CONTEXT lines are used internally
+ * to track line-number offsets but are <b>not</b> included in the result —
+ * keeping the downstream model free of presentation concerns.
+ *
+ * <p>If context lines are ever needed (e.g. for proximity grouping), the
+ * {@link ChangeGrouper} should re-read them from the raw diff rather than
+ * relying on this parser to pass them through.
  */
 @Slf4j
 @Component
 public class DiffParser {
 
     /**
-     * Parse all diffs from a MR into a flat list of changed lines.
-     * Only ADD and DELETE lines are included; CONTEXT lines are also preserved
-     * to help grouper understand proximity.
+     * Parse all diffs from an MR into a flat set of ADD/DELETE changed lines.
      */
-    public List<ChangedLine> parse(List<Diff> diffs) {
-        List<ChangedLine> result = new ArrayList<>();
+    public Set<ChangedLine> parse(List<Diff> diffs) {
+        Set<ChangedLine> result = new LinkedHashSet<>();
         for (Diff diff : diffs) {
             if (diff.getDiff() == null || diff.getDiff().isBlank()) continue;
             if (isNonJavaFile(diff.getNewPath())) continue;
@@ -37,11 +45,15 @@ public class DiffParser {
     /**
      * Parse a single file's unified diff string.
      *
-     * Unified diff format:
+     * <p>Unified diff format:
+     * <pre>
      * @@ -oldStart,oldCount +newStart,newCount @@
      * -deleted line
      * +added line
      *  context line
+     * </pre>
+     *
+     * CONTEXT lines advance both counters but are NOT emitted.
      */
     private List<ChangedLine> parseFileDiff(Diff diff) {
         List<ChangedLine> lines = new ArrayList<>();
@@ -52,7 +64,6 @@ public class DiffParser {
 
         for (String raw : diff.getDiff().split("\n", -1)) {
             if (raw.startsWith("@@")) {
-                // Parse hunk header: @@ -oldStart[,oldCount] +newStart[,newCount] @@
                 int[] starts = parseHunkHeader(raw);
                 oldLine = starts[0];
                 newLine = starts[1];
@@ -67,9 +78,7 @@ public class DiffParser {
                 lines.add(new ChangedLine(filePath, 0, oldLine, raw.substring(1), ChangedLine.LineType.DELETE));
                 oldLine++;
             } else {
-                // context line (starts with space)
-                String content = raw.length() > 0 ? raw.substring(1) : "";
-                lines.add(new ChangedLine(filePath, newLine, oldLine, content, ChangedLine.LineType.CONTEXT));
+                // context line — advance counters only, do NOT emit
                 newLine++;
                 oldLine++;
             }
@@ -78,10 +87,9 @@ public class DiffParser {
     }
 
     /**
-     * Parse @@ -oldStart,oldCount +newStart,newCount @@ into [oldStart, newStart].
+     * Parse {@code @@ -oldStart,oldCount +newStart,newCount @@} into {@code [oldStart, newStart]}.
      */
     private int[] parseHunkHeader(String header) {
-        // Example: @@ -10,6 +12,8 @@ some context
         try {
             int minusIdx = header.indexOf('-');
             int plusIdx = header.indexOf('+', minusIdx);
@@ -93,11 +101,9 @@ public class DiffParser {
                     spaceAfterPlus > 0 ? spaceAfterPlus : header.length());
 
             int oldStart = Integer.parseInt(oldPart.contains(",")
-                    ? oldPart.substring(0, oldPart.indexOf(','))
-                    : oldPart);
+                    ? oldPart.substring(0, oldPart.indexOf(',')) : oldPart);
             int newStart = Integer.parseInt(newPart.contains(",")
-                    ? newPart.substring(0, newPart.indexOf(','))
-                    : newPart);
+                    ? newPart.substring(0, newPart.indexOf(',')) : newPart);
 
             return new int[]{oldStart, newStart};
         } catch (Exception e) {

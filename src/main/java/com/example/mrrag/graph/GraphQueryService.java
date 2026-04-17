@@ -1,11 +1,14 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.graph.model.*;
+import com.example.mrrag.review.model.ChangedLine;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Read-only query facade over {@link ProjectGraph}.
@@ -17,16 +20,20 @@ import java.util.*;
  * <h2>Key operations</h2>
  * <ul>
  *   <li>{@link #methodsInFile} / {@link #findContainingMethod} — locate METHOD nodes.</li>
- *   <li> /  — detect purely moved symbols
- *       for {@link com.example.mrrag.review.SemanticDiffFilter}.</li>
+ *   <li>{@link #findTopLevelType} — locate the single top-level CLASS/INTERFACE in a file.</li>
+ *   <li>{@link #getNodesWithLine} — all nodes declared or referenced at a changed line.</li>
+ *   <li>{@link #resolveImportSimpleName} — extract the simple class name from an import statement.</li>
  *   <li>{@link #astKeysForLines} — collect qualified IDs touched by a set of changed lines
- *       for cross-file merge in {@link com.example.mrrag.review.ChangeGrouper}.</li>
+ *       for cross-file merge in {@link com.example.mrrag.review.pipeline.ChangeGrouper}.</li>
  * </ul>
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class GraphQueryService {
+
+    private static final Pattern IMPORT_PATTERN =
+            Pattern.compile("^\\s*import\\s+(?:static\\s+)?([\\w.]+)\\s*;");
 
     // ------------------------------------------------------------------
     // Method helpers
@@ -48,6 +55,113 @@ public class GraphQueryService {
         return methodsInFile(graph, relPath).stream()
                 .filter(m -> m.startLine() <= lineNo && m.endLine() >= lineNo)
                 .min(Comparator.comparingInt(m -> m.endLine() - m.startLine()));
+    }
+
+    // ------------------------------------------------------------------
+    // Top-level type helpers (for package/import grouping)
+    // ------------------------------------------------------------------
+
+    /**
+     * Returns the single top-level CLASS or INTERFACE node for a file, or empty
+     * if the file contains zero or more than one top-level type.
+     *
+     * <p>Used by {@code ChangeGrouper} to assign {@code package} declarations and
+     * out-of-method lines to the same bucket as the class signature, rather than
+     * creating a separate group for each such line.
+     */
+    public Optional<GraphNode> findTopLevelType(ProjectGraph graph, String relPath) {
+        List<GraphNode> types = graph.nodes.values().stream()
+                .filter(n -> (n.kind() == NodeKind.CLASS || n.kind() == NodeKind.INTERFACE)
+                        && relPath.equals(n.filePath()))
+                .toList();
+        return types.size() == 1 ? Optional.of(types.get(0)) : Optional.empty();
+    }
+
+    // ------------------------------------------------------------------
+    // Line-level node resolution
+    // ------------------------------------------------------------------
+
+    /**
+     * Returns all graph nodes whose declaration starts on the same line as the
+     * given {@link ChangedLine}, plus nodes referenced (called/used) from that line.
+     *
+     * <h3>What «starts on the line» means</h3>
+     * Only nodes where {@code startLine == ln} are included as declared nodes.
+     * Nodes that merely <em>contain</em> {@code ln} in their body range
+     * (i.e. {@code startLine < ln ≤ endLine}) are intentionally excluded —
+     * otherwise every line inside a method body would match the enclosing
+     * METHOD node, and every line inside a class would match the CLASS node.
+     *
+     * <h3>Two result categories</h3>
+     * <ul>
+     *   <li><b>Declared nodes</b> — {@code graph.nodes} filtered by
+     *       {@code filePath == ln.filePath && startLine == ln}.</li>
+     *   <li><b>Referenced nodes</b> — callee nodes of any {@link GraphEdge}
+     *       ({@code INVOKES}, {@code INSTANTIATES}, {@code READS_FIELD}, etc.)
+     *       where {@code edge.filePath == ln.filePath && edge.line() == ln}.</li>
+     * </ul>
+     *
+     * <p>The effective line number is {@code changedLine.lineNumber()} when
+     * positive, falling back to {@code changedLine.oldLineNumber()} for pure
+     * deletions. If neither is positive the method returns an empty list.
+     *
+     * <p>Duplicates are eliminated; result order: declared nodes first,
+     * then referenced nodes.
+     *
+     * @param filePath
+     * @param line
+     * @param graph    the AST project graph
+     * @return ordered, deduplicated list of nodes; never {@code null}
+     */
+    public List<GraphNode> getNodesWithLine(String filePath, int line, ProjectGraph graph) {
+        if (line <= 0) return List.of();
+
+        // LinkedHashSet preserves insertion order and eliminates duplicates
+        Set<GraphNode> result = new LinkedHashSet<>();
+
+        // 1. Declared nodes: only nodes whose declaration starts exactly on ln.
+        //    Nodes that span ln in their body range (startLine < ln <= endLine)
+        //    are NOT included — they belong to a different changed line (their
+        //    own startLine) and must not be attributed to every inner line.
+        graph.nodes.values().stream()
+                .filter(n -> filePath.equals(n.filePath()) && n.startLine() == line)
+                .forEach(result::add);
+
+        // 2. Referenced nodes: edges emitted from this exact (filePath, ln).
+        //    edgesFrom is keyed by caller node id; iterate all edge lists and
+        //    collect callees whose edge carries the matching file+line metadata.
+        for (List<GraphEdge> edges : graph.edgesFrom.values()) {
+            for (GraphEdge edge : edges) {
+                if (edge.line() == line && filePath.equals(edge.filePath())) {
+                    GraphNode callee = graph.nodes.get(edge.callee());
+                    if (callee != null) result.add(callee);
+                }
+            }
+        }
+
+        return List.copyOf(result);
+    }
+
+    /**
+     * Extracts the <em>simple name</em> (last segment) of the imported type from
+     * a raw import-statement content string, e.g.
+     * {@code "import bugbusters.modules.extensions.ExtensionsSystemProperties;"} →
+     * {@code "ExtensionsSystemProperties"}.
+     *
+     * <p>Returns an empty Optional for static imports of members (contains '#')
+     * and for lines that do not match the import pattern.
+     */
+    public static Optional<String> resolveImportSimpleName(String content) {
+        if (content == null) return Optional.empty();
+        Matcher m = IMPORT_PATTERN.matcher(content);
+        if (!m.find()) return Optional.empty();
+        String fqn = m.group(1);
+        // static import of a member: "pkg.Class.MEMBER" — drop the member suffix
+        int dot = fqn.lastIndexOf('.');
+        String simpleName = dot >= 0 ? fqn.substring(dot + 1) : fqn;
+        // skip wildcard imports
+        if ("*".equals(simpleName)) return Optional.empty();
+        return Optional.of(simpleName);
     }
 
     // ------------------------------------------------------------------
@@ -138,7 +252,7 @@ public class GraphQueryService {
      * semantic dependencies.
      */
     public Set<String> astKeysForLines(ProjectGraph graph, String relPath,
-                                        Set<Integer> changedLines) {
+                                       Set<Integer> changedLines) {
         Set<String> result = new HashSet<>();
         if (changedLines.isEmpty()) return result;
 
@@ -164,6 +278,9 @@ public class GraphQueryService {
     // Value types
     // ------------------------------------------------------------------
 
-    /** (filePath, line) pair used in exclusion sets for SemanticDiffFilter. */
-    public record LineKey(String filePath, int line) {}
+    /**
+     * (filePath, line) pair used in exclusion sets for SemanticDiffFilter.
+     */
+    public record LineKey(String filePath, int line) {
+    }
 }

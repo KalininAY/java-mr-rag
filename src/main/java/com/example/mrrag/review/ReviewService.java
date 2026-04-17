@@ -6,7 +6,7 @@ import com.example.mrrag.app.service.AstGraphService;
 import com.example.mrrag.app.source.GitLabLocalSourceProvider;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
-import com.example.mrrag.review.spi.ChangeGroupEnrichmentPort;
+import com.example.mrrag.review.pipeline.ContextPipeline;
 import com.example.mrrag.app.repo.CodeRepositoryGateway;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -16,8 +16,6 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * Orchestrates the full review pipeline:
@@ -27,9 +25,8 @@ import java.util.concurrent.Executors;
  *   <li>Clone target branch → &lt;project&gt;-mr&lt;id&gt;/to-&lt;branch&gt;-&lt;ts&gt;   (parallel with source)</li>
  *   <li>Build AST graphs for both branches (parallel)</li>
  *   <li>Parse git diff</li>
- *   <li>Filter MOVED symbols ({@link SemanticDiffFilter})</li>
- *   <li>Group remaining changes by AST code block ({@link ChangeGrouper})</li>
- *   <li>Enrich groups with context snippets</li>
+ *   <li>Run RAG pipeline ({@link ContextPipeline}) → classify, find classes/nodes,
+ *       collect context per change type, build {@link GroupRepresentation}s</li>
  *   <li>Cleanup both temp dirs</li>
  *   <li>Return {@link ReviewContext}</li>
  * </ol>
@@ -41,10 +38,7 @@ public class ReviewService {
 
     private final CodeRepositoryGateway repoGateway;
     private final AstGraphService astGraphService;
-    private final DiffParser diffParser;
-    private final SemanticDiffFilter semanticDiffFilter;
-    private final ChangeGrouper changeGrouper;
-    private final ChangeGroupEnrichmentPort changeGroupEnrichment;
+    private final ContextPipeline contextPipeline;
 
     public ReviewContext buildReviewContext(ReviewRequest request) {
         log.info("Building review context for project={} mrIid={}",
@@ -56,14 +50,12 @@ public class ReviewService {
         log.info("Cloning source branch '{}' and target branch '{}' in parallel...",
                 mr.getSourceBranch(), mr.getTargetBranch());
 
-
         GitLabLocalSourceProvider sourceProvider = new GitLabLocalSourceProvider(
                 repoGateway,
                 new RemoteProjectRequest(request.namespace(), request.repo(), mr.getSourceBranch(), null, null, true));
         GitLabLocalSourceProvider targetProvider = new GitLabLocalSourceProvider(
                 repoGateway,
                 new RemoteProjectRequest(request.namespace(), request.repo(), mr.getTargetBranch(), null, null, true));
-
 
         log.info("Both branches cloned successfully: source={}, target={}",
                 mr.getSourceBranch(), mr.getSourceBranch());
@@ -84,10 +76,6 @@ public class ReviewService {
 // 2026-04-08 16:53:49.023  INFO 5304 --- [onPool-worker-2] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromSources: merged graph — 45531 nodes, 6074 edge-sources
 // 2026-04-08 16:54:41.365  INFO 5304 --- [onPool-worker-6] c.example.mrrag.graph.GraphBuilderImpl   : AST graph built: 7385 nodes, 506 edge-sources
 // 2026-04-08 16:54:41.783  INFO 5304 --- [onPool-worker-1] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromSources: merged graph — 45172 nodes, 6032 edge-sources
-
-        ProjectGraph sourceGraph;
-        ProjectGraph targetGraph;
-
         CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
             try {
                 return astGraphService.buildGraph(sourceProvider, false);
@@ -104,42 +92,21 @@ public class ReviewService {
             }
         });
 
-        sourceGraph = sourceGraphFuture.join();
-        targetGraph = targetGraphFuture.join();
-
-
+        ProjectGraph sourceGraph = sourceGraphFuture.join();
+        ProjectGraph targetGraph = targetGraphFuture.join();
         log.info("Both AST graphs built successfully");
 
         log.info("Fetching MR diffs...");
-        List<Diff> rawDiffs = repoGateway.getMrDiffs(request.namespace(), request.repo(), request.mrIid(), null);
-        List<ChangedLine> rawLines = diffParser.parse(rawDiffs);
-        log.info("Parsed {} changed lines from {} file diffs", rawLines.size(), rawDiffs.size());
+        List<Diff> diffs = repoGateway.getMrDiffs(request.namespace(), request.repo(), request.mrIid(), null);
 
-        List<ChangedLine> changedLines = semanticDiffFilter.filter(rawLines, sourceGraph, targetGraph);
-        log.info("After semantic filter: {} lines ({} removed as MOVED)",
-                changedLines.size(), rawLines.size() - changedLines.size());
-
-        List<ChangeGroup> groups = changeGrouper.group(changedLines, sourceGraph);
-        log.info("Grouped into {} change groups", groups.size());
-
-        //TODO дальше не работает, поскольку загружается из кэша граф и в провайдерах нет указания на директорию
-        changeGroupEnrichment.enrich(groups, sourceGraph, targetGraph, sourceProvider.localProjectRoot().get(), targetProvider.localProjectRoot().get());
-
-        int totalSnippets = groups.stream().mapToInt(g -> g.enrichments().size()).sum();
-        int totalSnippetLines = groups.stream()
-                .flatMap(g -> g.enrichments().stream())
-                .mapToInt(s -> s.lines().size()).sum();
-        ReviewStats stats = new ReviewStats(
-                changedLines.size(), groups.size(), totalSnippets, totalSnippetLines);
-
-        log.info("Review context built: {} groups, {} snippets, {} snippet lines",
-                groups.size(), totalSnippets, totalSnippetLines);
+        log.info("Running ContextPipeline...");
+        List<GroupRepresentation> representations = contextPipeline.run(diffs, sourceGraph, targetGraph);
+        log.info("ContextPipeline complete: {} representation(s)", representations.size());
 
         return new ReviewContext(
-                request.repo(), request.mrIid(),
+                request.namespace(), request.repo(), request.mrIid(),
                 mr.getSourceBranch(), mr.getTargetBranch(),
                 mr.getTitle(), mr.getDescription(),
-                groups, stats
-        );
+                representations);
     }
 }
