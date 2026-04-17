@@ -14,7 +14,6 @@ import spoon.compiler.ModelBuildingException;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.*;
 import spoon.reflect.declaration.*;
-import spoon.reflect.reference.CtImportKind;
 import spoon.reflect.visitor.filter.TypeFilter;
 import spoon.support.compiler.VirtualFile;
 
@@ -548,8 +547,8 @@ public class GraphBuilderImpl implements GraphBuilder {
         // connects the declaring type (or the file path when there is no
         // top-level type) to the import node.
         //
-        // CtImport does not expose isStatic() directly; we detect static imports
-        // via CtImportKind.METHOD_STATIC / FIELD_STATIC / ALL_STATIC.
+        // Static imports are detected via CtImportKind enum values
+        // (CtImportKind is in spoon.reflect.declaration).
         if (edgeConfig.isEnabled(EdgeKind.HAS_IMPORT)) {
             passes.add(() -> model.getElements(new TypeFilter<>(CtCompilationUnit.class)).forEach(cu -> {
                 String file = cu.getFile() != null
@@ -565,9 +564,10 @@ public class GraphBuilderImpl implements GraphBuilder {
                     String ref = imp.getReference().toString();
                     String importId = "import@" + file + ":" + ref;
                     int line = imp.getPosition().isValidPosition() ? imp.getPosition().getLine() : -1;
-                    boolean isStatic = imp.getImportKind() == CtImportKind.METHOD_STATIC
-                            || imp.getImportKind() == CtImportKind.FIELD_STATIC
-                            || imp.getImportKind() == CtImportKind.ALL_STATIC;
+                    CtImportKind kind = imp.getImportKind();
+                    boolean isStatic = kind == CtImportKind.METHOD_STATIC
+                            || kind == CtImportKind.FIELD_STATIC
+                            || kind == CtImportKind.ALL_STATIC;
                     String snippet = "import " + (isStatic ? "static " : "") + ref + ";";
                     graph.addNode(new GraphNode(
                             importId, NodeKind.IMPORT, ref,
