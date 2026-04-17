@@ -14,6 +14,7 @@ import spoon.compiler.ModelBuildingException;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.*;
 import spoon.reflect.declaration.*;
+import spoon.reflect.reference.CtImportKind;
 import spoon.reflect.visitor.filter.TypeFilter;
 import spoon.support.compiler.VirtualFile;
 
@@ -546,6 +547,9 @@ public class GraphBuilderImpl implements GraphBuilder {
         // and whose sourceSnippet is the raw import line. A HAS_IMPORT edge
         // connects the declaring type (or the file path when there is no
         // top-level type) to the import node.
+        //
+        // CtImport does not expose isStatic() directly; we detect static imports
+        // via CtImportKind.METHOD_STATIC / FIELD_STATIC / ALL_STATIC.
         if (edgeConfig.isEnabled(EdgeKind.HAS_IMPORT)) {
             passes.add(() -> model.getElements(new TypeFilter<>(CtCompilationUnit.class)).forEach(cu -> {
                 String file = cu.getFile() != null
@@ -561,7 +565,10 @@ public class GraphBuilderImpl implements GraphBuilder {
                     String ref = imp.getReference().toString();
                     String importId = "import@" + file + ":" + ref;
                     int line = imp.getPosition().isValidPosition() ? imp.getPosition().getLine() : -1;
-                    String snippet = "import " + (imp.isStatic() ? "static " : "") + ref + ";";
+                    boolean isStatic = imp.getImportKind() == CtImportKind.METHOD_STATIC
+                            || imp.getImportKind() == CtImportKind.FIELD_STATIC
+                            || imp.getImportKind() == CtImportKind.ALL_STATIC;
+                    String snippet = "import " + (isStatic ? "static " : "") + ref + ";";
                     graph.addNode(new GraphNode(
                             importId, NodeKind.IMPORT, ref,
                             file, line, line,
@@ -596,11 +603,11 @@ public class GraphBuilderImpl implements GraphBuilder {
                             int[] ln = AstGraphUtils.lines(el);
                             // Derive owner id depending on element kind
                             String ownerId = switch (el) {
-                                case CtType<?> t      -> AstGraphUtils.qualifiedName(t);
-                                case CtMethod<?> m    -> AstGraphUtils.typeMemberExecId(m);
+                                case CtType<?> t        -> AstGraphUtils.qualifiedName(t);
+                                case CtMethod<?> m      -> AstGraphUtils.typeMemberExecId(m);
                                 case CtConstructor<?> c -> AstGraphUtils.typeMemberExecId(c);
-                                case CtField<?> f     -> AstGraphUtils.fieldId(f);
-                                default               -> null;
+                                case CtField<?> f       -> AstGraphUtils.fieldId(f);
+                                default                 -> null;
                             };
                             if (ownerId == null) return;
 
