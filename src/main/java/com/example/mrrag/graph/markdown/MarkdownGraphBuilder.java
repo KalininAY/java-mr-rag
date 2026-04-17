@@ -163,18 +163,18 @@ public class MarkdownGraphBuilder {
             case READS_LOCAL_VAR -> {
                 if (to instanceof MarkdownVariableNode v) {
                     v.addReadBy(from);
-                    if      (from instanceof MarkdownMethodNode m)      m.addReadsLocalVar(v);
-                    else if (from instanceof MarkdownConstructorNode c) c.addReadsLocalVar(v);
-                    else if (from instanceof MarkdownLambdaNode l)      l.addReadsLocalVar(v);
+                    if      (from instanceof MarkdownMethodNode m)      { m.addReadsLocalVar(v);    addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof MarkdownConstructorNode c) { c.addReadsLocalVar(v);    addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof MarkdownLambdaNode l)      { l.addReadsLocalVar(v);    addEdgeLine(from, to.getId(), edge.line()); }
                 }
             }
 
             case WRITES_LOCAL_VAR -> {
                 if (to instanceof MarkdownVariableNode v) {
                     v.addWrittenBy(from);
-                    if      (from instanceof MarkdownMethodNode m)      m.addWritesLocalVar(v);
-                    else if (from instanceof MarkdownConstructorNode c) c.addWritesLocalVar(v);
-                    else if (from instanceof MarkdownLambdaNode l)      l.addWritesLocalVar(v);
+                    if      (from instanceof MarkdownMethodNode m)      { m.addWritesLocalVar(v);   addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof MarkdownConstructorNode c) { c.addWritesLocalVar(v);   addEdgeLine(from, to.getId(), edge.line()); }
+                    else if (from instanceof MarkdownLambdaNode l)      { l.addWritesLocalVar(v);   addEdgeLine(from, to.getId(), edge.line()); }
                 }
             }
 
