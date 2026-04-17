@@ -7,6 +7,7 @@ import com.example.mrrag.app.source.GitLabLocalSourceProvider;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.pipeline.ContextPipeline;
+import com.example.mrrag.review.snapshot.ReviewDataPersistenceService;
 import com.example.mrrag.app.repo.CodeRepositoryGateway;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -14,6 +15,7 @@ import org.gitlab4j.api.models.Diff;
 import org.gitlab4j.api.models.MergeRequest;
 import org.springframework.stereotype.Service;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -25,6 +27,7 @@ import java.util.concurrent.CompletableFuture;
  *   <li>Clone target branch → &lt;project&gt;-mr&lt;id&gt;/to-&lt;branch&gt;-&lt;ts&gt;   (parallel with source)</li>
  *   <li>Build AST graphs for both branches (parallel)</li>
  *   <li>Parse git diff</li>
+ *   <li><strong>Save snapshot to disk</strong> (projects + diffs) via {@link ReviewDataPersistenceService}</li>
  *   <li>Run RAG pipeline ({@link ContextPipeline}) → classify, find classes/nodes,
  *       collect context per change type, build {@link GroupRepresentation}s</li>
  *   <li>Cleanup both temp dirs</li>
@@ -39,6 +42,7 @@ public class ReviewService {
     private final CodeRepositoryGateway repoGateway;
     private final AstGraphService astGraphService;
     private final ContextPipeline contextPipeline;
+    private final ReviewDataPersistenceService persistenceService;
 
     public ReviewContext buildReviewContext(ReviewRequest request) {
         log.info("Building review context for project={} mrIid={}",
@@ -58,24 +62,11 @@ public class ReviewService {
                 new RemoteProjectRequest(request.namespace(), request.repo(), mr.getTargetBranch(), null, null, true));
 
         log.info("Both branches cloned successfully: source={}, target={}",
-                mr.getSourceBranch(), mr.getSourceBranch());
+                mr.getSourceBranch(), mr.getTargetBranch());
+
         // --- Parallel AST graph build ---
         log.info("Building AST graphs in parallel...");
 
-// 15:12:00
-// 2026-04-08 15:32:46.216 DEBUG 7224 --- [onPool-worker-2] s.support.compiler.jdt.JDTTreeBuilder    : Could not find declaration for variable Assertions at (D:/PROJS/java-mr-rag/mr-rag-workspace/EPVV-mr765/to-master-2026-04-08_12-30-31-243/src/test/java/suites/AllureTest.java:87).
-// 2026-04-08 15:32:51.704  INFO 7224 --- [onPool-worker-2] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromModel: running 15 passes in parallel via ForkJoinPool
-// 2026-04-08 15:34:20.491  INFO 7224 --- [onPool-worker-1] c.example.mrrag.graph.GraphBuilderImpl   : AST graph built: 45080 nodes, 6002 edge-sources
-// 2026-04-08 15:34:21.042 DEBUG 7224 --- [onPool-worker-4] c.e.m.graph.raw.ProjectGraphCacheStore   : Saved 1 segment(s) — bundle: mr-rag-workspace\graph-cache\from-C4548_part7-2026-04-08_12-30-31-103___C4548_part7___dc3dd9f, global deps: mr-rag-workspace\graph-cache\deps
-// 2026-04-08 15:34:21.042 DEBUG 7224 --- [onPool-worker-4] c.example.mrrag.graph.GraphBuilderImpl   : buildGraph: saved to disk cache for ProjectKey[projectRoot=D:\PROJS\java-mr-rag\mr-rag-workspace\EPVV-mr765\from-C4548_part7-2026-04-08_12-30-31-103, fingerprint=git:dc3dd9f3cf28cb2a1ea8e0aba141ddb16710c05b]
-// 2026-04-08 15:35:33.601  INFO 7224 --- [onPool-worker-2] c.example.mrrag.graph.GraphBuilderImpl   : AST graph built: 45437 nodes, 6044 edge-sources
-// 2026-04-08 15:35:33.601  INFO 7224 --- [nio-8080-exec-2] com.example.mrrag.review.ReviewService   : Both AST graphs built successfully
-
-// 2026-04-08 16:48:41
-// 2026-04-08 16:54:15.890  INFO 5304 --- [onPool-worker-6] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromModel: running 15 passes in parallel via ForkJoinPool
-// 2026-04-08 16:53:49.023  INFO 5304 --- [onPool-worker-2] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromSources: merged graph — 45531 nodes, 6074 edge-sources
-// 2026-04-08 16:54:41.365  INFO 5304 --- [onPool-worker-6] c.example.mrrag.graph.GraphBuilderImpl   : AST graph built: 7385 nodes, 506 edge-sources
-// 2026-04-08 16:54:41.783  INFO 5304 --- [onPool-worker-1] c.example.mrrag.graph.GraphBuilderImpl   : doBuildGraphFromSources: merged graph — 45172 nodes, 6032 edge-sources
         CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
             try {
                 return astGraphService.buildGraph(sourceProvider, false);
@@ -98,6 +89,15 @@ public class ReviewService {
 
         log.info("Fetching MR diffs...");
         List<Diff> diffs = repoGateway.getMrDiffs(request.namespace(), request.repo(), request.mrIid(), null);
+
+        // --- Save snapshot BEFORE grouping ---
+        // localProjectRoot() is non-empty after getSources() was called inside buildGraph()
+        Path sourceRoot = sourceProvider.localProjectRoot()
+                .orElseThrow(() -> new IllegalStateException("Source project root not available after clone"));
+        Path targetRoot = targetProvider.localProjectRoot()
+                .orElseThrow(() -> new IllegalStateException("Target project root not available after clone"));
+        Path snapshotDir = persistenceService.saveSnapshot(request, mr, diffs, sourceRoot, targetRoot);
+        log.info("Review snapshot saved to: {}", snapshotDir);
 
         log.info("Running ContextPipeline...");
         List<GroupRepresentation> representations = contextPipeline.run(diffs, sourceGraph, targetGraph);
