@@ -18,6 +18,8 @@ app:
     token: ${GITLAB_TOKEN:}
   workspace:
     dir: ${WORKSPACE_DIR:workspace}
+  snapshots:
+    dir: ${SNAPSHOTS_DIR:${app.workspace.dir}/snapshots}
   graph:
     cache:
       serialization-enabled: true
