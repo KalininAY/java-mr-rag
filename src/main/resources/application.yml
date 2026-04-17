@@ -59,9 +59,9 @@ graph:
       enabled: true
     # Local variables (can be noisy on large projects — disable if needed)
     READS_LOCAL_VAR:
-      enabled: false
+      enabled: true
     WRITES_LOCAL_VAR:
-      enabled: false
+      enabled: true
     # Exceptions
     THROWS:
       enabled: true
