@@ -42,6 +42,12 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
 
+bootRun {
+    if (project.hasProperty('jvmDebugArgs')) {
+        jvmArgs = [project.jvmDebugArgs]
+    }
+}
+
 tasks.named('test') {
     useJUnitPlatform()
 }
