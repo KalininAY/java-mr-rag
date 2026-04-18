@@ -1,9 +1,8 @@
 package com.example.mrrag.review;
 
-import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
 import com.example.mrrag.app.controller.requestDTO.ReviewRequest;
 import com.example.mrrag.app.service.AstGraphService;
-import com.example.mrrag.app.source.GitLabLocalSourceProvider;
+import com.example.mrrag.app.source.LocalProjectSourceProvider;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.pipeline.ContextPipeline;
@@ -23,14 +22,15 @@ import java.util.concurrent.CompletableFuture;
  * Orchestrates the full review pipeline:
  * <ol>
  *   <li>Fetch MR from GitLab</li>
- *   <li>Clone source branch → &lt;project&gt;-mr&lt;id&gt;/from-&lt;branch&gt;-&lt;ts&gt; (parallel with target)</li>
- *   <li>Clone target branch → &lt;project&gt;-mr&lt;id&gt;/to-&lt;branch&gt;-&lt;ts&gt;   (parallel with source)</li>
- *   <li>Build AST graphs for both branches (parallel)</li>
- *   <li>Parse git diff</li>
- *   <li><strong>Save snapshot to disk</strong> (projects + diffs) via {@link ReviewDataPersistenceService}</li>
- *   <li>Run RAG pipeline ({@link ContextPipeline}) → classify, find classes/nodes,
- *       collect context per change type, build {@link GroupRepresentation}s</li>
- *   <li>Cleanup both temp dirs</li>
+ *   <li>Clone source and target branches in parallel</li>
+ *   <li>Fetch MR diffs from GitLab (fast, runs after clone)</li>
+ *   <li><strong>Save snapshot to disk</strong> — projects + diffs —
+ *       via {@link ReviewDataPersistenceService} (before the expensive graph build)</li>
+ *   <li>Build AST graphs from local clones in parallel
+ *       (uses {@link LocalProjectSourceProvider} so graphs can also be rebuilt
+ *       from a saved snapshot without GitLab access)</li>
+ *   <li>Run RAG pipeline ({@link ContextPipeline}): classify, enrich, build
+ *       {@link GroupRepresentation}s</li>
  *   <li>Return {@link ReviewContext}</li>
  * </ol>
  */
@@ -48,28 +48,43 @@ public class ReviewService {
         log.info("Building review context for project={} mrIid={}",
                 request.namespace() + "/" + request.repo(), request.mrIid());
 
-        MergeRequest mr = repoGateway.getMergeRequest(request.namespace(), request.repo(), request.mrIid(), null);
+        MergeRequest mr = repoGateway.getMergeRequest(
+                request.namespace(), request.repo(), request.mrIid(), null);
 
-        // --- Parallel clone ---
-        log.info("Cloning source branch '{}' and target branch '{}' in parallel...",
+        // ── Step 1: clone both branches in parallel ──────────────────────────
+        log.info("Cloning source='{}' and target='{}' in parallel...",
                 mr.getSourceBranch(), mr.getTargetBranch());
 
-        GitLabLocalSourceProvider sourceProvider = new GitLabLocalSourceProvider(
-                repoGateway,
-                new RemoteProjectRequest(request.namespace(), request.repo(), mr.getSourceBranch(), null, null, true));
-        GitLabLocalSourceProvider targetProvider = new GitLabLocalSourceProvider(
-                repoGateway,
-                new RemoteProjectRequest(request.namespace(), request.repo(), mr.getTargetBranch(), null, null, true));
+        CompletableFuture<Path> sourceCloneFuture = CompletableFuture.supplyAsync(() ->
+                repoGateway.cloneProject(
+                        request.namespace(), request.repo(),
+                        mr.getSourceBranch(), null, true, null));
 
-        log.info("Both branches cloned successfully: source={}, target={}",
-                mr.getSourceBranch(), mr.getTargetBranch());
+        CompletableFuture<Path> targetCloneFuture = CompletableFuture.supplyAsync(() ->
+                repoGateway.cloneProject(
+                        request.namespace(), request.repo(),
+                        mr.getTargetBranch(), null, true, null));
 
-        // --- Parallel AST graph build ---
+        Path sourceRoot = sourceCloneFuture.join();
+        Path targetRoot = targetCloneFuture.join();
+        log.info("Both branches cloned: source={} target={}", sourceRoot, targetRoot);
+
+        // ── Step 2: fetch diffs (fast GitLab API call) ───────────────────────
+        log.info("Fetching MR diffs...");
+        List<Diff> diffs = repoGateway.getMrDiffs(
+                request.namespace(), request.repo(), request.mrIid(), null);
+        log.info("Fetched {} diff(s)", diffs.size());
+
+        // ── Step 3: save snapshot BEFORE the expensive graph build ───────────
+        Path snapshotDir = persistenceService.saveSnapshot(request, mr, diffs, sourceRoot, targetRoot);
+        log.info("Review snapshot saved to: {}", snapshotDir);
+
+        // ── Step 4: build AST graphs from local clones in parallel ───────────
         log.info("Building AST graphs in parallel...");
 
         CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
             try {
-                return astGraphService.buildGraph(sourceProvider, false);
+                return astGraphService.buildGraph(new LocalProjectSourceProvider(sourceRoot), false);
             } catch (Exception e) {
                 throw new RuntimeException("Failed to build source AST graph", e);
             }
@@ -77,7 +92,7 @@ public class ReviewService {
 
         CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(() -> {
             try {
-                return astGraphService.buildGraph(targetProvider, false);
+                return astGraphService.buildGraph(new LocalProjectSourceProvider(targetRoot), false);
             } catch (Exception e) {
                 throw new RuntimeException("Failed to build target AST graph", e);
             }
@@ -87,20 +102,10 @@ public class ReviewService {
         ProjectGraph targetGraph = targetGraphFuture.join();
         log.info("Both AST graphs built successfully");
 
-        log.info("Fetching MR diffs...");
-        List<Diff> diffs = repoGateway.getMrDiffs(request.namespace(), request.repo(), request.mrIid(), null);
-
-        // --- Save snapshot BEFORE grouping ---
-        // localProjectRoot() is non-empty after getSources() was called inside buildGraph()
-        Path sourceRoot = sourceProvider.localProjectRoot()
-                .orElseThrow(() -> new IllegalStateException("Source project root not available after clone"));
-        Path targetRoot = targetProvider.localProjectRoot()
-                .orElseThrow(() -> new IllegalStateException("Target project root not available after clone"));
-        Path snapshotDir = persistenceService.saveSnapshot(request, mr, diffs, sourceRoot, targetRoot);
-        log.info("Review snapshot saved to: {}", snapshotDir);
-
+        // ── Step 5: run grouping pipeline ────────────────────────────────────
         log.info("Running ContextPipeline...");
-        List<GroupRepresentation> representations = contextPipeline.run(diffs, sourceGraph, targetGraph);
+        List<GroupRepresentation> representations =
+                contextPipeline.run(diffs, sourceGraph, targetGraph);
         log.info("ContextPipeline complete: {} representation(s)", representations.size());
 
         return new ReviewContext(
