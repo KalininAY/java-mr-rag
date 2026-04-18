@@ -1,5 +1,6 @@
 package com.example.mrrag.review.snapshot;
 
+import com.example.mrrag.graph.model.ProjectGraph;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -11,11 +12,17 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.file.*;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 /**
- * Reads review snapshots from disk for the debug controller.
+ * Reads review snapshots from disk.
+ *
+ * <p>The key method for the review pipeline is {@link #findMatchingSnapshot}:
+ * it locates the most-recent snapshot for a given MR whose
+ * {@code targetCommitSha} still matches the current HEAD of the target branch.
  */
 @Slf4j
 @Service
@@ -32,57 +39,159 @@ public class ReviewSnapshotReader {
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
-    /** Lists all snapshot directory names (sorted, newest first by name). */
-    public List<String> listSnapshotIds() throws IOException {
+    // -----------------------------------------------------------------------
+    // Snapshot lookup
+    // -----------------------------------------------------------------------
+
+    /**
+     * Finds the most-recent snapshot for the given MR that is still valid
+     * (i.e. {@code targetCommitSha} matches {@code currentTargetSha}).
+     *
+     * @param namespace       GitLab namespace
+     * @param repo            repository name
+     * @param mrIid           MR internal id
+     * @param currentTargetSha current HEAD SHA of the target branch
+     *                         (pass {@code null} or empty to skip SHA check)
+     * @return matching snapshot directory, or empty if none found
+     */
+    public Optional<Path> findMatchingSnapshot(String namespace,
+                                               String repo,
+                                               long mrIid,
+                                               String currentTargetSha) {
         if (!Files.isDirectory(snapshotsDir)) {
-            return List.of();
+            return Optional.empty();
         }
         try (Stream<Path> stream = Files.list(snapshotsDir)) {
             return stream
                     .filter(Files::isDirectory)
+                    .filter(dir -> metaMatches(dir, namespace, repo, mrIid, currentTargetSha))
+                    .max(Comparator.comparing(p -> p.getFileName().toString())); // newest by name
+        } catch (IOException e) {
+            log.warn("Cannot scan snapshots dir {}: {}", snapshotsDir, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Determines what data is available in the snapshot directory.
+     * Does NOT read meta.json — inspects files directly so the result
+     * reflects the real state on disk (meta.json state field may be stale).
+     */
+    public SnapshotState detectState(Path snapshotDir) {
+        boolean hasGraphs = Files.exists(snapshotDir.resolve("graph-source.json"))
+                && Files.exists(snapshotDir.resolve("graph-target.json"));
+        boolean hasSources = Files.isDirectory(snapshotDir.resolve("source"))
+                && Files.isDirectory(snapshotDir.resolve("target"));
+        boolean hasDiffs = Files.exists(snapshotDir.resolve("diffs.json"));
+
+        if (hasGraphs && hasSources && hasDiffs) return SnapshotState.GRAPHS_READY;
+        if (hasSources && hasDiffs)              return SnapshotState.SOURCES_READY;
+        if (hasDiffs)                            return SnapshotState.DIFFS_ONLY;
+        return SnapshotState.EMPTY;
+    }
+
+    // -----------------------------------------------------------------------
+    // Data readers
+    // -----------------------------------------------------------------------
+
+    /** Lists all snapshot directory names, newest first. */
+    public List<String> listSnapshotIds() throws IOException {
+        if (!Files.isDirectory(snapshotsDir)) return List.of();
+        try (Stream<Path> stream = Files.list(snapshotsDir)) {
+            return stream
+                    .filter(Files::isDirectory)
                     .map(p -> p.getFileName().toString())
-                    .sorted((a, b) -> b.compareTo(a))   // newest first
+                    .sorted(Comparator.reverseOrder())
                     .toList();
         }
     }
 
-    /** Returns the root directory of a snapshot by its id (directory name). */
     public Path snapshotDir(String snapshotId) {
         return snapshotsDir.resolve(snapshotId);
     }
 
-    /** Reads {@code meta.json} of the given snapshot. */
     public ReviewSnapshotMeta readMeta(String snapshotId) throws IOException {
-        Path file = snapshotsDir.resolve(snapshotId).resolve("meta.json");
-        assertExists(file, snapshotId);
-        return mapper.readValue(file.toFile(), ReviewSnapshotMeta.class);
+        return readMetaFromDir(snapshotsDir.resolve(snapshotId));
     }
 
-    /** Reads {@code diffs.json} of the given snapshot. */
     public List<Diff> readDiffs(String snapshotId) throws IOException {
         Path file = snapshotsDir.resolve(snapshotId).resolve("diffs.json");
         assertExists(file, snapshotId);
-        return mapper.readValue(file.toFile(), new TypeReference<List<Diff>>() {});
+        return mapper.readValue(file.toFile(), new TypeReference<>() {});
     }
 
-    /** Returns absolute path to the {@code source/} project copy inside the snapshot. */
+    public List<Diff> readDiffsFromDir(Path snapshotDir) throws IOException {
+        Path file = snapshotDir.resolve("diffs.json");
+        assertExists(file, snapshotDir.toString());
+        return mapper.readValue(file.toFile(), new TypeReference<>() {});
+    }
+
+    public ProjectGraph readSourceGraph(Path snapshotDir) throws IOException {
+        Path file = snapshotDir.resolve("graph-source.json");
+        assertExists(file, snapshotDir.toString());
+        return mapper.readValue(file.toFile(), ProjectGraph.class);
+    }
+
+    public ProjectGraph readTargetGraph(Path snapshotDir) throws IOException {
+        Path file = snapshotDir.resolve("graph-target.json");
+        assertExists(file, snapshotDir.toString());
+        return mapper.readValue(file.toFile(), ProjectGraph.class);
+    }
+
     public Path sourceRoot(String snapshotId) throws IOException {
         ReviewSnapshotMeta meta = readMeta(snapshotId);
         return snapshotsDir.resolve(snapshotId).resolve(meta.sourceRelDir());
     }
 
-    /** Returns absolute path to the {@code target/} project copy inside the snapshot. */
     public Path targetRoot(String snapshotId) throws IOException {
         ReviewSnapshotMeta meta = readMeta(snapshotId);
         return snapshotsDir.resolve(snapshotId).resolve(meta.targetRelDir());
     }
 
+    public Path sourceRootFromDir(Path snapshotDir) throws IOException {
+        return snapshotDir.resolve(readMetaFromDir(snapshotDir).sourceRelDir());
+    }
+
+    public Path targetRootFromDir(Path snapshotDir) throws IOException {
+        return snapshotDir.resolve(readMetaFromDir(snapshotDir).targetRelDir());
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
     // -----------------------------------------------------------------------
 
-    private static void assertExists(Path file, String snapshotId) {
+    private ReviewSnapshotMeta readMetaFromDir(Path dir) throws IOException {
+        Path file = dir.resolve("meta.json");
+        assertExists(file, dir.toString());
+        return mapper.readValue(file.toFile(), ReviewSnapshotMeta.class);
+    }
+
+    private boolean metaMatches(Path dir,
+                                String namespace, String repo, long mrIid,
+                                String currentTargetSha) {
+        try {
+            ReviewSnapshotMeta meta = readMetaFromDir(dir);
+            if (!namespace.equals(meta.namespace())) return false;
+            if (!repo.equals(meta.repo()))           return false;
+            if (!mrIid.equals(meta.mrIid()))         return false;
+            // SHA check: skip if currentTargetSha is blank (force-match)
+            if (currentTargetSha != null && !currentTargetSha.isBlank()
+                    && !currentTargetSha.equals(meta.targetCommitSha())) {
+                log.debug("Snapshot {} skipped: targetSha mismatch ({} vs {})",
+                        dir.getFileName(), meta.targetCommitSha(), currentTargetSha);
+                return false;
+            }
+            return true;
+        } catch (IOException e) {
+            log.debug("Cannot read meta.json in {}: {}", dir, e.getMessage());
+            return false;
+        }
+    }
+
+    private static void assertExists(Path file, String context) {
         if (!Files.exists(file)) {
             throw new IllegalArgumentException(
-                    "Snapshot file not found: " + file + " (snapshotId='" + snapshotId + "')");
+                    "Snapshot file not found: " + file + " (context='" + context + "')");
         }
     }
 }
