@@ -525,7 +525,7 @@ public class ChangeGrouper {
         for (List<com.example.mrrag.graph.model.GraphEdge> edges : graph.edgesFrom.values()) {
             for (com.example.mrrag.graph.model.GraphEdge e : edges) {
                 if (!g.primaryFile().equals(e.filePath())) continue;
-                if (changedLineNos.contains(e.line()) && e.callee() != null) {
+                if (changedLineNos.contains(e.startLine()) && e.callee() != null) {
                     names.add(simpleMethodName(e.callee()));
                 }
             }

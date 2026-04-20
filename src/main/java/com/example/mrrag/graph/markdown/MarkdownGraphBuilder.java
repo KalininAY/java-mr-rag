@@ -116,72 +116,72 @@ public class MarkdownGraphBuilder {
                 }
             }
 
-            case INVOKES -> addCallerCallee(from, to, edge.line());
+            case INVOKES -> addCallerCallee(from, to, edge.startLine());
 
             case INSTANTIATES -> {
                 if (to instanceof MarkdownClassNode cls) {
                     cls.addInstantiatedBy(from);
-                    if      (from instanceof MarkdownMethodNode m)      { m.addInstantiates(cls);     addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownConstructorNode c) { c.addInstantiates(cls);     addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownLambdaNode l)      { l.addInstantiates(cls);     addEdgeLine(from, to.getId(), edge.line()); }
+                    if      (from instanceof MarkdownMethodNode m)      { m.addInstantiates(cls);     addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownConstructorNode c) { c.addInstantiates(cls);     addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownLambdaNode l)      { l.addInstantiates(cls);     addEdgeLine(from, to.getId(), edge.startLine()); }
                 }
             }
 
             case INSTANTIATES_ANONYMOUS -> {
                 if (to instanceof MarkdownClassNode cls) {
                     cls.addAnonymouslyInstantiatedBy(from);
-                    if      (from instanceof MarkdownMethodNode m)      { m.addInstantiatesAnon(cls);  addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownConstructorNode c) { c.addInstantiatesAnon(cls);  addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownLambdaNode l)      { l.addInstantiatesAnon(cls);  addEdgeLine(from, to.getId(), edge.line()); }
+                    if      (from instanceof MarkdownMethodNode m)      { m.addInstantiatesAnon(cls);  addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownConstructorNode c) { c.addInstantiatesAnon(cls);  addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownLambdaNode l)      { l.addInstantiatesAnon(cls);  addEdgeLine(from, to.getId(), edge.startLine()); }
                 }
             }
 
             case REFERENCES_METHOD -> {
-                if      (from instanceof MarkdownMethodNode m)      { m.addReferencedMethod(to);   addEdgeLine(from, to.getId(), edge.line()); }
-                else if (from instanceof MarkdownConstructorNode c) { c.addCallee(to);             addEdgeLine(from, to.getId(), edge.line()); }
-                else if (from instanceof MarkdownLambdaNode l)      { l.addCallee(to);             addEdgeLine(from, to.getId(), edge.line()); }
+                if      (from instanceof MarkdownMethodNode m)      { m.addReferencedMethod(to);   addEdgeLine(from, to.getId(), edge.startLine()); }
+                else if (from instanceof MarkdownConstructorNode c) { c.addCallee(to);             addEdgeLine(from, to.getId(), edge.startLine()); }
+                else if (from instanceof MarkdownLambdaNode l)      { l.addCallee(to);             addEdgeLine(from, to.getId(), edge.startLine()); }
             }
 
             case READS_FIELD -> {
                 if (to instanceof MarkdownFieldNode f) {
                     f.addReadBy(from);
-                    if      (from instanceof MarkdownMethodNode m)      { m.addReadsField(f);       addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownConstructorNode c) { c.addReadsField(f);       addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownLambdaNode l)      { l.addReadsField(f);       addEdgeLine(from, to.getId(), edge.line()); }
+                    if      (from instanceof MarkdownMethodNode m)      { m.addReadsField(f);       addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownConstructorNode c) { c.addReadsField(f);       addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownLambdaNode l)      { l.addReadsField(f);       addEdgeLine(from, to.getId(), edge.startLine()); }
                 }
             }
 
             case WRITES_FIELD -> {
                 if (to instanceof MarkdownFieldNode f) {
                     f.addWrittenBy(from);
-                    if      (from instanceof MarkdownMethodNode m)      { m.addWritesField(f);      addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownConstructorNode c) { c.addWritesField(f);      addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownLambdaNode l)      { l.addWritesField(f);      addEdgeLine(from, to.getId(), edge.line()); }
+                    if      (from instanceof MarkdownMethodNode m)      { m.addWritesField(f);      addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownConstructorNode c) { c.addWritesField(f);      addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownLambdaNode l)      { l.addWritesField(f);      addEdgeLine(from, to.getId(), edge.startLine()); }
                 }
             }
 
             case READS_LOCAL_VAR -> {
                 if (to instanceof MarkdownVariableNode v) {
                     v.addReadBy(from);
-                    if      (from instanceof MarkdownMethodNode m)      { m.addReadsLocalVar(v);    addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownConstructorNode c) { c.addReadsLocalVar(v);    addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownLambdaNode l)      { l.addReadsLocalVar(v);    addEdgeLine(from, to.getId(), edge.line()); }
+                    if      (from instanceof MarkdownMethodNode m)      { m.addReadsLocalVar(v);    addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownConstructorNode c) { c.addReadsLocalVar(v);    addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownLambdaNode l)      { l.addReadsLocalVar(v);    addEdgeLine(from, to.getId(), edge.startLine()); }
                 }
             }
 
             case WRITES_LOCAL_VAR -> {
                 if (to instanceof MarkdownVariableNode v) {
                     v.addWrittenBy(from);
-                    if      (from instanceof MarkdownMethodNode m)      { m.addWritesLocalVar(v);   addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownConstructorNode c) { c.addWritesLocalVar(v);   addEdgeLine(from, to.getId(), edge.line()); }
-                    else if (from instanceof MarkdownLambdaNode l)      { l.addWritesLocalVar(v);   addEdgeLine(from, to.getId(), edge.line()); }
+                    if      (from instanceof MarkdownMethodNode m)      { m.addWritesLocalVar(v);   addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownConstructorNode c) { c.addWritesLocalVar(v);   addEdgeLine(from, to.getId(), edge.startLine()); }
+                    else if (from instanceof MarkdownLambdaNode l)      { l.addWritesLocalVar(v);   addEdgeLine(from, to.getId(), edge.startLine()); }
                 }
             }
 
             case THROWS -> {
-                if      (from instanceof MarkdownMethodNode m)      { m.addThrowsType(to);        addEdgeLine(from, to.getId(), edge.line()); }
-                else if (from instanceof MarkdownConstructorNode c) { c.addThrowsType(to);        addEdgeLine(from, to.getId(), edge.line()); }
-                else if (from instanceof MarkdownLambdaNode l)      { l.addThrowsType(to);        addEdgeLine(from, to.getId(), edge.line()); }
+                if      (from instanceof MarkdownMethodNode m)      { m.addThrowsType(to);        addEdgeLine(from, to.getId(), edge.startLine()); }
+                else if (from instanceof MarkdownConstructorNode c) { c.addThrowsType(to);        addEdgeLine(from, to.getId(), edge.startLine()); }
+                else if (from instanceof MarkdownLambdaNode l)      { l.addThrowsType(to);        addEdgeLine(from, to.getId(), edge.startLine()); }
             }
 
             case ANNOTATED_WITH -> {
@@ -197,9 +197,9 @@ public class MarkdownGraphBuilder {
             case REFERENCES_TYPE -> {
                 if (to instanceof MarkdownClassNode cls)           cls.addReferencedBy(from);
                 else if (to instanceof MarkdownInterfaceNode iface) iface.addReferencedBy(from);
-                if      (from instanceof MarkdownMethodNode m)      { m.addReferencesType(to);    addEdgeLine(from, to.getId(), edge.line()); }
-                else if (from instanceof MarkdownConstructorNode c) { c.addReferencesType(to);    addEdgeLine(from, to.getId(), edge.line()); }
-                else if (from instanceof MarkdownLambdaNode l)      { l.addReferencesType(to);    addEdgeLine(from, to.getId(), edge.line()); }
+                if      (from instanceof MarkdownMethodNode m)      { m.addReferencesType(to);    addEdgeLine(from, to.getId(), edge.startLine()); }
+                else if (from instanceof MarkdownConstructorNode c) { c.addReferencesType(to);    addEdgeLine(from, to.getId(), edge.startLine()); }
+                else if (from instanceof MarkdownLambdaNode l)      { l.addReferencesType(to);    addEdgeLine(from, to.getId(), edge.startLine()); }
             }
 
             case OVERRIDES -> {

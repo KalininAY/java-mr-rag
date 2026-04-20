@@ -55,7 +55,7 @@ public class AdditionContextStrategy implements ContextStrategy {
                 if (snippets.size() >= maxSnippetsPerGroup) break;
                 for (GraphEdge edge : sourceGraph.outgoing(enc.id())) {
                     if (snippets.size() >= maxSnippetsPerGroup) break;
-                    if (!file.equals(edge.filePath()) || edge.line() != line) continue;
+                    if (!file.equals(edge.filePath()) || edge.startLine() != line) continue;
 
                     String targetId = edge.callee();
                     if (seenDecl.contains(targetId)) continue;
