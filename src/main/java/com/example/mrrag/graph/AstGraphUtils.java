@@ -406,6 +406,77 @@ public final class AstGraphUtils {
     }
 
     /**
+     * Returns line range [{@code startLine}, {@code endLine}] (1-based, inclusive)
+     * for the *declaration* part of an element (signature/header without the method body).
+     * <p>
+     * Strategy (in priority order):
+     * <ol>
+     *   <li>{@link BodyHolderSourcePosition} — uses {@code declarationStart} .. {@code bodyStart-1}</li>
+     *   <li>{@link CompoundSourcePosition}   — uses {@code declarationStart} .. {@code declarationEnd}</li>
+     *   <li>Falls back to full element line range via {@link #lines(CtElement, Map, Path)}</li>
+     * </ol>
+     *
+     * @param sourceLines repo-relative path -> source lines map (used for offset->line conversion)
+     * @param el          the element whose declaration lines are needed
+     * @param projectRoot optional project root for path resolution
+     * @return int[2]: [startLine, endLine], or [-1, -1] when lines cannot be resolved
+     */
+    public static int[] declarationLines(Map<String, String[]> sourceLines,
+                                         CtElement el,
+                                         Path projectRoot) {
+        if (el == null) return new int[]{-1, -1};
+        try {
+            SourcePosition p = el.getPosition();
+            if (p == null || !p.isValidPosition()) {
+                return lines(el, sourceLines, projectRoot);
+            }
+
+            String filePath = sourceFile(el);
+            String[] fileLines = findLines(sourceLines, filePath, projectRoot);
+            String full = fileLines != null && fileLines.length > 0
+                    ? String.join("\n", fileLines)
+                    : null;
+
+            if (p instanceof BodyHolderSourcePosition bodyPos) {
+                int declStart = bodyPos.getDeclarationStart();
+                int bodyStart = bodyPos.getBodyStart();
+                if (declStart >= 0 && bodyStart > declStart) {
+                    if (full != null) {
+                        int startLine = lineNumberAtOffset(full, declStart);
+                        // bodyStart points to '{' — declaration ends on the line just before it,
+                        // or on the same line if the brace is on the same line as the last param.
+                        int endLine = lineNumberAtOffset(full, bodyStart - 1);
+                        if (startLine > 0 && endLine >= startLine) {
+                            return new int[]{startLine, endLine};
+                        }
+                    }
+                    // No source text — fall back to Spoon line numbers
+                    return new int[]{p.getLine(), p.getEndLine()};
+                }
+            }
+
+            if (p instanceof CompoundSourcePosition declPos) {
+                int declStart = declPos.getDeclarationStart();
+                int declEnd = declPos.getDeclarationEnd();
+                if (declStart >= 0 && declEnd >= declStart && full != null) {
+                    int startLine = lineNumberAtOffset(full, declStart);
+                    int endLine = lineNumberAtOffset(full, declEnd);
+                    if (startLine > 0 && endLine >= startLine) {
+                        return new int[]{startLine, endLine};
+                    }
+                }
+            }
+
+            // For elements without a body (fields, imports, annotations, etc.)
+            // the full position IS the declaration.
+            return lines(el, sourceLines, projectRoot);
+
+        } catch (Exception ignored) {
+            return new int[]{-1, -1};
+        }
+    }
+
+    /**
      * Best-effort line range for an element.
      * First uses Spoon position line numbers; if they are unavailable or invalid,
      * falls back to source offset -> line conversion using sourceLines.
