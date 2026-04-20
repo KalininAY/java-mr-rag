@@ -387,19 +387,6 @@ public final class AstGraphUtils {
         return new int[]{ -1, -1 };
     }
 
-    /**
-     * Fallback variant — uses CU source when no {@code fileLines} are available.
-     */
-    public static int posLine(CtElement el) {
-        try {
-            var p = el.getPosition();
-            if (!p.isValidPosition()) return -1;
-            CompilationUnit cu = p.getCompilationUnit();
-            String src = cu != null ? cu.getOriginalSourceCode() : null;
-            if (src != null && !src.isEmpty()) return lineNumberAtOffset(src, p.getSourceStart());
-            return p.getLine();
-        } catch (Exception e) { return -1; }
-    }
 
     /**
      * 1-based line number of the character at {@code offset} (0-based) in {@code src}.
