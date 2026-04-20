@@ -56,7 +56,7 @@ public final class AstGraphUtils {
             String[] lines = findLines(sourceLines, filePath, projectRoot);
             if (lines != null) {
                 int from = Math.max(0, startLine - 1);
-                int to   = Math.min(lines.length, endLine);
+                int to = Math.min(lines.length, endLine);
                 if (from < to) return String.join("\n", Arrays.copyOfRange(lines, from, to));
             }
         }
@@ -75,7 +75,8 @@ public final class AstGraphUtils {
             String n = Path.of(filePath).normalize().toString();
             lines = sourceLines.get(n);
             if (lines != null) return lines;
-        } catch (Exception ignored) { }
+        } catch (Exception ignored) {
+        }
         lines = sourceLines.get(filePath.replace('\\', '/'));
         if (lines != null) return lines;
         lines = sourceLines.get(filePath.replace('/', '\\'));
@@ -90,7 +91,8 @@ public final class AstGraphUtils {
                     lines = sourceLines.get(key);
                     if (lines != null) return lines;
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception ignored) {
+            }
         }
         return null;
     }
@@ -160,7 +162,11 @@ public final class AstGraphUtils {
 
     public static String varRefId(CtVariableReference<?> ref) {
         if (ref == null) return "var@?";
-        try { CtVariable<?> d = ref.getDeclaration(); if (d != null) return varId(d); } catch (Exception ignored) {}
+        try {
+            CtVariable<?> d = ref.getDeclaration();
+            if (d != null) return varId(d);
+        } catch (Exception ignored) {
+        }
         return "var@" + ref.getSimpleName();
     }
 
@@ -221,7 +227,8 @@ public final class AstGraphUtils {
                         return q + "#" + suffix;
                     }
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception ignored) {
+            }
         }
         return base;
     }
@@ -236,14 +243,16 @@ public final class AstGraphUtils {
                 String q = ref.getDeclaringType().getQualifiedName();
                 if (isUsableQualifiedName(q)) return q;
             }
-        } catch (Exception ignored) { }
+        } catch (Exception ignored) {
+        }
         try {
             CtExecutable<?> decl = ref.getDeclaration();
             if (decl instanceof CtTypeMember tm && tm.getDeclaringType() != null) {
                 String q = tm.getDeclaringType().getQualifiedName();
                 if (isUsableQualifiedName(q)) return q;
             }
-        } catch (Exception ignored) { }
+        } catch (Exception ignored) {
+        }
 
         if (useSite instanceof CtInvocation inv) {
             String inferred = inferOwnerFromInvocation(inv);
@@ -272,7 +281,8 @@ public final class AstGraphUtils {
                     String q = ta.getAccessedType().getQualifiedName();
                     if (isUsableQualifiedName(q)) return q;
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception ignored) {
+            }
         }
         if (target != null) {
             try {
@@ -281,7 +291,8 @@ public final class AstGraphUtils {
                     String q = t.getQualifiedName();
                     if (isUsableQualifiedName(q)) return q;
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception ignored) {
+            }
         }
         return null;
     }
@@ -292,7 +303,8 @@ public final class AstGraphUtils {
                 String q = cc.getType().getQualifiedName();
                 if (isUsableQualifiedName(q)) return q;
             }
-        } catch (Exception ignored) { }
+        } catch (Exception ignored) {
+        }
         return null;
     }
 
@@ -311,7 +323,8 @@ public final class AstGraphUtils {
                     if (isUsableQualifiedName(q)) return q;
                 }
             }
-        } catch (Exception ignored) { }
+        } catch (Exception ignored) {
+        }
         return null;
     }
 
@@ -328,12 +341,13 @@ public final class AstGraphUtils {
                 if (cu != null) {
                     String f = cu.getFile() != null ? cu.getFile().getPath()
                             : (cu.getMainType() != null
-                               ? cu.getMainType().getQualifiedName().replace('.', '/') + ".java"
-                               : "");
+                            ? cu.getMainType().getQualifiedName().replace('.', '/') + ".java"
+                            : "");
                     if (!f.isEmpty()) return f;
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
         return "";
     }
 
@@ -347,13 +361,20 @@ public final class AstGraphUtils {
 
         try {
             Path root = projectRoot.toAbsolutePath().normalize();
-            try { root = root.toRealPath(); } catch (Exception ignored) { }
+            try {
+                root = root.toRealPath();
+            } catch (Exception ignored) {
+            }
             Path abs = Path.of(spoon).toAbsolutePath().normalize();
-            try { abs = abs.toRealPath(); } catch (Exception ignored) { }
+            try {
+                abs = abs.toRealPath();
+            } catch (Exception ignored) {
+            }
             if (abs.startsWith(root)) {
                 return root.relativize(abs).toString().replace('\\', '/');
             }
-        } catch (Exception ignored) { }
+        } catch (Exception ignored) {
+        }
 
         String norm = spoon.replace('\\', '/');
         if (repoRelativeSourcePaths != null && !repoRelativeSourcePaths.isEmpty()) {
@@ -362,7 +383,10 @@ public final class AstGraphUtils {
             for (String rel : repoRelativeSourcePaths) {
                 if (rel == null || rel.isBlank()) continue;
                 String r = rel.replace('\\', '/');
-                if (norm.endsWith(r) && r.length() > bestLen) { best = r; bestLen = r.length(); }
+                if (norm.endsWith(r) && r.length() > bestLen) {
+                    best = r;
+                    bestLen = r.length();
+                }
             }
             if (best != null) return best;
         }
@@ -381,10 +405,54 @@ public final class AstGraphUtils {
         return Math.min(m, t);
     }
 
-    public static int[] lines(CtElement el) {
-        try { var p = el.getPosition(); if (p.isValidPosition()) return new int[]{ p.getLine(), p.getEndLine() }; }
-        catch (Exception ignored) {}
-        return new int[]{ -1, -1 };
+    /**
+     * Best-effort line range for an element.
+     * First uses Spoon position line numbers; if they are unavailable or invalid,
+     * falls back to source offset -> line conversion using sourceLines.
+     * <p>
+     * Returns {-1, -1} when neither direct position nor source-backed fallback works.
+     */
+    public static int[] lines(CtElement el, Map<String, String[]> sourceLines, Path projectRoot) {
+        if (el == null) return new int[]{-1, -1};
+
+        try {
+            SourcePosition p = el.getPosition();
+            if (p == null) return new int[]{-1, -1};
+
+            int startLine = p.isValidPosition() ? p.getLine() : -1;
+            int endLine = p.isValidPosition() ? p.getEndLine() : -1;
+
+            if (startLine > 0 && endLine >= startLine) {
+                return new int[]{startLine, endLine};
+            }
+
+            String filePath = sourceFile(el);
+            String[] fileLines = findLines(sourceLines, filePath, projectRoot);
+            if (fileLines == null || fileLines.length == 0) {
+                return new int[]{startLine, endLine};
+            }
+
+            int sourceStart = p.getSourceStart();
+            int sourceEnd = p.getSourceEnd();
+
+            if (sourceStart < 0) {
+                return new int[]{startLine, endLine};
+            }
+
+            String full = String.join("\n", fileLines);
+            int computedStart = lineNumberAtOffset(full, sourceStart);
+            int computedEnd = sourceEnd >= sourceStart
+                    ? lineNumberAtOffset(full, sourceEnd)
+                    : computedStart;
+
+            if (computedStart > 0 && computedEnd >= computedStart) {
+                return new int[]{computedStart, computedEnd};
+            }
+
+            return new int[]{startLine, endLine};
+        } catch (Exception ignored) {
+            return new int[]{-1, -1};
+        }
     }
 
 
@@ -413,7 +481,7 @@ public final class AstGraphUtils {
         String norm = diffPath.replace('\\', '/');
         for (String known : graph.allFilePaths()) {
             String knownNorm = known.replace('\\', '/');
-            if (norm.equals(knownNorm))         return known;
+            if (norm.equals(knownNorm)) return known;
             if (norm.endsWith("/" + knownNorm)) return known;
             if (knownNorm.endsWith("/" + norm)) return known;
         }
@@ -495,42 +563,65 @@ public final class AstGraphUtils {
                 if (next == '*') {
                     i += 2;
                     while (i + 1 < n && !(s.charAt(i) == '*' && s.charAt(i + 1) == '/')) i++;
-                    if (i + 1 < n) i += 2; else i = n;
+                    if (i + 1 < n) i += 2;
+                    else i = n;
                     out.append(' ');
                     continue;
                 }
             }
             if (c == '"') {
                 if (i + 2 < n && s.charAt(i + 1) == '"' && s.charAt(i + 2) == '"') {
-                    out.append("\"\"\""); i += 3;
+                    out.append("\"\"\"");
+                    i += 3;
                     while (i < n) {
-                        if (i + 2 < n && s.charAt(i) == '"' && s.charAt(i+1) == '"' && s.charAt(i+2) == '"') {
-                            out.append("\"\"\""); i += 3; break;
+                        if (i + 2 < n && s.charAt(i) == '"' && s.charAt(i + 1) == '"' && s.charAt(i + 2) == '"') {
+                            out.append("\"\"\"");
+                            i += 3;
+                            break;
                         }
                         out.append(s.charAt(i++));
                     }
                     continue;
                 }
-                out.append(c); i++;
+                out.append(c);
+                i++;
                 while (i < n) {
-                    char c2 = s.charAt(i); out.append(c2);
-                    if (c2 == '\\' && i + 1 < n) { out.append(s.charAt(i + 1)); i += 2; continue; }
-                    if (c2 == '"') { i++; break; }
+                    char c2 = s.charAt(i);
+                    out.append(c2);
+                    if (c2 == '\\' && i + 1 < n) {
+                        out.append(s.charAt(i + 1));
+                        i += 2;
+                        continue;
+                    }
+                    if (c2 == '"') {
+                        i++;
+                        break;
+                    }
                     i++;
                 }
                 continue;
             }
             if (c == '\'') {
-                out.append(c); i++;
+                out.append(c);
+                i++;
                 while (i < n) {
-                    char c2 = s.charAt(i); out.append(c2);
-                    if (c2 == '\\' && i + 1 < n) { out.append(s.charAt(i + 1)); i += 2; continue; }
-                    if (c2 == '\'') { i++; break; }
+                    char c2 = s.charAt(i);
+                    out.append(c2);
+                    if (c2 == '\\' && i + 1 < n) {
+                        out.append(s.charAt(i + 1));
+                        i += 2;
+                        continue;
+                    }
+                    if (c2 == '\'') {
+                        i++;
+                        break;
+                    }
                     i++;
                 }
                 continue;
             }
-            out.append(c); i++;
+            out.append(c);
+            i++;
         }
         return out.toString();
     }
