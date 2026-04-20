@@ -582,7 +582,6 @@ public class GraphBuilderImpl implements GraphBuilder {
                         .map(c -> (spoon.reflect.code.CtJavaDoc) c)
                         .forEach(javadoc -> {
                             String file = AstGraphUtils.graphFilePath(el, projectRoot, repoPaths);
-                            int[] ln = AstGraphUtils.lines(el);
                             String ownerId = switch (el) {
                                 case CtType<?> t        -> AstGraphUtils.qualifiedName(t);
                                 case CtMethod<?> m      -> AstGraphUtils.typeMemberExecId(m);
@@ -596,6 +595,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                             String rawText   = javadoc.getContent();
                             int dot = rawText.indexOf('.');
                             String summary = dot >= 0 ? rawText.substring(0, dot + 1).strip() : rawText.strip();
+                            int[] ln = AstGraphUtils.lines(javadoc);
 
                             graph.addNode(new GraphNode(
                                     javadocId, NodeKind.JAVADOC, summary,
