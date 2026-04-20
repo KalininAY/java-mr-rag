@@ -33,7 +33,7 @@ class ProjectGraphSerializationTest {
                 EdgeKind.DECLARES,
                 "com.example.Foo#bar()",
                 "src/main/java/com/example/Foo.java",
-                2
+                2, 3
         );
         ProjectGraph g = ProjectGraph.reconstruct(List.of(n), List.of(e));
 

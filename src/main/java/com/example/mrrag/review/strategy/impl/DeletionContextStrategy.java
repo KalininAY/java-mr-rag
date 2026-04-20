@@ -65,7 +65,7 @@ public class DeletionContextStrategy implements ContextStrategy {
                 String usageLines = usageEdges.stream()
                         .filter(e -> e.kind() != EdgeKind.DECLARES)
                         .limit(10)
-                        .map(e -> e.filePath() + ":" + e.line())
+                        .map(e -> e.filePath() + ":" + e.startLine() + "-" + e.endLine())
                         .distinct()
                         .collect(Collectors.joining());
 

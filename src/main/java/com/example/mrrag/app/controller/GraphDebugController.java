@@ -158,7 +158,7 @@ public class GraphDebugController {
 
         List<Map<String, Object>> edgesAtLine = enclosing.stream()
                 .flatMap(enc -> graph.outgoing(enc.id()).stream()
-                        .filter(e -> normalized.equals(e.filePath()) && e.line() == line)
+                        .filter(e -> normalized.equals(e.filePath()) && e.startLine() == line)
                         .map(e -> {
                             GraphNode target = graph.nodes.get(e.callee());
                             Map<String, Object> m = new LinkedHashMap<>();

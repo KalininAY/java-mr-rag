@@ -173,7 +173,7 @@ public class ReviewSnapshotReader {
             ReviewSnapshotMeta meta = readMetaFromDir(dir);
             if (!namespace.equals(meta.namespace())) return false;
             if (!repo.equals(meta.repo()))           return false;
-            if (!mrIid.equals(meta.mrIid()))         return false;
+            if (mrIid  != meta.mrIid())         return false;
             // SHA check: skip if currentTargetSha is blank (force-match)
             if (currentTargetSha != null && !currentTargetSha.isBlank()
                     && !currentTargetSha.equals(meta.targetCommitSha())) {
