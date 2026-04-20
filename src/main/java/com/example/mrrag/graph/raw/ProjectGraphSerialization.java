@@ -105,7 +105,6 @@ public final class ProjectGraphSerialization {
         }
 
         GraphNode toGraphNode() {
-            // Pass null for bodyHash — compact constructor recomputes it from snippets
             return new GraphNode(
                     id,
                     NodeKind.valueOf(kind),
@@ -125,7 +124,8 @@ public final class ProjectGraphSerialization {
         public String kind;
         public String callee;
         public String filePath;
-        public int line;
+        public int startLine;
+        public int endLine;
 
         static EdgeSnapshot from(GraphEdge e) {
             EdgeSnapshot s = new EdgeSnapshot();
@@ -133,7 +133,8 @@ public final class ProjectGraphSerialization {
             s.kind = e.kind().name();
             s.callee = e.callee();
             s.filePath = e.filePath();
-            s.line = e.line();
+            s.startLine = e.startLine();
+            s.endLine = e.endLine();
             return s;
         }
 
@@ -143,7 +144,8 @@ public final class ProjectGraphSerialization {
                     EdgeKind.valueOf(kind),
                     callee,
                     filePath != null ? filePath : "",
-                    line
+                    startLine,
+                    endLine
             );
         }
     }
