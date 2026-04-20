@@ -21,82 +21,26 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 
-/**
- * Builds a rich symbol graph for a Java project using Spoon.
- *
- * <p>All ID computation, snippet extraction, and path-normalisation helpers
- * are delegated to {@link AstGraphUtils}.
- *
- * <p>The only public entry point for graph construction is
- * {@link #buildGraph(ProjectSourceProvider, boolean)}. The {@link ProjectKey} that
- * drives cache lookups is supplied by the provider itself via
- * {@link ProjectSourceProvider#projectKey()} — callers never construct keys
- * manually.
- *
- * <p>Performance notes:
- * <ul>
- *   <li>Sources are split into {@code N} import-aware batches
- *       ({@code N = availableProcessors}) by {@link SourceBatchPartitioner}.
- *       Files in the same package or connected via {@code import} statements
- *       are always co-located in the same batch, so Spoon can fully resolve
- *       intra-component type references and produce correct qualified-name IDs
- *       for callee nodes.  Each batch is parsed by an independent
- *       {@link Launcher} running in parallel via {@link ForkJoinPool#commonPool()}.
- *       Partial {@link ProjectGraph}s are merged after all batches complete.</li>
- *   <li>The independent {@code model.getElements()} passes in
- *       {@link #doBuildGraphFromModel} also run in parallel via
- *       {@link ForkJoinPool#commonPool()}.</li>
- *   <li>{@link ProjectGraphCacheStore#savePartitioned(ProjectKey, Map)}
- *       is dispatched asynchronously so the caller receives the graph
- *       immediately while the disk write happens in the background.</li>
- *   <li>{@link ProjectGraph} uses {@code ConcurrentHashMap} /
- *       {@code CopyOnWriteArrayList} and is safe for concurrent writes.</li>
- * </ul>
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class GraphBuilderImpl implements GraphBuilder {
 
-    // ------------------------------------------------------------------
-    // Dependencies & caches
-    // ------------------------------------------------------------------
-
     private final EdgeKindConfig edgeConfig;
     private final ProjectGraphCacheStore cacheStore;
-
-    /**
-     * In-memory cache keyed by {@link ProjectKey} (path + fingerprint).
-     */
     private final Map<ProjectKey, ProjectGraph> keyCache = new ConcurrentHashMap<>();
 
-    // ------------------------------------------------------------------
-    // Primary entry point (GraphBuilder interface)
-    // ------------------------------------------------------------------
-
-    /**
-     * Builds (or returns a cached) {@link ProjectGraph} for the given provider.
-     *
-     * <p>Cache lookup order:
-     * <ol>
-     *   <li>In-memory {@code keyCache}.</li>
-     *   <li>Disk {@code cacheStore}.</li>
-     *   <li>Build from sources, then populate both caches.</li>
-     * </ol>
-     */
     @Override
     public ProjectGraph buildGraph(ProjectSourceProvider provider, boolean force) {
         ProjectKey key = provider.projectKey();
         log.info("buildGraph: key={}", key);
 
-        // 1. in-memory cache
         ProjectGraph cached = keyCache.get(key);
         if (cached != null && !force) {
             log.debug("buildGraph: in-memory cache hit for {}", key);
             return cached;
         }
 
-        // 2. disk cache
         var loaded = cacheStore.tryLoadAllSegments(key);
         if (loaded.isPresent() && !force) {
             ProjectGraph main = loaded.get().getOrDefault(GraphSegmentIds.MAIN, new ProjectGraph());
@@ -105,7 +49,6 @@ public class GraphBuilderImpl implements GraphBuilder {
             return main;
         }
 
-        // 3. build from sources
         log.info("buildGraph: building from source via provider: {}",
                 provider.getClass().getSimpleName());
         List<ProjectSource> sources = provider.getSources();
@@ -116,7 +59,6 @@ public class GraphBuilderImpl implements GraphBuilder {
 
         keyCache.put(key, graph);
 
-        // async disk save — return the graph to caller immediately
         Map<String, ProjectGraph> segments = new LinkedHashMap<>();
         segments.put(GraphSegmentIds.MAIN, graph);
         CompletableFuture.runAsync(() -> {
@@ -131,10 +73,6 @@ public class GraphBuilderImpl implements GraphBuilder {
         return graph;
     }
 
-    // ------------------------------------------------------------------
-    // Invalidation
-    // ------------------------------------------------------------------
-
     @Override
     public void invalidate(ProjectKey key) {
         keyCache.remove(key);
@@ -143,33 +81,18 @@ public class GraphBuilderImpl implements GraphBuilder {
         log.debug("invalidate: deleted disk cache for {}", key);
     }
 
-    // ------------------------------------------------------------------
-    // Core: sources → Spoon model  (parallel import-aware batches)
-    // ------------------------------------------------------------------
-
-    /**
-     * Partitions {@code sources} into import-aware batches via
-     * {@link SourceBatchPartitioner}, then builds a {@link CtModel} for each
-     * batch in parallel and merges the resulting partial {@link ProjectGraph}s.
-     *
-     * <p>Files that share a package or are connected via {@code import} statements
-     * are always placed in the same batch, so Spoon can fully resolve
-     * intra-component type references.  Cross-batch edges are still preserved
-     * because {@link GraphEdge} stores the callee as a qualified-name string.
-     */
     private ProjectGraph doBuildGraphFromSources(List<ProjectSource> sources, Path classpathRoot) {
         if (sources.isEmpty()) {
             log.warn("doBuildGraphFromSources: empty source list, returning empty graph");
             return new ProjectGraph();
         }
 
-        int nThreads = 1; // Math.max(1, Runtime.getRuntime().availableProcessors());
+        int nThreads = 1;
         List<List<ProjectSource>> batches = SourceBatchPartitioner.partition(sources, nThreads);
 
         log.info("doBuildGraphFromSources: {} files -> {} import-aware batches (threads={})",
                 sources.size(), batches.size(), nThreads);
 
-        // Build one partial graph per batch in parallel
         List<CompletableFuture<ProjectGraph>> futures = batches.stream()
                 .map(batch -> CompletableFuture.supplyAsync(
                         () -> buildBatch(batch, classpathRoot),
@@ -182,7 +105,6 @@ public class GraphBuilderImpl implements GraphBuilder {
                 log.info("batch graph: {} nodes, {} edge-sources",
                         f.join().nodes.size(), f.join().edgesFrom.size()));
 
-        // Merge all partial graphs into one
         ProjectGraph merged = new ProjectGraph();
         futures.stream()
                 .map(CompletableFuture::join)
@@ -193,14 +115,6 @@ public class GraphBuilderImpl implements GraphBuilder {
         return merged;
     }
 
-    /**
-     * Builds a {@link ProjectGraph} for a single batch of source files.
-     * Each call creates an independent {@link Launcher} instance, so batches
-     * can safely run concurrently.
-     *
-     * <p>{@code setCommentEnabled(true)} is required so that Spoon attaches
-     * Javadoc comments to their owner elements (used by Pass 18).
-     */
     private ProjectGraph buildBatch(List<ProjectSource> sources, Path classpathRoot) {
         Map<String, String[]> sourceLines = new ConcurrentHashMap<>();
         for (ProjectSource src : sources) {
@@ -209,7 +123,7 @@ public class GraphBuilderImpl implements GraphBuilder {
 
         Launcher launcher = new Launcher();
         launcher.getEnvironment().setNoClasspath(true);
-        launcher.getEnvironment().setCommentEnabled(true);  // needed for Javadoc nodes (Pass 18)
+        launcher.getEnvironment().setCommentEnabled(true);
         launcher.getEnvironment().setAutoImports(false);
         launcher.getEnvironment().setIgnoreSyntaxErrors(true);
         launcher.getEnvironment().setLevel("ERROR");
@@ -237,18 +151,19 @@ public class GraphBuilderImpl implements GraphBuilder {
         return doBuildGraphFromModel(model, sourceLines, classpathRoot);
     }
 
-    /**
-     * Merges {@code source} into {@code target} in-place.
-     */
     private static void mergeGraphs(ProjectGraph target, ProjectGraph source) {
         source.nodes.values().forEach(target::addNode);
         source.edgesFrom.forEach((caller, edges) ->
                 edges.forEach(target::addEdge));
     }
 
-    // ------------------------------------------------------------------
-    // Core: Spoon model → ProjectGraph  (parallel passes)
-    // ------------------------------------------------------------------
+    private static GraphEdge edge(String caller, EdgeKind kind, String callee, String file, int[] lines) {
+        return new GraphEdge(caller, kind, callee, file, lines[0], lines[1]);
+    }
+
+    private static GraphEdge edgeAtLine(String caller, EdgeKind kind, String callee, String file, int line) {
+        return new GraphEdge(caller, kind, callee, file, line, line);
+    }
 
     @SuppressWarnings("unchecked")
     private ProjectGraph doBuildGraphFromModel(CtModel model, Map<String, String[]> sourceLines, Path projectRoot) {
@@ -257,7 +172,6 @@ public class GraphBuilderImpl implements GraphBuilder {
 
         List<Runnable> passes = new ArrayList<>();
 
-        // Pass 1: types (CLASS / INTERFACE / ANNOTATION)
         passes.add(() -> model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
             String id = AstGraphUtils.qualifiedName(type);
             if (id == null) return;
@@ -270,12 +184,11 @@ public class GraphBuilderImpl implements GraphBuilder {
                     AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], type, projectRoot),
                     AstGraphUtils.declarationOf(sourceLines, file, projectRoot, type.getPosition()), null));
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
-                type.getAnnotations().forEach(ann -> graph.addEdge(new GraphEdge(
+                type.getAnnotations().forEach(ann -> graph.addEdge(edgeAtLine(
                         id, EdgeKind.ANNOTATED_WITH,
                         ann.getAnnotationType().getQualifiedName(), file, ln[0])));
         }));
 
-        // Pass 2: EXTENDS / IMPLEMENTS
         if (edgeConfig.isEnabled(EdgeKind.EXTENDS) || edgeConfig.isEnabled(EdgeKind.IMPLEMENTS)) {
             passes.add(() -> model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
                 String id = AstGraphUtils.qualifiedName(type);
@@ -284,19 +197,18 @@ public class GraphBuilderImpl implements GraphBuilder {
                 int[] ln = AstGraphUtils.lines(type);
                 if (edgeConfig.isEnabled(EdgeKind.EXTENDS)) {
                     if (type instanceof CtClass<?> cls && cls.getSuperclass() != null)
-                        graph.addEdge(new GraphEdge(id, EdgeKind.EXTENDS,
+                        graph.addEdge(edgeAtLine(id, EdgeKind.EXTENDS,
                                 cls.getSuperclass().getQualifiedName(), file, ln[0]));
                     if (type instanceof CtInterface<?> iface)
                         iface.getSuperInterfaces().forEach(s -> graph.addEdge(
-                                new GraphEdge(id, EdgeKind.EXTENDS, s.getQualifiedName(), file, ln[0])));
+                                edgeAtLine(id, EdgeKind.EXTENDS, s.getQualifiedName(), file, ln[0])));
                 }
                 if (edgeConfig.isEnabled(EdgeKind.IMPLEMENTS) && type instanceof CtClass<?> cls)
                     cls.getSuperInterfaces().forEach(i -> graph.addEdge(
-                            new GraphEdge(id, EdgeKind.IMPLEMENTS, i.getQualifiedName(), file, ln[0])));
+                            edgeAtLine(id, EdgeKind.IMPLEMENTS, i.getQualifiedName(), file, ln[0])));
             }));
         }
 
-        // Pass 3: HAS_TYPE_PARAM / HAS_BOUND
         if (edgeConfig.isEnabled(EdgeKind.HAS_TYPE_PARAM)) {
             passes.add(() -> model.getElements(new TypeFilter<>(CtFormalTypeDeclarer.class)).forEach(declarer -> {
                 String ownerId = AstGraphUtils.formalDeclarerId(declarer);
@@ -310,21 +222,20 @@ public class GraphBuilderImpl implements GraphBuilder {
                             file, tpLn[0], tpLn[1],
                             AstGraphUtils.extractSource(sourceLines, file, tpLn[0], tpLn[1], tp, projectRoot),
                             AstGraphUtils.declarationOf(sourceLines, file, projectRoot, tp.getPosition()), null));
-                    graph.addEdge(new GraphEdge(ownerId, EdgeKind.HAS_TYPE_PARAM, tpId, file, ownerLn[0]));
+                    graph.addEdge(edgeAtLine(ownerId, EdgeKind.HAS_TYPE_PARAM, tpId, file, ownerLn[0]));
                     if (edgeConfig.isEnabled(EdgeKind.HAS_BOUND)) {
                         var sc = tp.getSuperclass();
                         if (sc != null && !sc.getQualifiedName().equals("java.lang.Object"))
-                            graph.addEdge(new GraphEdge(tpId, EdgeKind.HAS_BOUND,
+                            graph.addEdge(edgeAtLine(tpId, EdgeKind.HAS_BOUND,
                                     sc.getQualifiedName(), file, tpLn[0]));
                         tp.getSuperInterfaces().forEach(b -> graph.addEdge(
-                                new GraphEdge(tpId, EdgeKind.HAS_BOUND,
+                                edgeAtLine(tpId, EdgeKind.HAS_BOUND,
                                         b.getQualifiedName(), file, tpLn[0])));
                     }
                 });
             }));
         }
 
-        // Pass 4: methods
         passes.add(() -> model.getElements(new TypeFilter<>(CtMethod.class)).forEach(m -> {
             String id = AstGraphUtils.typeMemberExecId(m);
             if (id == null) return;
@@ -336,18 +247,17 @@ public class GraphBuilderImpl implements GraphBuilder {
                     AstGraphUtils.declarationOf(sourceLines, file, projectRoot, m.getPosition()), null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = AstGraphUtils.qualifiedName(m.getDeclaringType());
-                if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
+                if (cls != null) graph.addEdge(edgeAtLine(cls, EdgeKind.DECLARES, id, file, ln[0]));
             }
             m.getTopDefinitions().stream().findFirst().filter(top -> top != m).ifPresent(sup ->
-                    graph.addEdge(new GraphEdge(id, EdgeKind.OVERRIDES,
+                    graph.addEdge(edgeAtLine(id, EdgeKind.OVERRIDES,
                             AstGraphUtils.typeMemberExecId((CtTypeMember) sup), file, ln[0])));
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
-                m.getAnnotations().forEach(ann -> graph.addEdge(new GraphEdge(
+                m.getAnnotations().forEach(ann -> graph.addEdge(edgeAtLine(
                         id, EdgeKind.ANNOTATED_WITH,
                         ann.getAnnotationType().getQualifiedName(), file, ln[0])));
         }));
 
-        // Pass 5: constructors
         passes.add(() -> model.getElements(new TypeFilter<>(CtConstructor.class)).forEach(c -> {
             String id = AstGraphUtils.typeMemberExecId(c);
             if (id == null) return;
@@ -359,11 +269,10 @@ public class GraphBuilderImpl implements GraphBuilder {
                     AstGraphUtils.declarationOf(sourceLines, file, projectRoot, c.getPosition()), null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = AstGraphUtils.qualifiedName(c.getDeclaringType());
-                if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
+                if (cls != null) graph.addEdge(edgeAtLine(cls, EdgeKind.DECLARES, id, file, ln[0]));
             }
         }));
 
-        // Pass 6: fields
         passes.add(() -> model.getElements(new TypeFilter<>(CtField.class)).forEach(field -> {
             if (field.getDeclaringType() instanceof CtAnnotationType) return;
             String id = AstGraphUtils.fieldId(field);
@@ -376,15 +285,14 @@ public class GraphBuilderImpl implements GraphBuilder {
                     AstGraphUtils.declarationOf(sourceLines, file, projectRoot, field.getPosition()), null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = AstGraphUtils.qualifiedName(field.getDeclaringType());
-                if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, ln[0]));
+                if (cls != null) graph.addEdge(edgeAtLine(cls, EdgeKind.DECLARES, id, file, ln[0]));
             }
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
-                field.getAnnotations().forEach(ann -> graph.addEdge(new GraphEdge(
+                field.getAnnotations().forEach(ann -> graph.addEdge(edgeAtLine(
                         id, EdgeKind.ANNOTATED_WITH,
                         ann.getAnnotationType().getQualifiedName(), file, ln[0])));
         }));
 
-        // Pass 7: local variables
         passes.add(() -> model.getElements(new TypeFilter<>(CtVariable.class)).forEach(v -> {
             if (v instanceof CtField) return;
             String id = AstGraphUtils.varId(v);
@@ -397,7 +305,6 @@ public class GraphBuilderImpl implements GraphBuilder {
                     AstGraphUtils.declarationOf(sourceLines, file, projectRoot, v.getPosition()), null));
         }));
 
-        // Pass 8: annotation attributes
         if (edgeConfig.isEnabled(EdgeKind.ANNOTATION_ATTR)) {
             passes.add(() -> model.getElements(new TypeFilter<>(CtAnnotationType.class)).forEach(ann -> {
                 String annoId = AstGraphUtils.qualifiedName(ann);
@@ -413,12 +320,11 @@ public class GraphBuilderImpl implements GraphBuilder {
                             m.getSimpleName(), file, ln[0], ln[1],
                             AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], m, projectRoot),
                             AstGraphUtils.declarationOf(sourceLines, file, projectRoot, m.getPosition()), null));
-                    graph.addEdge(new GraphEdge(annoId, EdgeKind.ANNOTATION_ATTR, attrId, file, ln[0]));
+                    graph.addEdge(edgeAtLine(annoId, EdgeKind.ANNOTATION_ATTR, attrId, file, ln[0]));
                 });
             }));
         }
 
-        // Pass 9: lambdas
         passes.add(() -> model.getElements(new TypeFilter<>(CtLambda.class)).forEach(lambda -> {
             String file = AstGraphUtils.graphFilePath(lambda, projectRoot, repoPaths);
             int[] ln = AstGraphUtils.lines(lambda);
@@ -431,57 +337,53 @@ public class GraphBuilderImpl implements GraphBuilder {
                 CtMethod<?> em = lambda.getParent(CtMethod.class);
                 if (em != null) {
                     String enc = AstGraphUtils.typeMemberExecId(em);
-                    if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0]));
+                    if (enc != null) graph.addEdge(edgeAtLine(enc, EdgeKind.DECLARES, id, file, ln[0]));
                 } else {
                     CtConstructor<?> ec = lambda.getParent(CtConstructor.class);
                     if (ec != null) {
                         String enc = AstGraphUtils.typeMemberExecId(ec);
-                        if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0]));
+                        if (enc != null) graph.addEdge(edgeAtLine(enc, EdgeKind.DECLARES, id, file, ln[0]));
                     }
                 }
             }
         }));
 
-        // Pass 10: invocations
         if (edgeConfig.isEnabled(EdgeKind.INVOKES))
             passes.add(() -> model.getElements(new TypeFilter<>(CtInvocation.class)).forEach(inv -> {
                 String callerId = AstGraphUtils.nearestExecId(inv);
                 if (callerId == null) return;
                 String file = AstGraphUtils.graphFilePath(inv, projectRoot, repoPaths);
-                graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES,
+                graph.addEdge(edge(callerId, EdgeKind.INVOKES,
                         AstGraphUtils.execRefIdForChainedInvocation(inv),
-                        file, AstGraphUtils.posLine(inv)));
+                        file, AstGraphUtils.lines(inv)));
             }));
 
-        // Pass 11: constructor calls
         if (edgeConfig.isEnabled(EdgeKind.INSTANTIATES) || edgeConfig.isEnabled(EdgeKind.INSTANTIATES_ANONYMOUS))
             passes.add(() -> model.getElements(new TypeFilter<>(CtConstructorCall.class)).forEach(cc -> {
                 String callerId = AstGraphUtils.nearestExecId(cc);
                 if (callerId == null) return;
                 String file = AstGraphUtils.graphFilePath(cc, projectRoot, repoPaths);
-                int line = AstGraphUtils.posLine(cc);
+                int[] lines = AstGraphUtils.lines(cc);
                 String typeId = cc.getExecutable().getDeclaringType() != null
                         ? cc.getExecutable().getDeclaringType().getQualifiedName() : "?";
                 EdgeKind ek = (cc instanceof CtNewClass) ? EdgeKind.INSTANTIATES_ANONYMOUS : EdgeKind.INSTANTIATES;
                 if (edgeConfig.isEnabled(ek))
-                    graph.addEdge(new GraphEdge(callerId, ek, typeId, file, line));
+                    graph.addEdge(edge(callerId, ek, typeId, file, lines));
                 if (edgeConfig.isEnabled(EdgeKind.INVOKES))
-                    graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES,
-                            AstGraphUtils.execRefId(cc.getExecutable(), cc), file, line));
+                    graph.addEdge(edge(callerId, EdgeKind.INVOKES,
+                            AstGraphUtils.execRefId(cc.getExecutable(), cc), file, lines));
             }));
 
-        // Pass 12: method references
         if (edgeConfig.isEnabled(EdgeKind.REFERENCES_METHOD))
             passes.add(() -> model.getElements(new TypeFilter<>(CtExecutableReferenceExpression.class)).forEach(ref -> {
                 String callerId = AstGraphUtils.nearestExecId(ref);
                 if (callerId == null) return;
                 String file = AstGraphUtils.graphFilePath(ref, projectRoot, repoPaths);
-                graph.addEdge(new GraphEdge(callerId, EdgeKind.REFERENCES_METHOD,
+                graph.addEdge(edge(callerId, EdgeKind.REFERENCES_METHOD,
                         AstGraphUtils.execRefId(ref.getExecutable(), ref),
-                        file, AstGraphUtils.posLine(ref)));
+                        file, AstGraphUtils.lines(ref)));
             }));
 
-        // Pass 13: field reads/writes
         if (edgeConfig.isEnabled(EdgeKind.READS_FIELD) || edgeConfig.isEnabled(EdgeKind.WRITES_FIELD))
             passes.add(() -> model.getElements(new TypeFilter<>(CtFieldAccess.class)).forEach(fa -> {
                 String execId = AstGraphUtils.nearestExecId(fa);
@@ -493,10 +395,9 @@ public class GraphBuilderImpl implements GraphBuilder {
                         : "?." + ref.getSimpleName();
                 EdgeKind ek = (fa instanceof CtFieldWrite) ? EdgeKind.WRITES_FIELD : EdgeKind.READS_FIELD;
                 if (edgeConfig.isEnabled(ek))
-                    graph.addEdge(new GraphEdge(execId, ek, fId, file, AstGraphUtils.posLine(fa)));
+                    graph.addEdge(edge(execId, ek, fId, file, AstGraphUtils.lines(fa)));
             }));
 
-        // Pass 14: local var reads/writes
         if (edgeConfig.isEnabled(EdgeKind.READS_LOCAL_VAR) || edgeConfig.isEnabled(EdgeKind.WRITES_LOCAL_VAR))
             passes.add(() -> model.getElements(new TypeFilter<>(CtVariableAccess.class)).forEach(va -> {
                 if (va instanceof CtFieldAccess) return;
@@ -506,10 +407,9 @@ public class GraphBuilderImpl implements GraphBuilder {
                 String vId = AstGraphUtils.varRefId(va.getVariable());
                 EdgeKind ek = (va instanceof CtVariableWrite) ? EdgeKind.WRITES_LOCAL_VAR : EdgeKind.READS_LOCAL_VAR;
                 if (edgeConfig.isEnabled(ek))
-                    graph.addEdge(new GraphEdge(execId, ek, vId, file, AstGraphUtils.posLine(va)));
+                    graph.addEdge(edge(execId, ek, vId, file, AstGraphUtils.lines(va)));
             }));
 
-        // Pass 15: throws
         if (edgeConfig.isEnabled(EdgeKind.THROWS))
             passes.add(() -> model.getElements(new TypeFilter<>(CtThrow.class)).forEach(thr -> {
                 String execId = AstGraphUtils.nearestExecId(thr);
@@ -519,27 +419,21 @@ public class GraphBuilderImpl implements GraphBuilder {
                 String typeId = (thrown instanceof CtConstructorCall<?> cc
                         && cc.getExecutable().getDeclaringType() != null)
                         ? cc.getExecutable().getDeclaringType().getQualifiedName() : "?";
-                graph.addEdge(new GraphEdge(execId, EdgeKind.THROWS, typeId,
-                        file, AstGraphUtils.posLine(thr)));
+                graph.addEdge(edge(execId, EdgeKind.THROWS, typeId,
+                        file, AstGraphUtils.lines(thr)));
             }));
 
-        // Pass 16: type references
         if (edgeConfig.isEnabled(EdgeKind.REFERENCES_TYPE))
             passes.add(() -> model.getElements(new TypeFilter<>(CtTypeAccess.class)).forEach(ta -> {
                 String execId = AstGraphUtils.nearestExecId(ta);
                 if (execId == null) return;
                 if (ta.getAccessedType() == null) return;
                 String file = AstGraphUtils.graphFilePath(ta, projectRoot, repoPaths);
-                graph.addEdge(new GraphEdge(execId, EdgeKind.REFERENCES_TYPE,
+                graph.addEdge(edge(execId, EdgeKind.REFERENCES_TYPE,
                         ta.getAccessedType().getQualifiedName(),
-                        file, AstGraphUtils.posLine(ta)));
+                        file, AstGraphUtils.lines(ta)));
             }));
 
-        // Pass 17: import statements → IMPORT nodes + HAS_IMPORT edges
-        //
-        // Real CtImportKind constants (spoon.reflect.declaration.CtImportKind):
-        //   TYPE, ALL_TYPES, ALL_STATIC_MEMBERS, FIELD, METHOD, UNRESOLVED, MODULE
-        // Static imports use: FIELD, METHOD, ALL_STATIC_MEMBERS.
         if (edgeConfig.isEnabled(EdgeKind.HAS_IMPORT)) {
             passes.add(() -> model.getElements(new TypeFilter<>(CtCompilationUnit.class)).forEach(cu -> {
                 String file = cu.getFile() != null
@@ -563,12 +457,11 @@ public class GraphBuilderImpl implements GraphBuilder {
                             importId, NodeKind.IMPORT, ref,
                             file, line, line,
                             snippet, snippet, null));
-                    graph.addEdge(new GraphEdge(ownerId, EdgeKind.HAS_IMPORT, importId, file, line));
+                    graph.addEdge(edgeAtLine(ownerId, EdgeKind.HAS_IMPORT, importId, file, line));
                 });
             }));
         }
 
-        // Pass 18: Javadoc comments → JAVADOC nodes + HAS_JAVADOC edges
         passes.add(() -> {
             List<CtElement> candidates = new ArrayList<>();
             candidates.addAll(model.getElements(new TypeFilter<>(CtType.class)));
@@ -582,6 +475,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                         .map(c -> (spoon.reflect.code.CtJavaDoc) c)
                         .forEach(javadoc -> {
                             String file = AstGraphUtils.graphFilePath(el, projectRoot, repoPaths);
+                            int[] ln = AstGraphUtils.lines(el);
                             String ownerId = switch (el) {
                                 case CtType<?> t        -> AstGraphUtils.qualifiedName(t);
                                 case CtMethod<?> m      -> AstGraphUtils.typeMemberExecId(m);
@@ -595,13 +489,12 @@ public class GraphBuilderImpl implements GraphBuilder {
                             String rawText   = javadoc.getContent();
                             int dot = rawText.indexOf('.');
                             String summary = dot >= 0 ? rawText.substring(0, dot + 1).strip() : rawText.strip();
-                            int[] ln = AstGraphUtils.lines(javadoc);
 
                             graph.addNode(new GraphNode(
                                     javadocId, NodeKind.JAVADOC, summary,
                                     file, ln[0], ln[0],
                                     rawText, summary, null));
-                            graph.addEdge(new GraphEdge(
+                            graph.addEdge(edgeAtLine(
                                     ownerId, EdgeKind.HAS_JAVADOC, javadocId, file, ln[0]));
                         });
             });
