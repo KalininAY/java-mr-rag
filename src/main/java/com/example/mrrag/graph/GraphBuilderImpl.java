@@ -169,7 +169,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             String id = AstGraphUtils.qualifiedName(type);
             if (id == null) return;
             String file = AstGraphUtils.graphFilePath(type, projectRoot, repoPaths);
-            int[] ln = AstGraphUtils.lines(type);
+            int[] ln = AstGraphUtils.lines(type, sourceLines, projectRoot);
             NodeKind kind = (type instanceof CtAnnotationType) ? NodeKind.ANNOTATION
                     : (type instanceof CtInterface) ? NodeKind.INTERFACE
                     : NodeKind.CLASS;
@@ -178,7 +178,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                     AstGraphUtils.declarationOf(sourceLines, file, projectRoot, type.getPosition()), null));
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
                 type.getAnnotations().forEach(ann -> {
-                    int[] lines = AstGraphUtils.lines(ann);
+                    int[] lines = AstGraphUtils.lines(ann, sourceLines, projectRoot);
                     graph.addEdge(new GraphEdge(
                             id, EdgeKind.ANNOTATED_WITH,
                             ann.getAnnotationType().getQualifiedName(), file, lines[0], lines[1]));
@@ -192,14 +192,14 @@ public class GraphBuilderImpl implements GraphBuilder {
                 String file = AstGraphUtils.graphFilePath(type, projectRoot, repoPaths);
                 if (edgeConfig.isEnabled(EdgeKind.EXTENDS)) {
                     if (type instanceof CtClass<?> cls && cls.getSuperclass() != null) {
-                        int[] lines = AstGraphUtils.lines(cls);
+                        int[] lines = AstGraphUtils.lines(cls, sourceLines, projectRoot);
 
                         graph.addEdge(new GraphEdge(id, EdgeKind.EXTENDS,
                                 cls.getSuperclass().getQualifiedName(), file, lines[0], lines[0]));
                     }
                     if (type instanceof CtInterface<?> iface) {
                         iface.getSuperInterfaces().forEach(s -> {
-                            int[] lines = AstGraphUtils.lines(s);
+                            int[] lines = AstGraphUtils.lines(s, sourceLines, projectRoot);
                             graph.addEdge(new GraphEdge(id, EdgeKind.EXTENDS,
                                     s.getQualifiedName(), file, lines[0], lines[0]));
                         });
@@ -207,7 +207,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                 }
                 if (edgeConfig.isEnabled(EdgeKind.IMPLEMENTS) && type instanceof CtClass<?> cls)
                     cls.getSuperInterfaces().forEach(i -> {
-                        int[] lines = AstGraphUtils.lines(i);
+                        int[] lines = AstGraphUtils.lines(i, sourceLines, projectRoot);
                         graph.addEdge(new GraphEdge(id, EdgeKind.IMPLEMENTS,
                                 i.getQualifiedName(), file, lines[0], lines[0]));
                     });
@@ -220,7 +220,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                 if (ownerId == null) return;
                 String file = AstGraphUtils.graphFilePath(declarer, projectRoot, repoPaths);
                 declarer.getFormalCtTypeParameters().forEach(tp -> {
-                    int[] tpLn = AstGraphUtils.lines(tp);
+                    int[] tpLn = AstGraphUtils.lines(tp, sourceLines, projectRoot);
                     String tpId = AstGraphUtils.typeParamId(ownerId, tp);
                     graph.addNode(new GraphNode(tpId, NodeKind.TYPE_PARAM, tp.getSimpleName(),
                             file, tpLn[0], tpLn[1],
@@ -246,7 +246,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             String id = AstGraphUtils.typeMemberExecId(m);
             if (id == null) return;
             String file = AstGraphUtils.graphFilePath(m, projectRoot, repoPaths);
-            int[] ln = AstGraphUtils.lines(m);
+            int[] ln = AstGraphUtils.lines(m, sourceLines, projectRoot);
             graph.addNode(new GraphNode(id, NodeKind.METHOD, m.getSimpleName(),
                     file, ln[0], ln[1],
                     AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], m, projectRoot),
@@ -254,17 +254,17 @@ public class GraphBuilderImpl implements GraphBuilder {
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 String cls = AstGraphUtils.qualifiedName(m.getDeclaringType());
                 int startLine = ln[0];
-                int endLine = AstGraphUtils.lines(m.getBody())[0];
+                int endLine = AstGraphUtils.lines(m.getBody(), sourceLines, projectRoot)[0];
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, startLine, endLine));
             }
             m.getTopDefinitions().stream().findFirst().filter(top -> top != m).ifPresent(sup -> {
-                int[] lines = AstGraphUtils.lines((CtTypeMember) sup);
+                int[] lines = AstGraphUtils.lines((CtTypeMember) sup, sourceLines, projectRoot);
                 graph.addEdge(new GraphEdge(id, EdgeKind.OVERRIDES,
                         AstGraphUtils.typeMemberExecId((CtTypeMember) sup), file, lines[0], lines[1]));
             });
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
                 m.getAnnotations().forEach(ann -> {
-                    int[] lines = AstGraphUtils.lines(ann);
+                    int[] lines = AstGraphUtils.lines(ann, sourceLines, projectRoot);
                     graph.addEdge(new GraphEdge(id, EdgeKind.ANNOTATED_WITH,
                             ann.getAnnotationType().getQualifiedName(), file, lines[0], lines[1]));
                 });
@@ -274,14 +274,14 @@ public class GraphBuilderImpl implements GraphBuilder {
             String id = AstGraphUtils.typeMemberExecId(c);
             if (id == null) return;
             String file = AstGraphUtils.graphFilePath(c, projectRoot, repoPaths);
-            int[] ln = AstGraphUtils.lines(c);
+            int[] ln = AstGraphUtils.lines(c, sourceLines, projectRoot);
             graph.addNode(new GraphNode(id, NodeKind.CONSTRUCTOR, c.getSimpleName(),
                     file, ln[0], ln[1],
                     AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], c, projectRoot),
                     AstGraphUtils.declarationOf(sourceLines, file, projectRoot, c.getPosition()), null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
                 int startLine = ln[0];
-                int endLine = AstGraphUtils.lines(c.getBody())[0];
+                int endLine = AstGraphUtils.lines(c.getBody(), sourceLines, projectRoot)[0];
                 String cls = AstGraphUtils.qualifiedName(c.getDeclaringType());
                 if (cls != null) graph.addEdge(new GraphEdge(cls, EdgeKind.DECLARES, id, file, startLine, endLine));
             }
@@ -292,7 +292,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             String id = AstGraphUtils.fieldId(field);
             if (id == null) return;
             String file = AstGraphUtils.graphFilePath(field, projectRoot, repoPaths);
-            int[] ln = AstGraphUtils.lines(field);
+            int[] ln = AstGraphUtils.lines(field, sourceLines, projectRoot);
             graph.addNode(new GraphNode(id, NodeKind.FIELD, field.getSimpleName(),
                     file, ln[0], ln[1],
                     AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], field, projectRoot),
@@ -303,7 +303,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             }
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
                 field.getAnnotations().forEach(ann -> {
-                    int[] lines = AstGraphUtils.lines(ann);
+                    int[] lines = AstGraphUtils.lines(ann, sourceLines, projectRoot);
                     graph.addEdge(new GraphEdge(
                             id, EdgeKind.ANNOTATED_WITH,
                             ann.getAnnotationType().getQualifiedName(), file, lines[0], lines[1]));
@@ -315,7 +315,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             String id = AstGraphUtils.varId(v);
             if (id == null) return;
             String file = AstGraphUtils.graphFilePath(v, projectRoot, repoPaths);
-            int[] ln = AstGraphUtils.lines(v);
+            int[] ln = AstGraphUtils.lines(v, sourceLines, projectRoot);
             graph.addNode(new GraphNode(id, NodeKind.VARIABLE, v.getSimpleName(),
                     file, ln[0], ln[1],
                     AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], v, projectRoot),
@@ -332,7 +332,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                         (Collection<CtMethod<?>>) (Collection<?>) ann.getMethods();
                 methods.forEach(m -> {
                     String attrId = annoId + "#" + m.getSimpleName();
-                    int[] ln = AstGraphUtils.lines(m);
+                    int[] ln = AstGraphUtils.lines(m, sourceLines, projectRoot);
                     graph.addNode(new GraphNode(attrId, NodeKind.ANNOTATION_ATTRIBUTE,
                             m.getSimpleName(), file, ln[0], ln[1],
                             AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1], m, projectRoot),
@@ -344,7 +344,7 @@ public class GraphBuilderImpl implements GraphBuilder {
 
         passes.add(() -> model.getElements(new TypeFilter<>(CtLambda.class)).forEach(lambda -> {
             String file = AstGraphUtils.graphFilePath(lambda, projectRoot, repoPaths);
-            int[] ln = AstGraphUtils.lines(lambda);
+            int[] ln = AstGraphUtils.lines(lambda, sourceLines, projectRoot);
             String id = "lambda@" + file + ":" + ln[0];
             graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb",
                     file, ln[0], ln[1],
@@ -370,7 +370,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                 String callerId = AstGraphUtils.nearestExecId(inv);
                 if (callerId == null) return;
                 String file = AstGraphUtils.graphFilePath(inv, projectRoot, repoPaths);
-                int[] lines = AstGraphUtils.lines(inv);
+                int[] lines = AstGraphUtils.lines(inv, sourceLines, projectRoot);
                 graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES,
                         AstGraphUtils.execRefIdForChainedInvocation(inv),
                         file, lines[0], lines[1]));
@@ -381,7 +381,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                 String callerId = AstGraphUtils.nearestExecId(cc);
                 if (callerId == null) return;
                 String file = AstGraphUtils.graphFilePath(cc, projectRoot, repoPaths);
-                int[] lines = AstGraphUtils.lines(cc);
+                int[] lines = AstGraphUtils.lines(cc, sourceLines, projectRoot);
                 String typeId = cc.getExecutable().getDeclaringType() != null
                         ? cc.getExecutable().getDeclaringType().getQualifiedName() : "?";
                 EdgeKind ek = (cc instanceof CtNewClass) ? EdgeKind.INSTANTIATES_ANONYMOUS : EdgeKind.INSTANTIATES;
@@ -397,7 +397,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                 String callerId = AstGraphUtils.nearestExecId(ref);
                 if (callerId == null) return;
                 String file = AstGraphUtils.graphFilePath(ref, projectRoot, repoPaths);
-                int[] lines = AstGraphUtils.lines(ref);
+                int[] lines = AstGraphUtils.lines(ref, sourceLines, projectRoot);
                 graph.addEdge(new GraphEdge(callerId, EdgeKind.REFERENCES_METHOD,
                         AstGraphUtils.execRefId(ref.getExecutable(), ref),
                         file, lines[0], lines[1]));
@@ -414,7 +414,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                         : "?." + ref.getSimpleName();
                 EdgeKind ek = (fa instanceof CtFieldWrite) ? EdgeKind.WRITES_FIELD : EdgeKind.READS_FIELD;
                 if (edgeConfig.isEnabled(ek)) {
-                    int[] lines = AstGraphUtils.lines(fa);
+                    int[] lines = AstGraphUtils.lines(fa, sourceLines, projectRoot);
                     graph.addEdge(new GraphEdge(execId, ek, fId, file, lines[0], lines[1]));
                 }
             }));
@@ -428,7 +428,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                 String vId = AstGraphUtils.varRefId(va.getVariable());
                 EdgeKind ek = (va instanceof CtVariableWrite) ? EdgeKind.WRITES_LOCAL_VAR : EdgeKind.READS_LOCAL_VAR;
                 if (edgeConfig.isEnabled(ek)) {
-                    int[] lines = AstGraphUtils.lines(va);
+                    int[] lines = AstGraphUtils.lines(va, sourceLines, projectRoot);
                     graph.addEdge(new GraphEdge(execId, ek, vId, file, lines[0], lines[1]));
                 }
             }));
@@ -442,7 +442,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                 String typeId = (thrown instanceof CtConstructorCall<?> cc
                         && cc.getExecutable().getDeclaringType() != null)
                         ? cc.getExecutable().getDeclaringType().getQualifiedName() : "?";
-                int[] lines = AstGraphUtils.lines(thr);
+                int[] lines = AstGraphUtils.lines(thr, sourceLines, projectRoot);
                 graph.addEdge(new GraphEdge(execId, EdgeKind.THROWS, typeId,
                         file, lines[0], lines[1]));
             }));
@@ -453,7 +453,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                 if (execId == null) return;
                 if (ta.getAccessedType() == null) return;
                 String file = AstGraphUtils.graphFilePath(ta, projectRoot, repoPaths);
-                int[] lines = AstGraphUtils.lines(ta);
+                int[] lines = AstGraphUtils.lines(ta, sourceLines, projectRoot);
                 graph.addEdge(new GraphEdge(execId, EdgeKind.REFERENCES_TYPE,
                         ta.getAccessedType().getQualifiedName(),
                         file, lines[0], lines[1]));
@@ -472,7 +472,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                 cu.getImports().forEach(imp -> {
                     String ref = imp.getReference().toString();
                     String importId = "import@" + file + ":" + ref;
-                    int[] lines = AstGraphUtils.lines(imp);
+                    int[] lines = AstGraphUtils.lines(imp, sourceLines, projectRoot);
                     CtImportKind kind = imp.getImportKind();
                     boolean isStatic = kind == CtImportKind.METHOD
                             || kind == CtImportKind.FIELD
@@ -513,7 +513,7 @@ public class GraphBuilderImpl implements GraphBuilder {
                             String rawText = javadoc.getContent();
                             int dot = rawText.indexOf('.');
                             String summary = dot >= 0 ? rawText.substring(0, dot + 1).strip() : rawText.strip();
-                            int[] ln = AstGraphUtils.lines(javadoc);
+                            int[] ln = AstGraphUtils.lines(javadoc, sourceLines, projectRoot);
 
                             graph.addNode(new GraphNode(
                                     javadocId, NodeKind.JAVADOC, summary,
