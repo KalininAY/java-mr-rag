@@ -611,6 +611,63 @@ public final class AstGraphUtils {
                 .collect(Collectors.joining("\n")));
     }
 
+    // ------------------------------------------------------------------
+    // Import parsing helpers
+    // ------------------------------------------------------------------
+
+    /**
+     * Парсит строку импорта из исходников когда Spoon не может разрезолвить
+     * ссылку ({@link spoon.reflect.declaration.CtImport#getReference()} == null).
+     * Это происходит в no-classpath режиме для внешних зависимостей.
+     * <p>
+     * Возвращает {@code null}, если строку не удалось извлечь или она не является импортом.
+     *
+     * @param sourceLines карта путь -> строки файла
+     * @param filePath    граф-относительный путь к файлу
+     * @param projectRoot опциональный корень проекта
+     * @param lineNumber  1-based номер строки (из {@code imp.getPosition().getLine()})
+     * @return полное имя из импорта (например {@code "java.util.List"}), либо {@code null}
+     */
+    public static String parseImportRefFromSource(Map<String, String[]> sourceLines,
+                                                   String filePath,
+                                                   Path projectRoot,
+                                                   int lineNumber) {
+        if (lineNumber < 1 || filePath == null || filePath.isBlank()) return null;
+        String[] lines = findLines(sourceLines, filePath, projectRoot);
+        if (lines == null || lineNumber > lines.length) return null;
+
+        String raw = lines[lineNumber - 1].trim();
+        if (!raw.startsWith("import ")) return null;
+
+        String ref = raw
+                .replaceFirst("^import\\s+static\\s+", "")
+                .replaceFirst("^import\\s+", "")
+                .replace(";", "")
+                .trim();
+        return ref.isBlank() ? null : ref;
+    }
+
+    /**
+     * Определяет является ли импорт статическим по исходной строке.
+     * Используется как fallback когда {@link spoon.reflect.declaration.CtImport#getImportKind()}
+     * ненадёжен из-за неразрезолвленной ссылки.
+     *
+     * @param sourceLines карта путь -> строки файла
+     * @param filePath    граф-относительный путь к файлу
+     * @param projectRoot опциональный корень проекта
+     * @param lineNumber  1-based номер строки
+     * @return {@code true} если строка содержит {@code import static}
+     */
+    public static boolean isStaticImportBySource(Map<String, String[]> sourceLines,
+                                                  String filePath,
+                                                  Path projectRoot,
+                                                  int lineNumber) {
+        if (lineNumber < 1 || filePath == null || filePath.isBlank()) return false;
+        String[] lines = findLines(sourceLines, filePath, projectRoot);
+        if (lines == null || lineNumber > lines.length) return false;
+        return lines[lineNumber - 1].contains("import static");
+    }
+
     /**
      * Removes line and block comments (including Javadoc) from a Java source fragment,
      * without touching text inside string/char literals or text blocks.
