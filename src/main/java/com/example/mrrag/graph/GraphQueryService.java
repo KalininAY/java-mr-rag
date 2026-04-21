@@ -1,43 +1,17 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.graph.model.*;
-import com.example.mrrag.review.model.ChangedLine;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class GraphQueryService {
-
-    private static final Pattern IMPORT_PATTERN =
-            Pattern.compile("^\\s*import\\s+(?:static\\s+)?([\\w.]+)\\s*;");
-
-    public List<GraphNode> methodsInFile(ProjectGraph graph, String relPath) {
-        return graph.nodes.values().stream()
-                .filter(n -> n.kind() == NodeKind.METHOD && relPath.equals(n.filePath()))
-                .toList();
-    }
-
-    public Optional<GraphNode> findContainingMethod(ProjectGraph graph, String relPath, int lineNo) {
-        return methodsInFile(graph, relPath).stream()
-                .filter(m -> m.startLine() <= lineNo && m.endLine() >= lineNo)
-                .min(Comparator.comparingInt(m -> m.endLine() - m.startLine()));
-    }
-
-    public Optional<GraphNode> findTopLevelType(ProjectGraph graph, String relPath) {
-        List<GraphNode> types = graph.nodes.values().stream()
-                .filter(n -> (n.kind() == NodeKind.CLASS || n.kind() == NodeKind.INTERFACE)
-                        && relPath.equals(n.filePath()))
-                .toList();
-        return types.size() == 1 ? Optional.of(types.get(0)) : Optional.empty();
-    }
 
     public List<GraphNode> getNodesWithLine(String filePath, int line, ProjectGraph graph) {
         if (line <= 0) return List.of();
@@ -50,6 +24,15 @@ public class GraphQueryService {
 
         var withoutBody = partitioned.get(false);
         var withBody = partitioned.get(true);
+
+        for (List<GraphEdge> edges : graph.edgesFrom.values()) {
+            for (GraphEdge edge : edges) {
+                if (edge.startLine() <= line && edge.endLine() >= line && filePath.equals(edge.filePath())) {
+                    GraphNode callee = graph.nodes.get(edge.callee());
+                    if (callee != null) withoutBody.add(callee);
+                }
+            }
+        }
 
         // Если нет узлов без тела (переменных, полей, ...),
         // то добавляем узел с самым коротким телом (метод, лямбда, класс, ...)
@@ -68,27 +51,7 @@ public class GraphQueryService {
 //                .filter(n -> filePath.equals(n.filePath()) && n.startLine() <= line && n.endLine() >= line && (n.kind() == NodeKind.METHOD || n.kind() == NodeKind.CONSTRUCTOR))
 //                .forEach(result::add);
 
-        for (List<GraphEdge> edges : graph.edgesFrom.values()) {
-            for (GraphEdge edge : edges) {
-                if (edge.startLine() <= line && edge.endLine() >= line && filePath.equals(edge.filePath())) {
-                    GraphNode callee = graph.nodes.get(edge.callee());
-                    if (callee != null) result.add(callee);
-                }
-            }
-        }
-
         return List.copyOf(result);
-    }
-
-    public static Optional<String> resolveImportSimpleName(String content) {
-        if (content == null) return Optional.empty();
-        Matcher m = IMPORT_PATTERN.matcher(content);
-        if (!m.find()) return Optional.empty();
-        String fqn = m.group(1);
-        int dot = fqn.lastIndexOf('.');
-        String simpleName = dot >= 0 ? fqn.substring(dot + 1) : fqn;
-        if ("*".equals(simpleName)) return Optional.empty();
-        return Optional.of(simpleName);
     }
 
     public Set<String> findMovedMethodIds(ProjectGraph source, ProjectGraph target) {
@@ -142,28 +105,6 @@ public class GraphQueryService {
             if (n != null) set.add(new LineKey(n.filePath(), n.startLine()));
         }
         return set;
-    }
-
-    public Set<String> astKeysForLines(ProjectGraph graph, String relPath,
-                                       Set<Integer> changedLines) {
-        Set<String> result = new HashSet<>();
-        if (changedLines.isEmpty()) return result;
-
-        for (GraphNode n : graph.nodes.values()) {
-            if (!relPath.equals(n.filePath())) continue;
-            if (changedLines.contains(n.startLine())) result.add(n.id());
-        }
-
-        for (List<GraphEdge> edges : graph.edgesFrom.values()) {
-            for (GraphEdge e : edges) {
-                if (!relPath.equals(e.filePath())) continue;
-                boolean intersects = changedLines.stream().anyMatch(line -> e.startLine() <= line && e.endLine() >= line);
-                if (intersects && e.callee() != null) {
-                    result.add(e.callee());
-                }
-            }
-        }
-        return result;
     }
 
     public record LineKey(String filePath, int line) {
