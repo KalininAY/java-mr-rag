@@ -471,14 +471,22 @@ public class GraphBuilderImpl implements GraphBuilder {
                 if (ownerId == null || ownerId.isBlank()) return;
 
                 cu.getImports().forEach(imp -> {
-                    if (imp.getReference() == null) return; // защита от NPE
-                    String ref = imp.getReference().toString();
+                    String ref;
+                    boolean isStatic;
+                    if (imp.getReference() != null) {
+                        ref = imp.getReference().toString();
+                        CtImportKind kind = imp.getImportKind();
+                        isStatic = kind == CtImportKind.METHOD
+                                || kind == CtImportKind.FIELD
+                                || kind == CtImportKind.ALL_STATIC_MEMBERS;
+                    } else {
+                        // Spoon не разрезолвил — парсим напрямую из исходника
+                        int lineNum = imp.getPosition().isValidPosition() ? imp.getPosition().getLine() : -1;
+                        ref = AstGraphUtils.parseImportRefFromSource(sourceLines, file, projectRoot, lineNum);
+                        isStatic = AstGraphUtils.isStaticImportBySource(sourceLines, file, projectRoot, lineNum);
+                    }
                     String importId = "import@" + file + ":" + ref;
                     int[] lines = AstGraphUtils.lines(imp, sourceLines, projectRoot);
-                    CtImportKind kind = imp.getImportKind();
-                    boolean isStatic = kind == CtImportKind.METHOD
-                            || kind == CtImportKind.FIELD
-                            || kind == CtImportKind.ALL_STATIC_MEMBERS;
                     String snippet = "import " + (isStatic ? "static " : "") + ref + ";";
                     graph.addNode(new GraphNode(
                             importId, NodeKind.IMPORT, ref,
