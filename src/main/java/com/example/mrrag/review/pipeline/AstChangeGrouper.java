@@ -291,7 +291,7 @@ public class AstChangeGrouper {
                     "G" + groupCounter.incrementAndGet(),
                     primaryFile,
                     groupLines,
-                    new ArrayList<>(),
+//                    new ArrayList<>(),
                     new ArrayList<>(conn.intermediateNodes())));
 
             coveredLines.addAll(groupLines);
@@ -304,8 +304,8 @@ public class AstChangeGrouper {
                 result.add(ChangeGroup.of(
                         "G" + groupCounter.incrementAndGet(),
                         line.filePath(),
-                        List.of(line),
-                        new ArrayList<>()));
+                        List.of(line)/*,
+                        new ArrayList<>()*/));
                 coveredLines.add(line);
             }
         }
@@ -324,8 +324,8 @@ public class AstChangeGrouper {
             result.add(ChangeGroup.of(
                     "G" + groupCounter.incrementAndGet(),
                     entry.getKey(),
-                    entry.getValue(),
-                    new ArrayList<>()));
+                    entry.getValue()/*,
+                    new ArrayList<>()*/));
         }
 
         return result;
