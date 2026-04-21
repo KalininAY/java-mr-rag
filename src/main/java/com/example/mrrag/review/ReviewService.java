@@ -60,8 +60,14 @@ public class ReviewService {
         String currentTargetSha = resolveBranchHead(request, mr.getTargetBranch());
         log.debug("Current target HEAD: {}", currentTargetSha);
 
+        return buildReviewContext(request, mr, currentTargetSha);
+    }
+
+    public ReviewContext buildReviewContext(ReviewRequest request, MergeRequest mr, String targetSha) {
+        log.info("buildReviewContext: {}/{} mrIid={} targetSha={}",
+                request.namespace(), request.repo(), request.mrIid(), targetSha);
         Optional<Path> existing = snapshotReader.findMatchingSnapshot(
-                request.namespace(), request.repo(), request.mrIid(), currentTargetSha);
+                request.namespace(), request.repo(), request.mrIid(), targetSha);
 
         if (existing.isPresent()) {
             Path snapshotDir = existing.get();

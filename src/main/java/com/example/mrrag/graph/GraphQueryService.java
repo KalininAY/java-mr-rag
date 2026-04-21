@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -43,13 +44,29 @@ public class GraphQueryService {
 
         Set<GraphNode> result = new LinkedHashSet<>();
 
-        graph.nodes.values().stream()
-                .filter(n -> filePath.equals(n.filePath()) && n.startLine() == line)
-                .forEach(result::add);
+        var partitioned = graph.nodes.values().stream()
+                .filter(n -> filePath.equals(n.filePath()) && line >= n.startLine() && line <= n.endLine())
+                .collect(Collectors.partitioningBy(n -> n.kind().isHasBody()));
 
-        graph.nodes.values().stream()
-                .filter(n -> filePath.equals(n.filePath()) && n.startLine() <= line && n.endLine() >= line && (n.kind() == NodeKind.METHOD || n.kind() == NodeKind.CONSTRUCTOR))
-                .forEach(result::add);
+        var withoutBody = partitioned.get(false);
+        var withBody = partitioned.get(true);
+
+        // Если нет узлов без тела (переменных, полей, ...),
+        // то добавляем узел с самым коротким телом (метод, лямбда, класс, ...)
+        if (withoutBody.isEmpty()) {
+            withBody.stream()
+                    .filter(Objects::nonNull)
+                    .min(Comparator.comparingInt(n -> n.sourceSnippet().length()))
+//                    .map(n -> n.declaration())
+                    .ifPresent(result::add);
+        } else {
+            // Если есть узлы без тела, то добавляем все узлы без тела
+            result.addAll(withoutBody);
+        }
+
+//        graph.nodes.values().stream()
+//                .filter(n -> filePath.equals(n.filePath()) && n.startLine() <= line && n.endLine() >= line && (n.kind() == NodeKind.METHOD || n.kind() == NodeKind.CONSTRUCTOR))
+//                .forEach(result::add);
 
         for (List<GraphEdge> edges : graph.edgesFrom.values()) {
             for (GraphEdge edge : edges) {
