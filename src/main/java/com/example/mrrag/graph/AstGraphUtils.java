@@ -1,9 +1,7 @@
 package com.example.mrrag.graph;
 
-import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.ProjectGraph;
 import spoon.reflect.code.*;
-import spoon.reflect.cu.CompilationUnit;
 import spoon.reflect.cu.SourcePosition;
 import spoon.reflect.cu.position.BodyHolderSourcePosition;
 import spoon.reflect.cu.position.CompoundSourcePosition;
@@ -26,7 +24,6 @@ import java.util.stream.IntStream;
  *   <li>Source snippet extraction from in-memory line arrays</li>
  *   <li>Position/path helpers (relPath, lines, posLine, sourceFile)</li>
  *   <li>Owner inference for invocations and constructor calls</li>
- *   <li>Semantic body comparison via {@link GraphNode#bodyHash()} (see {@link #sameBody})</li>
  * </ul>
  *
  * <p>All methods are {@code public static} — this class has no state and
@@ -47,13 +44,11 @@ public final class AstGraphUtils {
      * {@code sourceLines}. Returns {@code ""} when {@code fileLines} cannot be resolved —
      * there is no reliable fallback if the original source is absent.
      *
-     * @param projectRoot optional local project root for path resolution
      */
     public static String extractSource(Map<String, String[]> sourceLines,
-                                       String filePath, int startLine, int endLine,
-                                       CtElement el, Path projectRoot) {
+                                       String filePath, int startLine, int endLine) {
         if (startLine > 0 && endLine >= startLine) {
-            String[] lines = findLines(sourceLines, filePath, projectRoot);
+            String[] lines = findLines(sourceLines, filePath);
             if (lines != null) {
                 int from = Math.max(0, startLine - 1);
                 int to = Math.min(lines.length, endLine);
@@ -67,48 +62,23 @@ public final class AstGraphUtils {
      * Resolves {@code sourceLines} lookup when keys are repo-relative (e.g. {@code src/main/java/Foo.java})
      * but {@code filePath} is absolute (Spoon positions), or when separator styles differ.
      */
-    static String[] findLines(Map<String, String[]> sourceLines, String filePath, Path projectRoot) {
+    static String[] findLines(Map<String, String[]> sourceLines, String filePath) {
         if (filePath == null || filePath.isBlank()) return null;
         String[] lines = sourceLines.get(filePath);
         if (lines != null) return lines;
+
         try {
             String n = Path.of(filePath).normalize().toString();
             lines = sourceLines.get(n);
             if (lines != null) return lines;
         } catch (Exception ignored) {
         }
+
         lines = sourceLines.get(filePath.replace('\\', '/'));
         if (lines != null) return lines;
+
         lines = sourceLines.get(filePath.replace('/', '\\'));
-        if (lines != null) return lines;
-        if (projectRoot != null) {
-            try {
-                Path root = projectRoot.toAbsolutePath().normalize();
-                Path abs = Path.of(filePath).toAbsolutePath().normalize();
-                if (abs.startsWith(root)) {
-                    Path rel = root.relativize(abs);
-                    String key = rel.toString().replace('\\', '/');
-                    lines = sourceLines.get(key);
-                    if (lines != null) return lines;
-                }
-            } catch (Exception ignored) {
-            }
-        }
-        return null;
-    }
-
-    // ------------------------------------------------------------------
-    // Semantic body comparison (delegates to GraphNode field)
-    // ------------------------------------------------------------------
-
-    /**
-     * Returns {@code true} when both nodes are non-null and their
-     * {@link GraphNode#bodyHash()} values match — i.e. the source bodies
-     * are identical modulo whitespace normalisation.
-     */
-    public static boolean sameBody(GraphNode a, GraphNode b) {
-        if (a == null || b == null) return false;
-        return a.sameBodyAs(b);
+        return lines;
     }
 
     // ------------------------------------------------------------------
@@ -356,7 +326,7 @@ public final class AstGraphUtils {
      */
     public static String graphFilePath(CtElement el, Path projectRoot, Set<String> repoRelativeSourcePaths) {
         String spoon = sourceFile(el);
-        if (spoon == null || spoon.isBlank()) return spoon;
+        if (spoon.isBlank()) return spoon;
         if (projectRoot == null) return spoon.replace('\\', '/');
 
         try {
@@ -413,26 +383,22 @@ public final class AstGraphUtils {
      * <ol>
      *   <li>{@link BodyHolderSourcePosition} — uses {@code declarationStart} .. {@code bodyStart-1}</li>
      *   <li>{@link CompoundSourcePosition}   — uses {@code declarationStart} .. {@code declarationEnd}</li>
-     *   <li>Falls back to full element line range via {@link #lines(CtElement, Map, Path)}</li>
      * </ol>
      *
-     * @param sourceLines repo-relative path -> source lines map (used for offset->line conversion)
      * @param el          the element whose declaration lines are needed
-     * @param projectRoot optional project root for path resolution
+     * @param sourceLines repo-relative path -> source lines map (used for offset->line conversion)
      * @return int[2]: [startLine, endLine], or [-1, -1] when lines cannot be resolved
      */
-    public static int[] declarationLines(Map<String, String[]> sourceLines,
-                                         CtElement el,
-                                         Path projectRoot) {
+    public static int[] declarationLines(CtElement el, Map<String, String[]> sourceLines) {
         if (el == null) return new int[]{-1, -1};
         try {
             SourcePosition p = el.getPosition();
             if (p == null || !p.isValidPosition()) {
-                return lines(el, sourceLines, projectRoot);
+                return lines(el, sourceLines);
             }
 
             String filePath = sourceFile(el);
-            String[] fileLines = findLines(sourceLines, filePath, projectRoot);
+            String[] fileLines = findLines(sourceLines, filePath);
             String full = fileLines != null && fileLines.length > 0
                     ? String.join("\n", fileLines)
                     : null;
@@ -469,7 +435,7 @@ public final class AstGraphUtils {
 
             // For elements without a body (fields, imports, annotations, etc.)
             // the full position IS the declaration.
-            return lines(el, sourceLines, projectRoot);
+            return lines(el, sourceLines);
 
         } catch (Exception ignored) {
             return new int[]{-1, -1};
@@ -483,7 +449,7 @@ public final class AstGraphUtils {
      * <p>
      * Returns {-1, -1} when neither direct position nor source-backed fallback works.
      */
-    public static int[] lines(CtElement el, Map<String, String[]> sourceLines, Path projectRoot) {
+    public static int[] lines(CtElement el, Map<String, String[]> sourceLines) {
         if (el == null) return new int[]{-1, -1};
 
         try {
@@ -498,7 +464,7 @@ public final class AstGraphUtils {
             }
 
             String filePath = sourceFile(el);
-            String[] fileLines = findLines(sourceLines, filePath, projectRoot);
+            String[] fileLines = findLines(sourceLines, filePath);
             if (fileLines == null || fileLines.length == 0) {
                 return new int[]{startLine, endLine};
             }
@@ -568,48 +534,19 @@ public final class AstGraphUtils {
      * Resolves {@code sourceLines} the same way as {@link #extractSource}, then extracts a declaration.
      * Returns {@code ""} when {@code fileLines} cannot be resolved.
      */
-    public static String declarationOf(Map<String, String[]> sourceLines, String filePath,
-                                       Path projectRoot, SourcePosition pos) {
-        String[] lines = findLines(sourceLines, filePath, projectRoot);
+    public static String declarationOf(Map<String, String[]> sourceLines, String filePath, CtElement el) {
+        String[] lines = findLines(sourceLines, filePath);
         if (lines == null) return "";
-        return declarationOf(lines, pos);
+        int[] declLines = declarationLines(el, sourceLines);
+        int from = declLines[0];
+        int to   = declLines[1];
+        if (from > 0 && to >= from && to <= lines.length) {
+            return IntStream.rangeClosed(from - 1, to - 1)
+                    .mapToObj(i -> lines[i])
+                    .collect(Collectors.joining("\n"));
+        } else return "";
     }
 
-    /**
-     * Extracts the declaration (signature/header without method body) from {@code sourceLines}.
-     */
-    public static String declarationOf(String[] sourceLines, SourcePosition pos) {
-        if (sourceLines == null || sourceLines.length == 0 || pos == null || !pos.isValidPosition()) {
-            return "";
-        }
-        String full = String.join("\n", sourceLines);
-
-        if (pos instanceof BodyHolderSourcePosition bodyPos) {
-            int start = bodyPos.getDeclarationStart();
-            int bodyStart = bodyPos.getBodyStart();
-            if (bodyStart > start) {
-                return trimDeclaration(safeSubstring(full, start, bodyStart));
-            }
-        }
-        if (pos instanceof CompoundSourcePosition declPos) {
-            int start = declPos.getDeclarationStart();
-            int endInclusive = declPos.getDeclarationEnd();
-            if (endInclusive >= start) {
-                return trimDeclaration(safeSubstring(full, start, endInclusive + 1));
-            }
-        }
-        int line = pos.getLine();
-        int endLine = pos.getEndLine();
-        if (line < 1) return "";
-        int from = line - 1;
-        int to = (endLine >= line) ? endLine - 1 : from;
-        if (from >= sourceLines.length) return "";
-        to = Math.min(to, sourceLines.length - 1);
-        if (from > to) return trimDeclaration(sourceLines[from]);
-        return trimDeclaration(IntStream.rangeClosed(from, to)
-                .mapToObj(i -> sourceLines[i])
-                .collect(Collectors.joining("\n")));
-    }
 
     // ------------------------------------------------------------------
     // Import parsing helpers
@@ -624,16 +561,12 @@ public final class AstGraphUtils {
      *
      * @param sourceLines карта путь -> строки файла
      * @param filePath    граф-относительный путь к файлу
-     * @param projectRoot опциональный корень проекта
      * @param lineNumber  1-based номер строки (из {@code imp.getPosition().getLine()})
      * @return полное имя из импорта (например {@code "java.util.List"}), либо {@code null}
      */
-    public static String parseImportRefFromSource(Map<String, String[]> sourceLines,
-                                                   String filePath,
-                                                   Path projectRoot,
-                                                   int lineNumber) {
+    public static String parseImportRefFromSource(Map<String, String[]> sourceLines, String filePath, int lineNumber) {
         if (lineNumber < 1 || filePath == null || filePath.isBlank()) return null;
-        String[] lines = findLines(sourceLines, filePath, projectRoot);
+        String[] lines = findLines(sourceLines, filePath);
         if (lines == null || lineNumber > lines.length) return null;
 
         String raw = lines[lineNumber - 1].trim();
@@ -654,116 +587,14 @@ public final class AstGraphUtils {
      *
      * @param sourceLines карта путь -> строки файла
      * @param filePath    граф-относительный путь к файлу
-     * @param projectRoot опциональный корень проекта
      * @param lineNumber  1-based номер строки
      * @return {@code true} если строка содержит {@code import static}
      */
-    public static boolean isStaticImportBySource(Map<String, String[]> sourceLines,
-                                                  String filePath,
-                                                  Path projectRoot,
-                                                  int lineNumber) {
+    public static boolean isStaticImportBySource(Map<String, String[]> sourceLines, String filePath, int lineNumber) {
         if (lineNumber < 1 || filePath == null || filePath.isBlank()) return false;
-        String[] lines = findLines(sourceLines, filePath, projectRoot);
+        String[] lines = findLines(sourceLines, filePath);
         if (lines == null || lineNumber > lines.length) return false;
         return lines[lineNumber - 1].contains("import static");
     }
 
-    /**
-     * Removes line and block comments (including Javadoc) from a Java source fragment,
-     * without touching text inside string/char literals or text blocks.
-     */
-    public static String stripJavaCommentsAndJavadoc(String s) {
-        if (s == null || s.isEmpty()) return "";
-        StringBuilder out = new StringBuilder(s.length());
-        int i = 0, n = s.length();
-        while (i < n) {
-            char c = s.charAt(i);
-            if (c == '/' && i + 1 < n) {
-                char next = s.charAt(i + 1);
-                if (next == '/') {
-                    i += 2;
-                    while (i < n && s.charAt(i) != '\r' && s.charAt(i) != '\n') i++;
-                    if (i < n && s.charAt(i) == '\r') i++;
-                    if (i < n && s.charAt(i) == '\n') i++;
-                    out.append(' ');
-                    continue;
-                }
-                if (next == '*') {
-                    i += 2;
-                    while (i + 1 < n && !(s.charAt(i) == '*' && s.charAt(i + 1) == '/')) i++;
-                    if (i + 1 < n) i += 2;
-                    else i = n;
-                    out.append(' ');
-                    continue;
-                }
-            }
-            if (c == '"') {
-                if (i + 2 < n && s.charAt(i + 1) == '"' && s.charAt(i + 2) == '"') {
-                    out.append("\"\"\"");
-                    i += 3;
-                    while (i < n) {
-                        if (i + 2 < n && s.charAt(i) == '"' && s.charAt(i + 1) == '"' && s.charAt(i + 2) == '"') {
-                            out.append("\"\"\"");
-                            i += 3;
-                            break;
-                        }
-                        out.append(s.charAt(i++));
-                    }
-                    continue;
-                }
-                out.append(c);
-                i++;
-                while (i < n) {
-                    char c2 = s.charAt(i);
-                    out.append(c2);
-                    if (c2 == '\\' && i + 1 < n) {
-                        out.append(s.charAt(i + 1));
-                        i += 2;
-                        continue;
-                    }
-                    if (c2 == '"') {
-                        i++;
-                        break;
-                    }
-                    i++;
-                }
-                continue;
-            }
-            if (c == '\'') {
-                out.append(c);
-                i++;
-                while (i < n) {
-                    char c2 = s.charAt(i);
-                    out.append(c2);
-                    if (c2 == '\\' && i + 1 < n) {
-                        out.append(s.charAt(i + 1));
-                        i += 2;
-                        continue;
-                    }
-                    if (c2 == '\'') {
-                        i++;
-                        break;
-                    }
-                    i++;
-                }
-                continue;
-            }
-            out.append(c);
-            i++;
-        }
-        return out.toString();
-    }
-
-    private static String trimDeclaration(String s) {
-        if (s == null) return "";
-        return stripJavaCommentsAndJavadoc(s.replace("\r", "")).replaceAll("\\s+", " ").trim();
-    }
-
-    private static String safeSubstring(String full, int start, int endExclusive) {
-        if (full == null || full.isEmpty()) return "";
-        if (start < 0) start = 0;
-        if (endExclusive > full.length()) endExclusive = full.length();
-        if (start >= endExclusive) return "";
-        return full.substring(start, endExclusive);
-    }
 }
