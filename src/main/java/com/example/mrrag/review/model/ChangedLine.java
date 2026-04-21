@@ -22,9 +22,4 @@ public record ChangedLine(
     public ChangedLine asContext() {
         return new ChangedLine(filePath, lineNumber, oldLineNumber, content, LineType.CONTEXT);
     }
-
-    /** Alias so callers can use {@code l.text()} interchangeably with {@code l.content()}. */
-    public String text() {
-        return content;
-    }
 }
