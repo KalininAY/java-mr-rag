@@ -74,6 +74,8 @@ graph:
     # Overrides
     OVERRIDES:
       enabled: true
+    IMPORT:
+      enabled: true
 
 logging:
   level:
