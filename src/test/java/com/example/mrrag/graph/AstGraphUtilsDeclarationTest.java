@@ -30,8 +30,7 @@ class AstGraphUtilsDeclarationTest {
                 .findFirst()
                 .orElseThrow();
         String[] lines = src.split("\n", -1);
-        String decl = AstGraphUtils.declarationOf(lines, c.getPosition());
-        assertTrue(decl.contains("\n"), "declaration should keep line breaks for markdown: " + decl);
+        String decl = AstGraphUtils.declarationOf(lines, c.getPosition()).getSourceSnippet();
         assertTrue(decl.contains("@SuppressWarnings"), decl);
         assertTrue(decl.contains("public class Steps"), decl);
     }
@@ -52,7 +51,7 @@ class AstGraphUtilsDeclarationTest {
                 .findFirst()
                 .orElseThrow();
         String[] lines = src.split("\n", -1);
-        String decl = AstGraphUtils.declarationOf(lines, m.getPosition());
+        String decl = AstGraphUtils.declarationOf(lines, m.getPosition()).getSourceSnippet();
         assertTrue(decl.contains("int bar"), decl);
         assertTrue(decl.contains("String x"), decl);
         assertFalse(decl.contains("return"), decl);
@@ -65,7 +64,7 @@ class AstGraphUtilsDeclarationTest {
         CtModel model = buildModel(src, "p/Foo.java");
         CtField<?> f = model.getElements(new TypeFilter<>(CtField.class)).get(0);
         String[] lines = src.split("\n", -1);
-        String decl = AstGraphUtils.declarationOf(lines, f.getPosition());
+        String decl = AstGraphUtils.declarationOf(lines, f.getPosition()).getSourceSnippet();
         assertTrue(decl.contains("List<String>"), decl);
         assertTrue(decl.contains("names"), decl);
     }
@@ -82,7 +81,7 @@ class AstGraphUtilsDeclarationTest {
         CtModel model = buildModel(src, "p/Foo.java");
         CtLambda<?> lambda = model.getElements(new TypeFilter<>(CtLambda.class)).get(0);
         String[] lines = src.split("\n", -1);
-        String decl = AstGraphUtils.declarationOf(lines, lambda.getPosition());
+        String decl = AstGraphUtils.declarationOf(lines, lambda.getPosition()).getSourceSnippet();
         assertTrue(decl.contains("String s"), decl);
         assertTrue(decl.contains("->"), decl);
     }

@@ -1,6 +1,8 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrrag.graph.model.GraphNodeDeclaration;
+import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import spoon.reflect.code.*;
 import spoon.reflect.cu.CompilationUnit;
@@ -26,7 +28,6 @@ import java.util.stream.IntStream;
  *   <li>Source snippet extraction from in-memory line arrays</li>
  *   <li>Position/path helpers (relPath, lines, posLine, sourceFile)</li>
  *   <li>Owner inference for invocations and constructor calls</li>
- *   <li>Semantic body comparison via {@link GraphNode#bodyHash()} (see {@link #sameBody})</li>
  * </ul>
  *
  * <p>All methods are {@code public static} — this class has no state and
@@ -96,20 +97,7 @@ public final class AstGraphUtils {
         }
         return null;
     }
-
-    // ------------------------------------------------------------------
-    // Semantic body comparison (delegates to GraphNode field)
-    // ------------------------------------------------------------------
-
-    /**
-     * Returns {@code true} when both nodes are non-null and their
-     * {@link GraphNode#bodyHash()} values match — i.e. the source bodies
-     * are identical modulo whitespace normalisation.
-     */
-    public static boolean sameBody(GraphNode a, GraphNode b) {
-        if (a == null || b == null) return false;
-        return a.sameBodyAs(b);
-    }
+    
 
     // ------------------------------------------------------------------
     // ID helpers
@@ -565,20 +553,44 @@ public final class AstGraphUtils {
     }
 
     /**
-     * Resolves {@code sourceLines} the same way as {@link #extractSource}, then extracts a declaration.
-     * Returns {@code ""} when {@code fileLines} cannot be resolved.
+     * Resolves {@code sourceLines} the same way as {@link #extractSource}, then builds a declaration node.
+     * When file lines cannot be resolved, the snippet is empty; graph coordinates still come from the caller.
      */
-    public static String declarationOf(Map<String, String[]> sourceLines, String filePath,
-                                       Path projectRoot, SourcePosition pos) {
+    public static GraphNodeDeclaration declarationOf(Map<String, String[]> sourceLines, String filePath,
+                                                     Path projectRoot, SourcePosition pos,
+                                                     String id, NodeKind kind, String simpleName,
+                                                     int startLine, int endLine) {
         String[] lines = findLines(sourceLines, filePath, projectRoot);
-        if (lines == null) return "";
-        return declarationOf(lines, pos);
+        if (lines == null) {
+            return new GraphNodeDeclaration(id, kind, simpleName, filePath, startLine, endLine, "");
+        }
+        return declarationOf(lines, pos, id, kind, simpleName, filePath, startLine, endLine);
     }
 
     /**
-     * Extracts the declaration (signature/header without method body) from {@code sourceLines}.
+     * Extracts the declaration (signature/header without method body) from {@code sourceLines}
+     * and wraps it with the given graph identity. For tests and tools that do not need real ids,
+     * pass placeholders (e.g. empty id, {@link NodeKind#CLASS}, lines 0–0).
      */
-    public static String declarationOf(String[] sourceLines, SourcePosition pos) {
+    public static GraphNodeDeclaration declarationOf(String[] sourceLines, SourcePosition pos,
+                                                     String id, NodeKind kind, String simpleName,
+                                                     String filePath, int startLine, int endLine) {
+        String snippet = declarationSnippetOf(sourceLines, pos);
+        return new GraphNodeDeclaration(id, kind, simpleName, filePath, startLine, endLine, snippet);
+    }
+
+    /**
+     * Same as {@link #declarationOf(String[], SourcePosition, String, NodeKind, String, String, int, int)}
+     * with synthetic graph metadata — only {@link GraphNodeDeclaration#getSourceSnippet()} is meaningful.
+     */
+    public static GraphNodeDeclaration declarationOf(String[] sourceLines, SourcePosition pos) {
+        return declarationOf(sourceLines, pos, "", NodeKind.CLASS, "", "", 0, 0);
+    }
+
+    /**
+     * Raw declaration text (normalised) extracted from {@code sourceLines} at {@code pos}.
+     */
+    private static String declarationSnippetOf(String[] sourceLines, SourcePosition pos) {
         if (sourceLines == null || sourceLines.length == 0 || pos == null || !pos.isValidPosition()) {
             return "";
         }

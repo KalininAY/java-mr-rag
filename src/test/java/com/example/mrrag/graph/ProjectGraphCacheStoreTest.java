@@ -2,6 +2,8 @@ package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.GraphCacheProperties;
 import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrrag.graph.model.GraphNodeDeclaration;
+import com.example.mrrag.graph.model.GraphNodeImpl;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.raw.GraphSegmentIds;
@@ -34,9 +36,10 @@ class ProjectGraphCacheStoreTest {
 
     /** A minimal non-empty graph with one node. */
     static ProjectGraph singleNodeGraph(String id) {
-        GraphNode n = new GraphNode(
+        GraphNode n = new GraphNodeImpl(
                 id, NodeKind.CLASS, "Foo",
-                "Foo.java", 1, 5, "class Foo{}", "class Foo{", null);
+                "Foo.java", 1, 5, "class Foo{}",
+                new GraphNodeDeclaration(id, NodeKind.CLASS, "Foo", "Foo.java", 1, 5, "class Foo{"));
         return ProjectGraph.reconstruct(List.of(n), List.of());
     }
 

@@ -57,7 +57,7 @@ public class GraphQueryService {
             withBody.stream()
                     .filter(Objects::nonNull)
                     .min(Comparator.comparingInt(n -> n.sourceSnippet().length()))
-//                    .map(n -> n.declaration())
+//                    .map(n -> n.declaration())  // TODO: добавить declaration и раскомментировать
                     .ifPresent(result::add);
         } else {
             // Если есть узлы без тела, то добавляем все узлы без тела

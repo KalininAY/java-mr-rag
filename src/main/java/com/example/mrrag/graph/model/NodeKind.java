@@ -12,6 +12,7 @@ public enum NodeKind {
     CONSTRUCTOR(true),
     METHOD(true),
     LAMBDA(true),
+    DECLARATION(false),
     FIELD(false),
     VARIABLE(false),
     TYPE_PARAM(false),

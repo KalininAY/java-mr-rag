@@ -1,9 +1,6 @@
 package com.example.mrrag.graph.markdown;
 
-import com.example.mrrag.graph.model.GraphEdge;
-import com.example.mrrag.graph.model.GraphNode;
-import com.example.mrrag.graph.model.NodeKind;
-import com.example.mrrag.graph.model.ProjectGraph;
+import com.example.mrrag.graph.model.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -246,8 +243,9 @@ public class MarkdownGraphBuilder {
             stubKind = NodeKind.CLASS;
         }
 
-        // GraphNode requires 9 args — pass null for bodyHash (compact constructor computes it)
-        GraphNode stub = new GraphNode(id, stubKind, simpleNameOf(id), "external", -1, -1, "", "", null);
+        GraphNode stub = new GraphNodeImpl(
+                id, stubKind, simpleNameOf(id), "external", -1, -1, "",
+                new GraphNodeDeclaration(id, stubKind, simpleNameOf(id), "external", -1, -1, ""));
         MarkdownNode stubView = switch (stubKind) {
             case METHOD      -> new MarkdownMethodNode(stub);
             case CONSTRUCTOR -> new MarkdownConstructorNode(stub);

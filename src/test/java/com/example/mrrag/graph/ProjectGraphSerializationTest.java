@@ -1,10 +1,6 @@
 package com.example.mrrag.graph;
 
-import com.example.mrrag.graph.model.ProjectGraph;
-import com.example.mrrag.graph.model.EdgeKind;
-import com.example.mrrag.graph.model.GraphEdge;
-import com.example.mrrag.graph.model.GraphNode;
-import com.example.mrrag.graph.model.NodeKind;
+import com.example.mrrag.graph.model.*;
 import com.example.mrrag.graph.raw.ProjectGraphSerialization;
 import org.junit.jupiter.api.Test;
 
@@ -18,16 +14,20 @@ class ProjectGraphSerializationTest {
 
     @Test
     void roundTripJson() throws Exception {
-        GraphNode n = new GraphNode(
+        GraphNode n = new GraphNodeImpl(
                 "com.example.Foo",
                 NodeKind.CLASS,
                 "Foo",
                 "src/main/java/com/example/Foo.java",
                 1, 5,
                 "class Foo {}",
-                "class Foo {}",
-                null
-        );
+                new GraphNodeDeclaration(
+                        "com.example.Foo",
+                        NodeKind.CLASS,
+                        "Foo",
+                        "src/main/java/com/example/Foo.java",
+                        1, 5,
+                        "class Foo {}"));
         GraphEdge e = new GraphEdge(
                 "com.example.Foo",
                 EdgeKind.DECLARES,

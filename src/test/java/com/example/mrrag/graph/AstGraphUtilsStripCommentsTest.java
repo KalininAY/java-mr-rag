@@ -52,7 +52,7 @@ class AstGraphUtilsStripCommentsTest {
                 .filter(x -> "bar".equals(x.getSimpleName()))
                 .findFirst()
                 .orElseThrow();
-        String decl = AstGraphUtils.declarationOf(lines, m.getPosition());
+        String decl = AstGraphUtils.declarationOf(lines, m.getPosition()).getSourceSnippet();
         assertFalse(decl.contains("API doc"), decl);
         assertTrue(decl.contains("int bar"), decl);
     }

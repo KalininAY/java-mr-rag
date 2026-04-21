@@ -100,21 +100,25 @@ public final class ProjectGraphSerialization {
             s.startLine = n.startLine();
             s.endLine = n.endLine();
             s.sourceSnippet = n.sourceSnippet();
-            s.declarationSnippet = n.declarationSnippet();
+            s.declarationSnippet = n instanceof NodeWithDeclaration nwd
+                    ? nwd.declaration().getSourceSnippet()
+                    : "";
             return s;
         }
 
         GraphNode toGraphNode() {
-            return new GraphNode(
+            NodeKind nodeKind = NodeKind.valueOf(kind);
+            String src = sourceSnippet != null ? sourceSnippet : "";
+            String decl = declarationSnippet != null ? declarationSnippet : "";
+            return new GraphNodeImpl(
                     id,
-                    NodeKind.valueOf(kind),
+                    nodeKind,
                     simpleName,
                     filePath,
                     startLine,
                     endLine,
-                    sourceSnippet != null ? sourceSnippet : "",
-                    declarationSnippet != null ? declarationSnippet : "",
-                    null
+                    src,
+                    new GraphNodeDeclaration(id, nodeKind, simpleName, filePath, startLine, endLine, decl)
             );
         }
     }
