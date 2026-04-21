@@ -193,10 +193,10 @@ public class ReviewService {
                 mr.getSourceBranch(), mr.getTargetBranch());
         CompletableFuture<Path> sf = CompletableFuture.supplyAsync(() ->
                 repoGateway.cloneProject(req.namespace(), req.repo(),
-                        mr.getSourceBranch(), null, true, null));
+                        mr.getSourceBranch(), null, false, null));
         CompletableFuture<Path> tf = CompletableFuture.supplyAsync(() ->
                 repoGateway.cloneProject(req.namespace(), req.repo(),
-                        mr.getTargetBranch(), null, true, null));
+                        mr.getTargetBranch(), null, false, null));
         Path src = sf.join();
         Path tgt = tf.join();
         log.info("Cloned: source={} target={}", src, tgt);
