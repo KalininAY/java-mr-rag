@@ -1,10 +1,23 @@
 package com.example.mrrag.graph.model;
 
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+
+@AllArgsConstructor
+@Getter
 public enum NodeKind {
-    CLASS, INTERFACE, CONSTRUCTOR, METHOD, FIELD, VARIABLE,
-    LAMBDA, ANNOTATION, TYPE_PARAM, ANNOTATION_ATTRIBUTE,
-    /** A single {@code import} statement in a compilation unit. */
-    IMPORT,
-    /** A Javadoc comment attached to a type or member. */
-    JAVADOC
+    CLASS(true),
+    INTERFACE(true),
+    ANNOTATION(true),
+    CONSTRUCTOR(true),
+    METHOD(true),
+    LAMBDA(true),
+    FIELD(false),
+    VARIABLE(false),
+    TYPE_PARAM(false),
+    ANNOTATION_ATTRIBUTE(false),
+    IMPORT(false),
+    JAVADOC(false);
+
+    private final boolean hasBody;
 }
