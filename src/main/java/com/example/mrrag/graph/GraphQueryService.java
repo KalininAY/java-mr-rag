@@ -47,6 +47,10 @@ public class GraphQueryService {
                 .filter(n -> filePath.equals(n.filePath()) && n.startLine() == line)
                 .forEach(result::add);
 
+        graph.nodes.values().stream()
+                .filter(n -> filePath.equals(n.filePath()) && n.startLine() <= line && n.endLine() >= line && (n.kind() == NodeKind.METHOD || n.kind() == NodeKind.CONSTRUCTOR))
+                .forEach(result::add);
+
         for (List<GraphEdge> edges : graph.edgesFrom.values()) {
             for (GraphEdge edge : edges) {
                 if (edge.startLine() <= line && edge.endLine() >= line && filePath.equals(edge.filePath())) {
