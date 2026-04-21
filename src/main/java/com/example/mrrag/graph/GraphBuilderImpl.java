@@ -458,18 +458,20 @@ public class GraphBuilderImpl implements GraphBuilder {
                         ta.getAccessedType().getQualifiedName(),
                         file, lines[0], lines[1]));
             }));
-
         if (edgeConfig.isEnabled(EdgeKind.HAS_IMPORT)) {
-            passes.add(() -> model.getElements(new TypeFilter<>(CtCompilationUnit.class)).forEach(cu -> {
-                String file = cu.getFile() != null
-                        ? AstGraphUtils.graphFilePath(cu.getMainType(), projectRoot, repoPaths)
-                        : "";
-                String ownerId = cu.getMainType() != null
-                        ? AstGraphUtils.qualifiedName(cu.getMainType())
-                        : file;
+            passes.add(() -> model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
+                // CtCompilationUnit доступен через позицию типа, даже для VirtualFile
+                var pos = type.getPosition();
+                if (pos == null || !pos.isValidPosition()) return;
+                CtCompilationUnit cu = pos.getCompilationUnit();
+                if (cu == null) return;
+
+                String file = AstGraphUtils.graphFilePath(type, projectRoot, repoPaths);
+                String ownerId = AstGraphUtils.qualifiedName(type);
                 if (ownerId == null || ownerId.isBlank()) return;
 
                 cu.getImports().forEach(imp -> {
+                    if (imp.getReference() == null) return; // защита от NPE
                     String ref = imp.getReference().toString();
                     String importId = "import@" + file + ":" + ref;
                     int[] lines = AstGraphUtils.lines(imp, sourceLines, projectRoot);
