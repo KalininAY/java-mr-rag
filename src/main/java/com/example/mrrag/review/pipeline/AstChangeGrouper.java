@@ -6,6 +6,8 @@ import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.ChangeGroup;
 import com.example.mrrag.review.model.ChangedLine;
+import com.example.mrrag.review.model.UnionLine;
+import com.example.mrrag.review.union.UnionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -44,6 +46,7 @@ import java.util.stream.Collectors;
 public class AstChangeGrouper {
 
     private final GraphQueryService graphQuery;
+    private final UnionService unionService;
     private final AtomicInteger groupCounter = new AtomicInteger(0);
 
     /**
@@ -73,26 +76,19 @@ public class AstChangeGrouper {
                 lineToNodes.values().stream().filter(s -> !s.isEmpty()).count(),
                 changedLines.size());
 
-        // Step 2: build directed NodeConnections via BFS
-        Map<ChangedLine, Set<GraphNode>> addLineToNodes = lineToNodes.entrySet().stream()
-                .filter(it -> it.getKey().type() == ChangedLine.LineType.ADD)
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-        Map<ChangedLine, Set<GraphNode>> delLineToNodes = lineToNodes.entrySet().stream()
-                .filter(it -> it.getKey().type() == ChangedLine.LineType.DELETE)
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-        List<NodeConnection> connectionsForAdd = buildConnections(addLineToNodes, sourceGraph);
-        List<NodeConnection> connectionsForDel = buildConnections(delLineToNodes, targetGraph);
-        log.debug("Step 2 (BFS connections): for ADD line {}, for DEL lint {} connections found",
-                connectionsForAdd.size(), connectionsForDel.size());
+        // Step 2: union ChangedLines
+        List<UnionLine> unionLines = unionService.buildUnionLines(lineToNodes);
+
+
+        List<NodeConnection> connections = buildConnections(lineToNodes, targetGraph);
+        log.debug("Step 2 (BFS connections): {} connections found", connections.size());
 
         // Step 3: build ChangeGroups from connections
-        List<ChangeGroup> groupsForAdd = buildGroups(connectionsForAdd, lineToNodes, changedLines);
-        List<ChangeGroup> groupsForDel = buildGroups(connectionsForDel, lineToNodes, changedLines);
-        log.debug("Step 3 (build groups): for add line {}, for delete line {}  groups produced",
-                groupsForAdd.size(), groupsForDel.size());
+        List<ChangeGroup> groups = buildGroups(connections, lineToNodes, changedLines);
+        log.debug("Step 3 (build groups): {}  groups produced", groups.size());
 
         // Step 4: mergeGroup
-        return groupsForAdd;
+        return groups;
     }
 
     // -----------------------------------------------------------------------
