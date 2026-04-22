@@ -18,6 +18,7 @@ public class GraphQueryService {
 
         Set<GraphNode> result = new LinkedHashSet<>();
 
+        //все ноды объявления, которые содержат строку line по файлу
         var partitioned = graph.nodes.values().stream()
                 .filter(n -> filePath.equals(n.filePath()) && line >= n.startLine() && line <= n.endLine())
                 .collect(Collectors.partitioningBy(n -> n.kind().isHasBody()));
@@ -25,6 +26,7 @@ public class GraphQueryService {
         var withoutBody = partitioned.get(false);
         var withBody = partitioned.get(true);
 
+        //Все ноды, вызовы которых содержат line по файлу
         for (List<GraphEdge> edges : graph.edgesFrom.values()) {
             for (GraphEdge edge : edges) {
                 if (edge.startLine() <= line && edge.endLine() >= line && filePath.equals(edge.filePath())) {
@@ -36,6 +38,7 @@ public class GraphQueryService {
 
         // Если нет узлов без тела (переменных, полей, ...),
         // то добавляем узел с самым коротким телом (метод, лямбда, класс, ...)
+        //сделана для структурных строк, исходя из предположения: структурные строки не имеют нод
         if (withoutBody.isEmpty()) {
             withBody.stream()
                     .filter(Objects::nonNull)
@@ -46,6 +49,13 @@ public class GraphQueryService {
             // Если есть узлы без тела, то добавляем все узлы без тела
             result.addAll(withoutBody);
         }
+
+        withBody.stream()
+                .filter(Objects::nonNull)
+                .filter(it-> it.kind() == NodeKind.METHOD || it.kind() == NodeKind.LAMBDA)
+                .min(Comparator.comparingInt(n -> n.sourceSnippet().length()))
+//                    .map(n -> n.declaration())
+                .ifPresent(result::add);
 
 //        graph.nodes.values().stream()
 //                .filter(n -> filePath.equals(n.filePath()) && n.startLine() <= line && n.endLine() >= line && (n.kind() == NodeKind.METHOD || n.kind() == NodeKind.CONSTRUCTOR))
