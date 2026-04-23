@@ -125,7 +125,7 @@ public final class AstGraphUtils {
     }
 
     public static String varId(CtVariable<?> v) {
-        if (!v.getPosition().isValidPosition()) return null;
+        if (!v.getPosition().isValidPosition()) return "unresolved";
         String file = v.getPosition().getFile() != null ? v.getPosition().getFile().getName() : "?";
         return "var@" + file + ":" + v.getPosition().getLine() + ":" + v.getSimpleName();
     }

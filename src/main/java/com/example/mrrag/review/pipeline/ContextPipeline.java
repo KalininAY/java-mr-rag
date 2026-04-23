@@ -22,7 +22,6 @@ import java.util.*;
  *   <li><b>Parse</b> — {@link DiffParser}: GitLab {@link Diff}s → {@link ChangedLine}s.</li>
  *   <li><b>Filter</b> — ordered {@link ContextFilter} chain (each sees the previous output).</li>
  *   <li><b>Group</b> — {@link AstChangeGrouper}: lines → {@link ChangeGroup}s via pure AST graph.
- *       {@link ChangeGrouper} is retained as an internal fallback (no-graph scenarios) but
  *       is not injected here and is not part of the active pipeline.</li>
  *   <li><b>Classify</b> — {@link #classifyGroup} → {@link ChangeType} per group.</li>
  *   <li><b>Collect context</b> — per type, {@link ContextStrategy}s → {@link ContextCollector}
@@ -68,7 +67,8 @@ public class ContextPipeline {
         log.info("ContextPipeline.step2: {} filteredLines", filteredLines.size());
 
         // Step 3: group lines via AST graph
-        List<ChangeGroup> groups = astChangeGrouper.group(filteredLines, sourceGraph, targetGraph);
+        List<ChangeGroup> groups = List.of();
+        astChangeGrouper.group(filteredLines, sourceGraph, targetGraph);
         log.info("ContextPipeline.step3: {} groups", groups.size());
 
         // Step 4: classify groups by ChangeType
