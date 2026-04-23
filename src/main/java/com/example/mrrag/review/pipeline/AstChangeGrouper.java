@@ -67,7 +67,7 @@ public class AstChangeGrouper {
      * @param sourceGraph  AST sourceGraph of the project; must not be {@code null}
      * @return list of {@link ChangeGroup}s built exclusively from AST relationships
      */
-    public List<ChangeGroup> group(Set<ChangedLine> changedLines, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+    public List<UnionLine> group(Set<ChangedLine> changedLines, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         Objects.requireNonNull(sourceGraph, "sourceGraph must not be null for AstChangeGrouper");
 
         // Step 1: resolve AST anchor nodes for every non-CONTEXT changed line
@@ -78,17 +78,9 @@ public class AstChangeGrouper {
 
         // Step 2: union ChangedLines
         List<UnionLine> unionLines = unionService.buildUnionLines(lineToNodes);
+        log.debug("Step 2 (UnionLines): {}", unionLines.size());
 
-
-        List<NodeConnection> connections = buildConnections(lineToNodes, targetGraph);
-        log.debug("Step 2 (BFS connections): {} connections found", connections.size());
-
-        // Step 3: build ChangeGroups from connections
-        List<ChangeGroup> groups = buildGroups(connections, lineToNodes, changedLines);
-        log.debug("Step 3 (build groups): {}  groups produced", groups.size());
-
-        // Step 4: mergeGroup
-        return groups;
+        return unionLines;
     }
 
     // -----------------------------------------------------------------------
