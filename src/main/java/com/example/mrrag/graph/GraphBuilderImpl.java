@@ -346,13 +346,21 @@ public class GraphBuilderImpl implements GraphBuilder {
         passes.add(() -> model.getElements(new TypeFilter<>(CtLambda.class)).forEach(lambda -> {
             String file = AstGraphUtils.graphFilePath(lambda, projectRoot, repoPaths);
             int[] ln = AstGraphUtils.lines(lambda, sourceLines);
-            String id = "lambda@" + file + ":" + ln[0];
+            // Считаем индекс лямбды внутри метода-родителя
+            CtMethod<?> em = lambda.getParent(CtMethod.class);
+            String encId = em != null ? AstGraphUtils.typeMemberExecId(em) : file;
+
+            // Порядковый номер среди лямбд метода
+            List<CtLambda<?>> siblings = em != null
+                    ? em.getElements(new TypeFilter<>(CtLambda.class)) : List.of(lambda);
+            int idx = siblings.indexOf(lambda);
+
+            String id = "lambda@" + encId + "#" + idx;
             graph.addNode(new GraphNode(id, NodeKind.LAMBDA, "\u03bb",
                     file, ln[0], ln[1],
                     AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1]),
                     AstGraphUtils.declarationOf(sourceLines, file, lambda), null));
             if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
-                CtMethod<?> em = lambda.getParent(CtMethod.class);
                 if (em != null) {
                     String enc = AstGraphUtils.typeMemberExecId(em);
                     if (enc != null) graph.addEdge(new GraphEdge(enc, EdgeKind.DECLARES, id, file, ln[0], ln[1]));
