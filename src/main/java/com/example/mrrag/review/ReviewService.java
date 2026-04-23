@@ -26,14 +26,12 @@ import java.util.concurrent.CompletableFuture;
  *
  * <h2>Decision tree</h2>
  * <pre>
- *  currentTargetSha ← GitLab API (getBranchHeadSha)
- *
  *  matching snapshot found?
  *  ├─ YES → detectState(snapshotDir)
- *  │         ├─ GRAPHS_READY  → load graphs + diffs from disk      → pipeline
- *  │         ├─ SOURCES_READY → buildGraphs(local) → saveGraphs    → pipeline
- *  │         ├─ DIFFS_ONLY    → clone → saveSnapshot → buildGraphs  → pipeline
- *  │         └─ EMPTY         → full pipeline
+ *  │         ├─ GRAPHS_READY  → load graphs from disk  → pipeline
+ *  │         ├─ SOURCES_READY → buildGraphs(local)     → saveGraphs → pipeline
+ *  │         ├─ DIFFS_ONLY    → clone → buildGraphs    → saveGraphs → pipeline
+ *  │         └─ EMPTY         → (treat as no snapshot)
  *  └─ NO  → clone → diffs → saveSnapshot → buildGraphs → saveGraphs → pipeline
  * </pre>
  */
@@ -55,8 +53,8 @@ public class ReviewService {
         MergeRequest mr = repoGateway.getMergeRequest(
                 request.namespace(), request.repo(), request.mrIid(), null);
 
-        // ── resolve current HEAD of target branch via GitLab API (no clone needed) ──
-        String currentTargetSha = resolveBranchHead(request, mr.getTargetBranch());
+        // resolve current HEAD of target branch to validate any cached snapshot
+        String currentTargetSha = resolveRemoteHead(request, mr.getTargetBranch());
         log.debug("Current target HEAD: {}", currentTargetSha);
 
         Optional<Path> existingSnapshot = snapshotReader.findMatchingSnapshot(
@@ -71,11 +69,11 @@ public class ReviewService {
                 case GRAPHS_READY  -> runFromGraphs(request, mr, snapshotDir);
                 case SOURCES_READY -> runFromSources(request, mr, snapshotDir);
                 case DIFFS_ONLY    -> runFromDiffs(request, mr, snapshotDir);
-                case EMPTY         -> runFull(request, mr);
+                case EMPTY         -> runFull(request, mr);  // nothing reusable
             };
         }
 
-        log.info("No matching snapshot — running full pipeline");
+        log.info("No matching snapshot found — running full pipeline");
         return runFull(request, mr);
     }
 
@@ -83,115 +81,139 @@ public class ReviewService {
     // Pipeline variants
     // -----------------------------------------------------------------------
 
-    /** GRAPHS_READY: load graphs + diffs from disk, skip clone + graph build. */
-    private ReviewContext runFromGraphs(ReviewRequest req, MergeRequest mr, Path snapshotDir) {
+    /** GRAPHS_READY: load graphs from disk, skip clone + graph build. */
+    private ReviewContext runFromGraphs(ReviewRequest request,
+                                        MergeRequest mr,
+                                        Path snapshotDir) {
         try {
             log.info("[GRAPHS_READY] Loading graphs and diffs from snapshot");
-            List<Diff> diffs      = snapshotReader.readDiffsFromDir(snapshotDir);
-            ProjectGraph srcGraph = snapshotReader.readSourceGraph(snapshotDir);
-            ProjectGraph tgtGraph = snapshotReader.readTargetGraph(snapshotDir);
-            return runPipeline(req, mr, diffs, srcGraph, tgtGraph);
-        } catch (IOException e) { throw new UncheckedIOException(e); }
+            List<Diff> diffs = snapshotReader.readDiffsFromDir(snapshotDir);
+            ProjectGraph sourceGraph = snapshotReader.readSourceGraph(snapshotDir);
+            ProjectGraph targetGraph = snapshotReader.readTargetGraph(snapshotDir);
+            return runPipeline(request, mr, diffs, sourceGraph, targetGraph);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
-    /** SOURCES_READY: local dirs exist — build graphs, persist, run pipeline. */
-    private ReviewContext runFromSources(ReviewRequest req, MergeRequest mr, Path snapshotDir) {
+    /** SOURCES_READY: local dirs exist — build graphs, persist them, run pipeline. */
+    private ReviewContext runFromSources(ReviewRequest request,
+                                         MergeRequest mr,
+                                         Path snapshotDir) {
         try {
             log.info("[SOURCES_READY] Building graphs from local snapshot sources");
             List<Diff> diffs = snapshotReader.readDiffsFromDir(snapshotDir);
-            Path srcRoot = snapshotReader.sourceRootFromDir(snapshotDir);
-            Path tgtRoot = snapshotReader.targetRootFromDir(snapshotDir);
-            ProjectGraph[] graphs = buildGraphsParallel(srcRoot, tgtRoot);
+            Path sourceRoot = snapshotReader.sourceRootFromDir(snapshotDir);
+            Path targetRoot = snapshotReader.targetRootFromDir(snapshotDir);
+            ProjectGraph[] graphs = buildGraphsParallel(sourceRoot, targetRoot);
             persistenceService.saveGraphs(snapshotDir, graphs[0], graphs[1]);
-            return runPipeline(req, mr, diffs, graphs[0], graphs[1]);
-        } catch (IOException e) { throw new UncheckedIOException(e); }
+            return runPipeline(request, mr, diffs, graphs[0], graphs[1]);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
-    /** DIFFS_ONLY: diffs on disk, sources absent — clone, save snapshot, build graphs. */
-    private ReviewContext runFromDiffs(ReviewRequest req, MergeRequest mr, Path snapshotDir) {
+    /** DIFFS_ONLY: diffs on disk, but no sources — clone, build graphs, persist. */
+    private ReviewContext runFromDiffs(ReviewRequest request,
+                                       MergeRequest mr,
+                                       Path snapshotDir) {
         try {
-            log.info("[DIFFS_ONLY] Cloning sources, building graphs");
-            List<Diff> diffs  = snapshotReader.readDiffsFromDir(snapshotDir);
-            Path[] roots      = cloneParallel(req, mr);
-            Path newSnapshot  = persistenceService.saveSnapshot(req, mr, diffs, roots[0], roots[1]);
+            log.info("[DIFFS_ONLY] Cloning sources, then building graphs");
+            List<Diff> diffs = snapshotReader.readDiffsFromDir(snapshotDir);
+            Path[] roots = cloneParallel(request, mr);
+            // copy clones into existing snapshot dir
+            Path newSnapshotDir = persistenceService.saveSnapshot(
+                    request, mr, diffs, roots[0], roots[1]);
             ProjectGraph[] graphs = buildGraphsParallel(roots[0], roots[1]);
-            persistenceService.saveGraphs(newSnapshot, graphs[0], graphs[1]);
-            return runPipeline(req, mr, diffs, graphs[0], graphs[1]);
-        } catch (IOException e) { throw new UncheckedIOException(e); }
+            persistenceService.saveGraphs(newSnapshotDir, graphs[0], graphs[1]);
+            return runPipeline(request, mr, diffs, graphs[0], graphs[1]);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     /** Full pipeline: clone → diffs → saveSnapshot → buildGraphs → saveGraphs → pipeline. */
-    private ReviewContext runFull(ReviewRequest req, MergeRequest mr) {
+    private ReviewContext runFull(ReviewRequest request, MergeRequest mr) {
         log.info("[FULL] clone → diffs → snapshot → graphs → pipeline");
 
-        Path[] roots = cloneParallel(req, mr);
+        Path[] roots = cloneParallel(request, mr);
+        Path sourceRoot = roots[0];
+        Path targetRoot = roots[1];
 
         List<Diff> diffs = repoGateway.getMrDiffs(
-                req.namespace(), req.repo(), req.mrIid(), null);
+                request.namespace(), request.repo(), request.mrIid(), null);
         log.info("Fetched {} diff(s)", diffs.size());
 
-        Path snapshotDir = persistenceService.saveSnapshot(req, mr, diffs, roots[0], roots[1]);
+        Path snapshotDir = persistenceService.saveSnapshot(request, mr, diffs, sourceRoot, targetRoot);
         log.info("Snapshot saved: {}", snapshotDir.getFileName());
 
-        ProjectGraph[] graphs = buildGraphsParallel(roots[0], roots[1]);
+        ProjectGraph[] graphs = buildGraphsParallel(sourceRoot, targetRoot);
         persistenceService.saveGraphs(snapshotDir, graphs[0], graphs[1]);
 
-        return runPipeline(req, mr, diffs, graphs[0], graphs[1]);
+        return runPipeline(request, mr, diffs, graphs[0], graphs[1]);
     }
 
     // -----------------------------------------------------------------------
     // Shared helpers
     // -----------------------------------------------------------------------
 
-    private ReviewContext runPipeline(ReviewRequest req, MergeRequest mr,
+    private ReviewContext runPipeline(ReviewRequest request,
+                                      MergeRequest mr,
                                       List<Diff> diffs,
-                                      ProjectGraph srcGraph, ProjectGraph tgtGraph) {
+                                      ProjectGraph sourceGraph,
+                                      ProjectGraph targetGraph) {
         log.info("Running ContextPipeline ({} diffs)...", diffs.size());
-        List<GroupRepresentation> reps = contextPipeline.run(diffs, srcGraph, tgtGraph);
-        log.info("ContextPipeline complete: {} group(s)", reps.size());
+        List<GroupRepresentation> representations =
+                contextPipeline.run(diffs, sourceGraph, targetGraph);
+        log.info("ContextPipeline complete: {} group(s)", representations.size());
+
         return new ReviewContext(
-                req.namespace(), req.repo(), req.mrIid(),
+                request.namespace(), request.repo(), request.mrIid(),
                 mr.getSourceBranch(), mr.getTargetBranch(),
-                mr.getTitle(), mr.getDescription(), reps);
+                mr.getTitle(), mr.getDescription(),
+                representations);
     }
 
     /** Clones source and target branches in parallel; returns [sourceRoot, targetRoot]. */
-    private Path[] cloneParallel(ReviewRequest req, MergeRequest mr) {
+    private Path[] cloneParallel(ReviewRequest request, MergeRequest mr) {
         log.info("Cloning source='{}' and target='{}' in parallel...",
                 mr.getSourceBranch(), mr.getTargetBranch());
         CompletableFuture<Path> sf = CompletableFuture.supplyAsync(() ->
-                repoGateway.cloneProject(req.namespace(), req.repo(),
+                repoGateway.cloneProject(request.namespace(), request.repo(),
                         mr.getSourceBranch(), null, true, null));
         CompletableFuture<Path> tf = CompletableFuture.supplyAsync(() ->
-                repoGateway.cloneProject(req.namespace(), req.repo(),
+                repoGateway.cloneProject(request.namespace(), request.repo(),
                         mr.getTargetBranch(), null, true, null));
-        Path src = sf.join();
-        Path tgt = tf.join();
-        log.info("Cloned: source={} target={}", src, tgt);
-        return new Path[]{src, tgt};
+        Path sourceRoot = sf.join();
+        Path targetRoot = tf.join();
+        log.info("Cloned: source={} target={}", sourceRoot, targetRoot);
+        return new Path[]{sourceRoot, targetRoot};
     }
 
     /** Builds source and target graphs in parallel; returns [sourceGraph, targetGraph]. */
-    private ProjectGraph[] buildGraphsParallel(Path srcRoot, Path tgtRoot) {
+    private ProjectGraph[] buildGraphsParallel(Path sourceRoot, Path targetRoot) {
         log.info("Building AST graphs in parallel...");
         CompletableFuture<ProjectGraph> sf = CompletableFuture.supplyAsync(() ->
-                astGraphService.buildGraph(new LocalProjectSourceProvider(srcRoot), false));
+                astGraphService.buildGraph(new LocalProjectSourceProvider(sourceRoot), false));
         CompletableFuture<ProjectGraph> tf = CompletableFuture.supplyAsync(() ->
-                astGraphService.buildGraph(new LocalProjectSourceProvider(tgtRoot), false));
-        ProjectGraph src = sf.join();
-        ProjectGraph tgt = tf.join();
-        log.info("AST graphs built");
-        return new ProjectGraph[]{src, tgt};
+                astGraphService.buildGraph(new LocalProjectSourceProvider(targetRoot), false));
+        ProjectGraph sourceGraph = sf.join();
+        ProjectGraph targetGraph = tf.join();
+        log.info("AST graphs built successfully");
+        return new ProjectGraph[]{sourceGraph, targetGraph};
     }
 
     /**
-     * Resolves the current HEAD SHA of a branch via GitLab API.
+     * Resolves the current HEAD SHA of a remote branch via a shallow clone probe.
      * Falls back to empty string (disables SHA-based cache validation) on any error.
      */
-    private String resolveBranchHead(ReviewRequest req, String branch) {
+    private String resolveRemoteHead(ReviewRequest request, String branch) {
         try {
-            return repoGateway.getBranchHeadSha(
-                    req.namespace(), req.repo(), branch, null);
+            Path tmpClone = repoGateway.cloneProject(
+                    request.namespace(), request.repo(), branch, null, false, null);
+            String sha = ReviewDataPersistenceService.resolveGitHead(tmpClone);
+            // don't clean up — GitLabGateway workspace management handles temp dirs
+            return sha;
         } catch (Exception e) {
             log.warn("Could not resolve HEAD for branch '{}': {}", branch, e.getMessage());
             return "";
