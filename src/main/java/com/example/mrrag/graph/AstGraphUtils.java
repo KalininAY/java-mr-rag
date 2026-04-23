@@ -7,6 +7,7 @@ import spoon.reflect.cu.position.BodyHolderSourcePosition;
 import spoon.reflect.cu.position.CompoundSourcePosition;
 import spoon.reflect.declaration.*;
 import spoon.reflect.reference.*;
+import spoon.reflect.visitor.filter.TypeFilter;
 
 import java.nio.file.Path;
 import java.util.*;
@@ -145,7 +146,7 @@ public final class AstGraphUtils {
     public static String varId(CtVariable<?> v) {
         if (v == null) return "unresolved";
 
-        // 1. Method / constructor parameter
+        // 1. Parameter of method/constructor
         if (v instanceof CtParameter<?>) {
             CtExecutable<?> exec = v.getParent(CtExecutable.class);
             if (exec instanceof CtTypeMember tm) {
@@ -154,38 +155,23 @@ public final class AstGraphUtils {
             }
         }
 
-        // Resolve enclosing method/constructor once — used by cases 2 and 3
-        CtMethod<?> method = v.getParent(CtMethod.class);
-        CtConstructor<?> ctor = method == null ? v.getParent(CtConstructor.class) : null;
-        CtTypeMember enclosingExec = method != null ? method : ctor;
-        String execId = enclosingExec != null ? typeMemberExecId(enclosingExec) : null;
-
-        // 2. Variable / parameter inside a lambda — qualify with lambda's own line
         CtLambda<?> lambda = v.getParent(CtLambda.class);
-        if (lambda != null && execId != null) {
-            int lambdaLine = 0;
-            try {
-                SourcePosition lp = lambda.getPosition();
-                if (lp != null && lp.isValidPosition()) lambdaLine = lp.getLine();
-            } catch (Exception ignored) {
-            }
-            return "var@" + execId + "#\u03bb" + lambdaLine + ":" + v.getSimpleName();
-        }
+        CtTypeMember enclosing = v.getParent(CtMethod.class);
+        if (enclosing == null) enclosing = v.getParent(CtConstructor.class);
+        String execId = enclosing != null ? typeMemberExecId(enclosing) : null;
 
-        // 3. Ordinary local variable inside a method or constructor
-        if (execId != null) {
-            return "var@" + execId + "#" + v.getSimpleName();
-        }
+        // 2. Variable inside lambda
+        if (lambda != null && execId != null) return "var@" + execId + "#\u03bb" + v.getSimpleName();
+        // 3. Ordinary local variable inside method/constructor
+        if (execId != null) return "var@" + execId + "#" + v.getSimpleName();
 
-        // 4. Fallback — no enclosing executable (e.g. initializer block); omit line number
+        // 4. Fallback (e.g. initializer block)
         String fileName = "?";
         try {
             SourcePosition pos = v.getPosition();
-            if (pos != null && pos.isValidPosition() && pos.getFile() != null) {
+            if (pos != null && pos.isValidPosition() && pos.getFile() != null)
                 fileName = pos.getFile().getName();
-            }
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         return "var@" + fileName + ":" + v.getSimpleName();
     }
 
