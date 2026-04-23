@@ -124,10 +124,69 @@ public final class AstGraphUtils {
         return field.getDeclaringType().getQualifiedName() + "." + field.getSimpleName();
     }
 
+    /**
+     * Builds a stable, line-number-independent ID for a local variable or parameter.
+     *
+     * <p>Strategy (priority order):
+     * <ol>
+     *   <li><b>Method/constructor parameter</b> — {@code execId#param:<name>}</li>
+     *   <li><b>Lambda parameter or variable inside a lambda</b> — {@code execId#λ<lambdaLine>:<name>}
+     *       where {@code lambdaLine} is the source line of the enclosing lambda expression.
+     *       This line shifts together with the whole method when unrelated lines are added/removed
+     *       above, so two versions of the same lambda still produce the same ID.</li>
+     *   <li><b>Local variable inside a method/constructor</b> — {@code execId#<name>}</li>
+     *   <li><b>Fallback</b> (no enclosing executable found) — {@code var@<fileName>:<name>}
+     *       (no line number).</li>
+     * </ol>
+     *
+     * @param v the variable element; must not be {@code null}
+     * @return a stable string ID for use as a graph node key
+     */
     public static String varId(CtVariable<?> v) {
-        if (!v.getPosition().isValidPosition()) return "unresolved";
-        String file = v.getPosition().getFile() != null ? v.getPosition().getFile().getName() : "?";
-        return "var@" + file + ":" + v.getPosition().getLine() + ":" + v.getSimpleName();
+        if (v == null) return "unresolved";
+
+        // 1. Method / constructor parameter
+        if (v instanceof CtParameter<?>) {
+            CtExecutable<?> exec = v.getParent(CtExecutable.class);
+            if (exec instanceof CtTypeMember tm) {
+                String execId = typeMemberExecId(tm);
+                if (execId != null) return "var@" + execId + "#param:" + v.getSimpleName();
+            }
+        }
+
+        // Resolve enclosing method/constructor once — used by cases 2 and 3
+        CtMethod<?> method = v.getParent(CtMethod.class);
+        CtConstructor<?> ctor = method == null ? v.getParent(CtConstructor.class) : null;
+        CtTypeMember enclosingExec = method != null ? method : ctor;
+        String execId = enclosingExec != null ? typeMemberExecId(enclosingExec) : null;
+
+        // 2. Variable / parameter inside a lambda — qualify with lambda's own line
+        CtLambda<?> lambda = v.getParent(CtLambda.class);
+        if (lambda != null && execId != null) {
+            int lambdaLine = 0;
+            try {
+                SourcePosition lp = lambda.getPosition();
+                if (lp != null && lp.isValidPosition()) lambdaLine = lp.getLine();
+            } catch (Exception ignored) {
+            }
+            return "var@" + execId + "#\u03bb" + lambdaLine + ":" + v.getSimpleName();
+        }
+
+        // 3. Ordinary local variable inside a method or constructor
+        if (execId != null) {
+            return "var@" + execId + "#" + v.getSimpleName();
+        }
+
+        // 4. Fallback — no enclosing executable (e.g. initializer block); omit line number
+        String fileName = "?";
+        try {
+            SourcePosition pos = v.getPosition();
+            if (pos != null && pos.isValidPosition() && pos.getFile() != null) {
+                fileName = pos.getFile().getName();
+            }
+        } catch (Exception ignored) {
+        }
+        return "var@" + fileName + ":" + v.getSimpleName();
     }
 
     public static String varRefId(CtVariableReference<?> ref) {
