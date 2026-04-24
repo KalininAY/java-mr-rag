@@ -52,10 +52,10 @@ public class ReviewService {
 
         GitLabLocalSourceProvider sourceProvider = new GitLabLocalSourceProvider(
                 repoGateway,
-                new RemoteProjectRequest(request.namespace(), request.repo(), mr.getSourceBranch(), null, null, true));
+                new RemoteProjectRequest(request.namespace(), request.repo(), mr.getSourceBranch(), null, null, false));
         GitLabLocalSourceProvider targetProvider = new GitLabLocalSourceProvider(
                 repoGateway,
-                new RemoteProjectRequest(request.namespace(), request.repo(), mr.getTargetBranch(), null, null, true));
+                new RemoteProjectRequest(request.namespace(), request.repo(), mr.getTargetBranch(), null, null, false));
 
         log.info("Both branches cloned successfully: source={}, target={}",
                 mr.getSourceBranch(), mr.getSourceBranch());

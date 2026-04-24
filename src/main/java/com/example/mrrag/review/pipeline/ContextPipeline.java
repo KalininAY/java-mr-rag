@@ -67,64 +67,16 @@ public class ContextPipeline {
         log.info("ContextPipeline.step2: {} filteredLines", filteredLines.size());
 
         // Step 3: group lines via AST graph
-        List<ChangeGroup> groups = List.of();
-        astChangeGrouper.group(filteredLines, sourceGraph, targetGraph);
+        List<UnionLine> groups = astChangeGrouper.group(filteredLines, sourceGraph, targetGraph);
         log.info("ContextPipeline.step3: {} groups", groups.size());
-
-        // Step 4: classify groups by ChangeType
-        Map<ChangeType, List<ChangeGroup>> byType = classifyGroups(groups);
-        log.info("ContextPipeline.step4: {} classifyGroups", byType.size());
-        byType.forEach((t, gs) -> log.info("  ChangeType={}: {} group(s)", t, gs.size()));
 
         // Shared collector — context may overlap across groups intentionally
         ContextCollector collector = new ContextCollector();
-
-        // Steps 5: per group find classes/nodes, per type collect context
-        for (Map.Entry<ChangeType, List<ChangeGroup>> entry : byType.entrySet()) {
-            ChangeType type = entry.getKey();
-            List<ChangeGroup> gs = entry.getValue();
-
-            List<ContextStrategy> applicable = strategies.stream()
-                    .filter(s -> s.supports(type))
-                    .toList();
-
-            if (applicable.isEmpty()) log.warn("ContextPipeline: no ContextStrategy for ChangeType={}", type);
-
-            for (ChangeGroup group : gs) {
-                // Step 5.1: relevant classes in source + target graphs
-                List<GraphNode> relevantClasses =
-                        findRelevantClasses(group, sourceGraph, targetGraph);
-                log.debug("Group {} ({}): {} relevant class(es)",
-                        group.id(), type, relevantClasses.size());
-
-                // Step 5.2: relevant nodes — members of those classes + nodes at changed lines
-                List<GraphNode> relevantNodes =
-                        findRelevantNodes(group, relevantClasses, sourceGraph, targetGraph);
-                log.debug("Group {} ({}): {} relevant node(s)",
-                        group.id(), type, relevantNodes.size());
-
-                // Step 5.3: apply strategies → add to collector
-                for (ContextStrategy strategy : applicable) {
-                    List<EnrichmentSnippet> ctx = strategy.collectContext(group, sourceGraph, targetGraph);
-                    collector.addAll(group.id(), ctx);
-                }
-            }
-        }
 
         log.info("ContextPipeline: context collected — {} total snippet(s)", collector.totalSize());
 
         // Step 6: build per-group representations
         List<GroupRepresentation> result = new ArrayList<>(groups.size());
-        for (ChangeGroup group : groups) {
-            ChangeType type = classifyGroup(group);
-            List<EnrichmentSnippet> ctx = collector.get(group.id());
-            GroupRepresentation repr = representationBuilder.build(group, type, ctx, sourceGraph);
-            result.add(repr);
-            log.debug("Representation: group={} type={} snippets={}",
-                    group.id(), type, ctx.size());
-        }
-
-        log.info("ContextPipeline: {} representation(s) built", result.size());
         return result;
     }
 
@@ -180,7 +132,7 @@ public class ContextPipeline {
     }
 
     private List<GraphNode> findRelevantNodes(ChangeGroup group, List<GraphNode> relevantClasses,
-                                               ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+                                              ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         List<GraphNode> result = new ArrayList<>();
 
         // Members declared inside the relevant classes (via DECLARES edges)

@@ -15,7 +15,10 @@ public class CommentFilter implements ContextFilter {
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
         for (ChangedLine l : lines) byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
         Set<ChangedLine> result = new LinkedHashSet<>();
-        for (List<ChangedLine> fileLines : byFile.values()) result.addAll(mergeMirrorInFile(fileLines));
+        for (List<ChangedLine> fileLines : byFile.values()) {
+            List<ChangedLine> sortFileLines = fileLines.stream().sorted(Comparator.comparing(ChangedLine::lineNumber)).toList();
+            result.addAll(mergeMirrorInFile(sortFileLines));
+        };
         return result;
     }
 

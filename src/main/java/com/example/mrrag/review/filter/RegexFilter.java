@@ -12,10 +12,9 @@ import java.util.stream.Collectors;
 @Component
 public class RegexFilter implements ContextFilter {
     private static final Pattern IMPORT_PATTERN =
-            Pattern.compile("^\\s*import\\s+(static\\s+)?[\\w.]+\\*?;\\s*$");
-
+            Pattern.compile("^\\s*import\\s+(static\\s+)?[\\w.]+\\*?;\\s*$", Pattern.UNICODE_CHARACTER_CLASS);
     private static final Pattern PACKAGE_PATTERN =
-            Pattern.compile("^\\s*package\\s+[\\w.]+;\\s*$");
+            Pattern.compile("^\\s*package\\s+[\\w.]+;\\s*$", Pattern.UNICODE_CHARACTER_CLASS);
 
     @Override
     public Set<ChangedLine> filter(Set<ChangedLine> lines, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
