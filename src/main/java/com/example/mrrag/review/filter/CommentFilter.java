@@ -16,9 +16,14 @@ public class CommentFilter implements ContextFilter {
         for (ChangedLine l : lines) byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
         Set<ChangedLine> result = new LinkedHashSet<>();
         for (List<ChangedLine> fileLines : byFile.values()) {
-            List<ChangedLine> sortFileLines = fileLines.stream().sorted(Comparator.comparing(ChangedLine::lineNumber)).toList();
+            // Sort by effective line number: ADD lines use lineNumber, DELETE lines use oldLineNumber.
+            // This ensures that a DELETE(oldLine=78) and ADD(line=78) end up adjacent in the list
+            // so the mirror-pair window [i, i+4) can find them.
+            List<ChangedLine> sortFileLines = fileLines.stream()
+                    .sorted(Comparator.comparingInt(l -> l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber()))
+                    .toList();
             result.addAll(mergeMirrorInFile(sortFileLines));
-        };
+        }
         return result;
     }
 
