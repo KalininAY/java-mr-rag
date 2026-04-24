@@ -52,10 +52,10 @@ public class UnionService {
     ) {
         Set<ChangedLine> changedLines = new LinkedHashSet<>();
         Set<GraphNode> graphNodes = new LinkedHashSet<>();
-        // GraphNode -> первая ChangedLine, из которой нода была резолвлена.
-        // putIfAbsent гарантирует: если нода входит в несколько ChangedLine
-        // (объединённых через DSU), сохраняем первое вхождение.
-        Map<GraphNode, ChangedLine> nodeOrigins = new LinkedHashMap<>();
+        // GraphNode -> все ChangedLine, из которых нода была резолвлена.
+        // Одна нода может входить в несколько ChangedLine (например ADD и DELETE),
+        // поэтому собираем полный список через computeIfAbsent.
+        Map<GraphNode, List<ChangedLine>> nodeOrigins = new LinkedHashMap<>();
 
         String mergedId = indices.stream()
                 .map(i -> entries.get(i).getKey().filePath()
@@ -68,7 +68,7 @@ public class UnionService {
             changedLines.add(cl);
             for (GraphNode node : entries.get(i).getValue()) {
                 graphNodes.add(node);
-                nodeOrigins.putIfAbsent(node, cl);
+                nodeOrigins.computeIfAbsent(node, k -> new ArrayList<>()).add(cl);
             }
         }
 
