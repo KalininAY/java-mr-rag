@@ -58,7 +58,7 @@ public class ReviewService {
                 new RemoteProjectRequest(request.namespace(), request.repo(), mr.getTargetBranch(), null, null, false));
 
         log.info("Both branches cloned successfully: source={}, target={}",
-                mr.getSourceBranch(), mr.getSourceBranch());
+                mr.getSourceBranch(), mr.getTargetBranch());
         // --- Parallel AST graph build ---
         log.info("Building AST graphs in parallel...");
 

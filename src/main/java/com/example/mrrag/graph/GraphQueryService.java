@@ -31,7 +31,9 @@ public class GraphQueryService {
             for (GraphEdge edge : edges) {
                 if (edge.startLine() <= line && edge.endLine() >= line && filePath.equals(edge.filePath())) {
                     GraphNode callee = graph.nodes.get(edge.callee());
+                    GraphNode caller = graph.nodes.get(edge.caller());
                     if (callee != null) withoutBody.add(callee);
+                    if (callee != null) withoutBody.add(caller);
                 }
             }
         }
@@ -52,7 +54,7 @@ public class GraphQueryService {
 
         withBody.stream()
                 .filter(Objects::nonNull)
-                .filter(it-> it.kind() == NodeKind.METHOD || it.kind() == NodeKind.LAMBDA)
+                .filter(it-> it.kind() == NodeKind.METHOD || it.kind() == NodeKind.LAMBDA || it.kind() == NodeKind.CONSTRUCTOR)
                 .min(Comparator.comparingInt(n -> n.sourceSnippet().length()))
 //                    .map(n -> n.declaration())
                 .ifPresent(result::add);
