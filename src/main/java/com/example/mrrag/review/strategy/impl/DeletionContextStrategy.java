@@ -1,6 +1,5 @@
 package com.example.mrrag.review.strategy.impl;
 
-import com.example.mrrag.graph.AstGraphUtils;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.GraphEdge;
 import com.example.mrrag.graph.model.GraphNode;
@@ -17,11 +16,12 @@ import java.util.stream.Collectors;
 /**
  * Collects context for DELETE lines in a {@link UnionLine}.
  *
- * <p>Looks up the target (base) graph to find usages of what was removed,
- * helping the reviewer understand the impact of the deletion.
+ * <p>Iterates {@link UnionLine#graphNodes()} directly — no secondary
+ * {@code byLine} lookup. Only processes nodes whose {@link UnionLine#nodeOrigins()}
+ * contain at least one DELETE line.
  *
- * <p>Uses {@link UnionLine#nodeOrigins()} — DELETE nodes are resolved
- * against {@code targetGraph}.
+ * <p>For each qualifying node, finds incoming edges in {@code targetGraph} (the
+ * base branch) to report callers/usages of deleted symbols.
  */
 @Slf4j
 @Component
@@ -31,53 +31,49 @@ public class DeletionContextStrategy implements ContextStrategy {
     private int maxSnippetsPerGroup;
 
     @Override
-    public List<EnrichmentSnippet> collectContext(UnionLine union, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+    public List<EnrichmentSnippet> collectContext(
+            UnionLine union, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+
+        if (union.graphNodes().isEmpty()) return List.of();
+
         List<EnrichmentSnippet> snippets = new ArrayList<>();
 
-        List<ChangedLine> deleted = union.changedLines().stream()
-                .filter(l -> l.type() == ChangedLine.LineType.DELETE)
-                .toList();
-
-        if (deleted.isEmpty()) return snippets;
-
-        for (ChangedLine cl : deleted) {
+        for (GraphNode node : union.graphNodes()) {
             if (snippets.size() >= maxSnippetsPerGroup) break;
 
-            String file = AstGraphUtils.normalizeFilePath(cl.filePath(), targetGraph);
-            int oldLine = cl.oldLineNumber();
-            if (oldLine <= 0) continue;
+            // skip nodes with no DELETE origin
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
+            if (!hasDel) continue;
 
-            List<GraphNode> declared = targetGraph.byLine
-                    .getOrDefault(file + "#" + oldLine, List.of());
+            // look up the same node id in targetGraph (base branch)
+            GraphNode targetNode = targetGraph.nodes.get(node.id());
+            if (targetNode == null) continue;
 
-            for (GraphNode decl : declared) {
-                if (snippets.size() >= maxSnippetsPerGroup) break;
+            List<GraphEdge> usageEdges = targetGraph.incoming(targetNode.id()).stream()
+                    .filter(e -> e.kind() != EdgeKind.DECLARES)
+                    .toList();
+            if (usageEdges.isEmpty()) continue;
 
-                List<GraphEdge> usageEdges = targetGraph.incoming(decl.id());
-                if (usageEdges.isEmpty()) continue;
+            EnrichmentSnippet.SnippetType snippetType = switch (targetNode.kind()) {
+                case METHOD -> EnrichmentSnippet.SnippetType.METHOD_CALLERS;
+                case FIELD  -> EnrichmentSnippet.SnippetType.FIELD_USAGES;
+                default     -> EnrichmentSnippet.SnippetType.VARIABLE_USAGES;
+            };
 
-                EnrichmentSnippet.SnippetType type = switch (decl.kind()) {
-                    case METHOD -> EnrichmentSnippet.SnippetType.METHOD_CALLERS;
-                    case FIELD -> EnrichmentSnippet.SnippetType.FIELD_USAGES;
-                    default -> EnrichmentSnippet.SnippetType.VARIABLE_USAGES;
-                };
+            String usageSummary = usageEdges.stream()
+                    .limit(10)
+                    .map(e -> e.filePath() + ":" + e.startLine())
+                    .distinct()
+                    .collect(Collectors.joining(", "));
 
-                String usageLines = usageEdges.stream()
-                        .filter(e -> e.kind() != EdgeKind.DECLARES)
-                        .limit(10)
-                        .map(e -> e.filePath() + ":" + e.startLine() + "-" + e.endLine())
-                        .distinct()
-                        .collect(Collectors.joining());
-
-                if (usageLines.isBlank()) continue;
-
-                snippets.add(new EnrichmentSnippet(
-                        type,
-                        decl.filePath(), decl.startLine(), decl.endLine(), decl.simpleName(),
-                        usageLines,
-                        decl.simpleName() + " is deleted but still referenced in " + usageLines.lines().count() + " place(s)"
-                ));
-            }
+            snippets.add(new EnrichmentSnippet(
+                    snippetType,
+                    targetNode.filePath(), targetNode.startLine(), targetNode.endLine(),
+                    targetNode.simpleName(),
+                    null,
+                    "'" + targetNode.simpleName() + "' is deleted but still referenced at: " + usageSummary
+            ));
         }
 
         log.debug("DeletionContextStrategy: union={} snippets={}", union.id(), snippets.size());

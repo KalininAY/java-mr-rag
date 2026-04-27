@@ -1,8 +1,8 @@
 package com.example.mrrag.review.strategy.impl;
 
+import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
-import com.example.mrrag.graph.AstGraphUtils;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.strategy.ContextStrategy;
 import lombok.RequiredArgsConstructor;
@@ -14,12 +14,14 @@ import java.util.*;
 
 /**
  * Collects context when a {@link UnionLine} contains both ADD and DELETE lines,
- * or spans multiple files.
+ * or spans multiple files (CROSS_SCOPE).
  *
- * <p>For every ADD/DELETE line, finds the smallest enclosing METHOD node and
- * adds a {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet per unique method.
- * Then delegates to {@link AdditionContextStrategy} and {@link DeletionContextStrategy}
- * for cross-reference snippets.
+ * <p>Picks METHOD nodes directly from {@link UnionLine#graphNodes()} — no
+ * secondary {@code nodesAtLine()} lookup. Only nodes touched by both ADD and
+ * DELETE (i.e. truly modified) get a full METHOD_BODY snippet.
+ *
+ * <p>Then delegates to {@link AdditionContextStrategy} and
+ * {@link DeletionContextStrategy} for cross-reference snippets.
  */
 @Slf4j
 @Component
@@ -43,25 +45,22 @@ public class ModificationContextStrategy implements ContextStrategy {
                 .anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
         boolean hasDel = union.changedLines().stream()
                 .anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
-
-        // Only handle unions with both ADD and DELETE (or multi-file)
         boolean multiFile = union.changedLines().stream()
                 .map(ChangedLine::filePath).distinct().count() > 1;
+
         if (!((hasAdd && hasDel) || multiFile)) return List.of();
 
         List<EnrichmentSnippet> snippets = new ArrayList<>();
 
-        // 1. Enclosing method bodies for every ADD/DELETE line
-        collectContainingMethods(union, sourceGraph, snippets);
+        // 1. METHOD_BODY for nodes touched by BOTH add and delete (modified in place)
+        collectModifiedMethodBodies(union, sourceGraph, snippets);
 
-        // 2. Cross-reference snippets for ADD lines
+        // 2. Cross-reference snippets via sub-strategies
         if (snippets.size() < maxSnippetsPerGroup) {
             additionStrategy.collectContext(union, sourceGraph, targetGraph).stream()
                     .limit(maxSnippetsPerGroup - snippets.size())
                     .forEach(snippets::add);
         }
-
-        // 3. Deletion-impact snippets for DELETE lines
         if (snippets.size() < maxSnippetsPerGroup) {
             deletionStrategy.collectContext(union, sourceGraph, targetGraph).stream()
                     .limit(maxSnippetsPerGroup - snippets.size())
@@ -72,41 +71,39 @@ public class ModificationContextStrategy implements ContextStrategy {
         return filterAlreadyInDiff(union, snippets);
     }
 
-    private void collectContainingMethods(
-            UnionLine union, ProjectGraph graph, List<EnrichmentSnippet> snippets) {
+    /**
+     * Finds METHOD nodes in {@link UnionLine#graphNodes()} whose
+     * {@link UnionLine#nodeOrigins()} contain both ADD and DELETE lines —
+     * these are truly modified methods, not just added or deleted ones.
+     */
+    private void collectModifiedMethodBodies(
+            UnionLine union, ProjectGraph sourceGraph, List<EnrichmentSnippet> snippets) {
 
-        Set<String> seenMethodIds = new LinkedHashSet<>();
+        Set<String> seen = new LinkedHashSet<>();
 
-        List<ChangedLine> changedLines = union.changedLines().stream()
-                .filter(l -> l.type() != ChangedLine.LineType.CONTEXT)
-                .filter(l -> l.lineNumber() > 0 || l.oldLineNumber() > 0)
-                .toList();
-
-        for (ChangedLine cl : changedLines) {
+        for (GraphNode node : union.graphNodes()) {
             if (snippets.size() >= maxSnippetsPerGroup) break;
+            if (node.kind() != NodeKind.METHOD) continue;
+            if (!seen.add(node.id())) continue;
 
-            String file = AstGraphUtils.normalizeFilePath(cl.filePath(), graph);
-            int line = cl.lineNumber() > 0 ? cl.lineNumber() : cl.oldLineNumber();
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
+            boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
+            if (!hasAdd || !hasDel) continue; // not modified in place
 
-            graph.nodesAtLine(file, line).stream()
-                    .filter(n -> n.kind() == NodeKind.METHOD)
-                    .min(Comparator.comparingInt(n -> n.endLine() - n.startLine()))
-                    .ifPresent(method -> {
-                        if (snippets.size() >= maxSnippetsPerGroup) return;
-                        if (!seenMethodIds.add(method.id())) return;
+            // prefer sourceGraph (new version); fall back to targetGraph
+            GraphNode resolved = sourceGraph.nodes.getOrDefault(node.id(),
+                    targetGraph -> targetGraph.nodes.get(node.id()));
+            if (resolved == null) resolved = node;
 
-                        int end = Math.min(method.endLine(),
-                                method.startLine() + maxSnippetLines - 1);
-                        snippets.add(new EnrichmentSnippet(
-                                EnrichmentSnippet.SnippetType.METHOD_BODY,
-                                method.filePath(),
-                                method.startLine(),
-                                end,
-                                method.simpleName(),
-                                method.sourceSnippet(),
-                                "Body of enclosing method '" + method.simpleName() + "'"
-                        ));
-                    });
+            int end = Math.min(resolved.endLine(), resolved.startLine() + maxSnippetLines - 1);
+            snippets.add(new EnrichmentSnippet(
+                    EnrichmentSnippet.SnippetType.METHOD_BODY,
+                    resolved.filePath(), resolved.startLine(), end,
+                    resolved.simpleName(),
+                    resolved.sourceSnippet(),
+                    "Body of modified method '" + resolved.simpleName() + "'"
+            ));
         }
     }
 }
