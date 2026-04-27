@@ -44,7 +44,6 @@ public final class AstGraphUtils {
      * Extracts source lines [{@code startLine}, {@code endLine}] (1-based, inclusive) from
      * {@code sourceLines}. Returns {@code ""} when {@code fileLines} cannot be resolved —
      * there is no reliable fallback if the original source is absent.
-     *
      */
     public static String extractSource(Map<String, String[]> sourceLines,
                                        String filePath, int startLine, int endLine) {
@@ -171,7 +170,8 @@ public final class AstGraphUtils {
             SourcePosition pos = v.getPosition();
             if (pos != null && pos.isValidPosition() && pos.getFile() != null)
                 fileName = pos.getFile().getName();
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
         return "var@" + fileName + ":" + v.getSimpleName();
     }
 
@@ -379,16 +379,16 @@ public final class AstGraphUtils {
                         : pos.getCompilationUnit() != null && pos.getCompilationUnit().getMainType() != null
                         ? pos.getCompilationUnit().getMainType().getQualifiedName().replace('.', '/') + ".java"
                         : "";
-                if (!spoon.isBlank()) {
-                    String norm = spoon.replace('\\', '/');
-                    if (projectRoot != null) {
-                        Path root = projectRoot.toAbsolutePath().normalize();
-                        Path abs  = Path.of(spoon).toAbsolutePath().normalize();
-                        if (abs.startsWith(root)) return root.relativize(abs).toString().replace('\\', '/');
-                    }
-                    int cut = indexOfStandardSourceRoot(norm);
-                    return cut >= 0 ? norm.substring(cut) : norm;
+                if (spoon.isBlank())
+                    return "";
+                String norm = spoon.replace('\\', '/');
+                if (projectRoot != null) {
+                    Path root = projectRoot.toAbsolutePath().normalize();
+                    Path abs = Path.of(spoon).toAbsolutePath().normalize();
+                    if (abs.startsWith(root)) return root.relativize(abs).toString().replace('\\', '/');
                 }
+                int cut = indexOfStandardSourceRoot(norm);
+                return cut >= 0 ? norm.substring(cut) : norm;
             }
         } catch (Exception ignored) {
         }
@@ -564,7 +564,7 @@ public final class AstGraphUtils {
         if (lines == null) return "";
         int[] declLines = declarationLines(el, sourceLines);
         int from = declLines[0];
-        int to   = declLines[1];
+        int to = declLines[1];
         if (from > 0 && to >= from && to <= lines.length) {
             return IntStream.rangeClosed(from - 1, to - 1)
                     .mapToObj(i -> lines[i])
