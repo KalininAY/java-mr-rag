@@ -12,7 +12,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Impact-analysis strategy: for every AST node in {@link UnionLine#graphNodes()},
@@ -21,16 +20,13 @@ import java.util.stream.Collectors;
  *
  * <p>Uses {@link UnionLine#nodeOrigins()} to pick the correct graph per node:
  * <ul>
- *   <li><b>ADD-only</b> node — incoming edges in {@code sourceGraph}:
- *       who already calls/reads the new symbol in the feature branch.</li>
- *   <li><b>DELETE-only</b> node — incoming edges in {@code targetGraph}:
- *       who still depends on the removed symbol (impact of deletion).</li>
- *   <li><b>ADD + DELETE</b> node (modified in place) — incoming from both graphs
- *       so the reviewer sees callers before and after.</li>
+ *   <li><b>ADD-only</b> — incoming in {@code sourceGraph}: who already calls the new symbol.</li>
+ *   <li><b>DELETE-only</b> — incoming in {@code targetGraph}: who still depends on removed symbol.</li>
+ *   <li><b>ADD + DELETE</b> — both graphs; snippets labelled with branch context.</li>
  * </ul>
  *
- * <p>Only {@link NodeKind#METHOD} and {@link NodeKind#FIELD} nodes are processed;
- * local variables produce too much noise.
+ * <p>Emits one {@link EnrichmentSnippet} per caller with the caller's {@code sourceSnippet}.
+ * Only {@link NodeKind#METHOD} and {@link NodeKind#FIELD} nodes are processed.
  */
 @Slf4j
 @Component
@@ -49,7 +45,7 @@ public class NodeImpactContextStrategy implements ContextStrategy {
         if (union.graphNodes().isEmpty()) return List.of();
 
         List<EnrichmentSnippet> snippets = new ArrayList<>();
-        Set<String> seenKey = new HashSet<>(); // nodeId#graph to avoid dups
+        Set<String> seenKey = new HashSet<>();
 
         for (GraphNode node : union.graphNodes()) {
             if (snippets.size() >= maxSnippetsPerGroup) break;
@@ -58,15 +54,22 @@ public class NodeImpactContextStrategy implements ContextStrategy {
             List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
             boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
             boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
+            boolean modified = hasAdd && hasDel;
 
             if (hasAdd) {
-                collectIncoming(node, sourceGraph, "source", seenKey, snippets, union);
+                GraphNode sourceNode = sourceGraph.nodes.get(node.id());
+                if (sourceNode != null) {
+                    collectCallerSnippets(sourceNode, sourceGraph,
+                            modified ? "[source branch] " : "",
+                            seenKey, snippets);
+                }
             }
             if (hasDel) {
-                // look up same node in targetGraph by id
                 GraphNode targetNode = targetGraph.nodes.get(node.id());
                 if (targetNode != null) {
-                    collectIncoming(targetNode, targetGraph, "target", seenKey, snippets, union);
+                    collectCallerSnippets(targetNode, targetGraph,
+                            modified ? "[target branch] " : "",
+                            seenKey, snippets);
                 }
             }
         }
@@ -75,17 +78,12 @@ public class NodeImpactContextStrategy implements ContextStrategy {
         return snippets;
     }
 
-    private void collectIncoming(
+    private void collectCallerSnippets(
             GraphNode node,
             ProjectGraph graph,
-            String graphLabel,
+            String labelPrefix,
             Set<String> seenKey,
-            List<EnrichmentSnippet> snippets,
-            UnionLine union) {
-
-        String key = node.id() + "#" + graphLabel;
-        if (!seenKey.add(key)) return;
-        if (snippets.size() >= maxSnippetsPerGroup) return;
+            List<EnrichmentSnippet> snippets) {
 
         List<GraphEdge> incoming = graph.incoming(node.id()).stream()
                 .filter(e -> e.kind() == EdgeKind.INVOKES
@@ -95,45 +93,29 @@ public class NodeImpactContextStrategy implements ContextStrategy {
 
         if (incoming.isEmpty()) return;
 
-        // Collect caller nodes (METHOD that contains the edge)
-        List<GraphNode> callers = incoming.stream()
-                .limit(maxCallersPerNode)
-                .map(e -> graph.nodes.get(e.caller()))
-                .filter(Objects::nonNull)
-                .filter(c -> c.kind() == NodeKind.METHOD)
-                .distinct()
-                .collect(Collectors.toList());
-
-        if (callers.isEmpty()) return;
-
         EnrichmentSnippet.SnippetType snippetType = node.kind() == NodeKind.FIELD
                 ? EnrichmentSnippet.SnippetType.FIELD_USAGES
                 : EnrichmentSnippet.SnippetType.METHOD_CALLERS;
 
-        String callerList = callers.stream()
-                .map(c -> c.simpleName() + " (" + c.filePath() + ":" + c.startLine() + ")")
-                .collect(Collectors.joining(", "));
+        int count = 0;
+        for (GraphEdge edge : incoming) {
+            if (snippets.size() >= maxSnippetsPerGroup) break;
+            if (count >= maxCallersPerNode) break;
 
-        String suffix = hasDel(union, node) && hasAdd(union, node)
-                ? " [" + graphLabel + " branch]"
-                : "";
+            String key = edge.caller() + "#" + labelPrefix;
+            if (!seenKey.add(key)) continue;
 
-        snippets.add(new EnrichmentSnippet(
-                snippetType,
-                node.filePath(), node.startLine(), node.endLine(),
-                node.simpleName(),
-                null,
-                callers.size() + " caller(s) of '" + node.simpleName() + "'" + suffix + ": " + callerList
-        ));
-    }
+            GraphNode caller = graph.nodes.get(edge.caller());
+            if (caller == null || caller.kind() != NodeKind.METHOD) continue;
 
-    private static boolean hasAdd(UnionLine union, GraphNode node) {
-        return union.nodeOrigins().getOrDefault(node, List.of()).stream()
-                .anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
-    }
-
-    private static boolean hasDel(UnionLine union, GraphNode node) {
-        return union.nodeOrigins().getOrDefault(node, List.of()).stream()
-                .anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
+            snippets.add(new EnrichmentSnippet(
+                    snippetType,
+                    caller.filePath(), caller.startLine(), caller.endLine(),
+                    caller.simpleName(),
+                    caller.sourceSnippet(),
+                    labelPrefix + "'" + caller.simpleName() + "' calls '" + node.simpleName() + "'"
+            ));
+            count++;
+        }
     }
 }
