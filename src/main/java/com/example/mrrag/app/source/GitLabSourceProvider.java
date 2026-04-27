@@ -23,7 +23,7 @@ public abstract class GitLabSourceProvider implements ProjectSourceProvider {
         this.branch = req.branch() == null || req.branch().isBlank() ? "master" : req.branch();
         this.commit = req.commit();
         this.token = req.token();
-        this.force = req.force() != null;
+        this.force =  Boolean.TRUE.equals(req.force());
     }
 
     /**
