@@ -347,68 +347,53 @@ public final class AstGraphUtils {
     // Position / path helpers
     // ------------------------------------------------------------------
 
-    public static String sourceFile(CtElement el) {
+    /**
+     * Repo-relative path из sourceLines по суффиксу qualified name владельца.
+     * Для VirtualFile pos.getFile() == null — ищем по ключам sourceLines.
+     * Fallback: Spoon CU + стандартные src roots.
+     */
+    public static String graphFilePath(CtElement el, Path projectRoot, Set<String> repoPaths) {
+        // 1. Ищем владельца-тип для построения суффикса
+        try {
+            CtType<?> owner = el instanceof CtType<?> t ? t
+                    : el instanceof CtTypeMember m ? m.getDeclaringType()
+                    : el.getParent(CtType.class);
+            if (owner != null) {
+                String suffix = owner.getQualifiedName()
+                        .replace('$', '/')
+                        .replace('.', '/') + ".java";
+                String found = repoPaths.stream()
+                        .filter(p -> p.replace('\\', '/').endsWith(suffix))
+                        .findFirst().orElse(null);
+                if (found != null) return found;
+            }
+        } catch (Exception ignored) {
+        }
+
+        // 2. Fallback: Spoon позиция + relativize / стандартные src roots
         try {
             var pos = el.getPosition();
-            if (pos.isValidPosition()) {
-                if (pos.getFile() != null) return pos.getFile().getPath().replace("\\", "/");
-                var cu = pos.getCompilationUnit();
-                if (cu != null) {
-                    String f = cu.getFile() != null ? cu.getFile().getPath()
-                            : (cu.getMainType() != null
-                            ? cu.getMainType().getQualifiedName().replace('.', '/') + ".java"
-                            : "");
-                    if (!f.isEmpty()) return f;
+            if (pos != null && pos.isValidPosition()) {
+                String spoon = pos.getFile() != null
+                        ? pos.getFile().getPath()
+                        : pos.getCompilationUnit() != null && pos.getCompilationUnit().getMainType() != null
+                        ? pos.getCompilationUnit().getMainType().getQualifiedName().replace('.', '/') + ".java"
+                        : "";
+                if (!spoon.isBlank()) {
+                    String norm = spoon.replace('\\', '/');
+                    if (projectRoot != null) {
+                        Path root = projectRoot.toAbsolutePath().normalize();
+                        Path abs  = Path.of(spoon).toAbsolutePath().normalize();
+                        if (abs.startsWith(root)) return root.relativize(abs).toString().replace('\\', '/');
+                    }
+                    int cut = indexOfStandardSourceRoot(norm);
+                    return cut >= 0 ? norm.substring(cut) : norm;
                 }
             }
         } catch (Exception ignored) {
         }
+
         return "";
-    }
-
-    /**
-     * Path for graph storage and {@link #extractSource} lookup: repo-relative with forward slashes when possible.
-     */
-    public static String graphFilePath(CtElement el, Path projectRoot, Set<String> repoRelativeSourcePaths) {
-        String spoon = sourceFile(el);
-        if (spoon.isBlank()) return spoon;
-        if (projectRoot == null) return spoon.replace('\\', '/');
-
-        try {
-            Path root = projectRoot.toAbsolutePath().normalize();
-            try {
-                root = root.toRealPath();
-            } catch (Exception ignored) {
-            }
-            Path abs = Path.of(spoon).toAbsolutePath().normalize();
-            try {
-                abs = abs.toRealPath();
-            } catch (Exception ignored) {
-            }
-            if (abs.startsWith(root)) {
-                return root.relativize(abs).toString().replace('\\', '/');
-            }
-        } catch (Exception ignored) {
-        }
-
-        String norm = spoon.replace('\\', '/');
-        if (repoRelativeSourcePaths != null && !repoRelativeSourcePaths.isEmpty()) {
-            String best = null;
-            int bestLen = -1;
-            for (String rel : repoRelativeSourcePaths) {
-                if (rel == null || rel.isBlank()) continue;
-                String r = rel.replace('\\', '/');
-                if (norm.endsWith(r) && r.length() > bestLen) {
-                    best = r;
-                    bestLen = r.length();
-                }
-            }
-            if (best != null) return best;
-        }
-
-        int cut = indexOfStandardSourceRoot(norm);
-        if (cut >= 0) return norm.substring(cut).replace('\\', '/');
-        return spoon;
     }
 
     private static int indexOfStandardSourceRoot(String normalizedForwardSlashes) {
@@ -442,7 +427,7 @@ public final class AstGraphUtils {
                 return lines(el, sourceLines);
             }
 
-            String filePath = sourceFile(el);
+            String filePath = graphFilePath(el, null, sourceLines.keySet());
             String[] fileLines = findLines(sourceLines, filePath);
             String full = fileLines != null && fileLines.length > 0
                     ? String.join("\n", fileLines)
@@ -454,14 +439,11 @@ public final class AstGraphUtils {
                 if (declStart >= 0 && bodyStart > declStart) {
                     if (full != null) {
                         int startLine = lineNumberAtOffset(full, declStart);
-                        // bodyStart points to '{' — declaration ends on the line just before it,
-                        // or on the same line if the brace is on the same line as the last param.
                         int endLine = lineNumberAtOffset(full, bodyStart - 1);
                         if (startLine > 0 && endLine >= startLine) {
                             return new int[]{startLine, endLine};
                         }
                     }
-                    // No source text — fall back to Spoon line numbers
                     return new int[]{p.getLine(), p.getEndLine()};
                 }
             }
@@ -478,8 +460,6 @@ public final class AstGraphUtils {
                 }
             }
 
-            // For elements without a body (fields, imports, annotations, etc.)
-            // the full position IS the declaration.
             return lines(el, sourceLines);
 
         } catch (Exception ignored) {
@@ -508,7 +488,7 @@ public final class AstGraphUtils {
                 return new int[]{startLine, endLine};
             }
 
-            String filePath = sourceFile(el);
+            String filePath = graphFilePath(el, null, sourceLines.keySet());
             String[] fileLines = findLines(sourceLines, filePath);
             if (fileLines == null || fileLines.length == 0) {
                 return new int[]{startLine, endLine};
