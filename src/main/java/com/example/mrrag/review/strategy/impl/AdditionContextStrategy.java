@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Collects context for ADD lines in a {@link UnionLine}.
@@ -21,8 +22,9 @@ import java.util.*;
  * <p>Only processes nodes whose {@link UnionLine#nodeOrigins()} contain at least
  * one ADD line — pure DELETE nodes are skipped.
  *
- * <p>For each qualifying node follows outgoing edges in {@code sourceGraph} to collect
- * method/field/variable declarations referenced by the new code.
+ * <p>For each qualifying node follows outgoing edges in {@code sourceGraph} whose
+ * {@code startLine} matches one of the ADD origin lines. Edges with {@code startLine == 0}
+ * (synthetic / unresolved) are always included as a safety fallback.
  */
 @Slf4j
 @Component
@@ -48,8 +50,18 @@ public class AdditionContextStrategy implements ContextStrategy {
             boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
             if (!hasAdd) continue;
 
+            // line numbers of ADD-type origins for this node
+            Set<Integer> addLines = origins.stream()
+                    .filter(l -> l.type() == ChangedLine.LineType.ADD)
+                    .map(l -> l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber())
+                    .collect(Collectors.toSet());
+
             for (GraphEdge edge : sourceGraph.outgoing(node.id())) {
                 if (snippets.size() >= maxSnippetsPerGroup) break;
+
+                // only follow edges that originate from an ADD line;
+                // edges with startLine == 0 (synthetic) are let through as fallback
+                if (edge.startLine() > 0 && !addLines.contains(edge.startLine())) continue;
 
                 String targetId = edge.callee();
                 if (seenDecl.contains(targetId)) continue;
