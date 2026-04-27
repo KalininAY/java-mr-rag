@@ -16,11 +16,11 @@ import java.util.*;
  * <p>
  * Stages:
  * <ol>
- *   <li><b>Parse</b> — {@link DiffParser}: GitLab {@link Diff}s → {@link ChangedLine}s.</li>
+ *   <li><b>Parse</b>  — {@link DiffParser}: GitLab {@link Diff}s → {@link ChangedLine}s.</li>
  *   <li><b>Filter</b> — ordered {@link ContextFilter} chain.</li>
- *   <li><b>Group</b> — {@link AstChangeGrouper}: lines → {@link UnionLine}s via AST graph.</li>
+ *   <li><b>Group</b>  — {@link AstChangeGrouper}: lines → {@link UnionLine}s via AST graph.</li>
  *   <li><b>Collect context</b> — all {@link ContextStrategy}s applied to each union;
- *       each strategy filters applicable lines internally.</li>
+ *       results merged and deduplicated by {@code (type, filePath, startLine, lineContext)}.</li>
  *   <li><b>Represent</b> — {@link GroupRepresentationBuilder}: one {@link GroupRepresentation} per union.</li>
  * </ol>
  */
@@ -34,7 +34,6 @@ public class ContextPipeline {
     private final DiffParser diffParser;
     private final AstChangeGrouper astChangeGrouper;
     private final GroupRepresentationBuilder representationBuilder;
-
 
     /**
      * Execute the full context pipeline.
@@ -71,6 +70,7 @@ public class ContextPipeline {
         for (UnionLine union : unions) {
             List<EnrichmentSnippet> snippets = strategies.stream()
                     .flatMap(s -> s.collectContext(union, sourceGraph, targetGraph).stream())
+                    .filter(distinctByKey())
                     .toList();
             log.debug("ContextPipeline: union={} snippets={}", union.id(), snippets.size());
             result.add(representationBuilder.build(union, snippets, sourceGraph));
@@ -80,5 +80,20 @@ public class ContextPipeline {
                 result.size(),
                 result.stream().mapToInt(r -> r.contextSnippets().size()).sum());
         return result;
+    }
+
+    /**
+     * Returns a stateful predicate that keeps only the first snippet
+     * with a given {@code (type, filePath, startLine, lineContext)} key.
+     *
+     * <p>Deduplicates across all strategies: e.g. the same caller method
+     * emitted by both {@link com.example.mrrag.review.strategy.impl.DeletionContextStrategy}
+     * and {@link com.example.mrrag.review.strategy.impl.NodeImpactContextStrategy} will appear once.
+     */
+    private static java.util.function.Predicate<EnrichmentSnippet> distinctByKey() {
+        Set<String> seen = new LinkedHashSet<>();
+        return s -> seen.add(
+                s.type() + "|" + s.filePath() + "|" + s.startLine() + "|" + s.lineContext()
+        );
     }
 }
