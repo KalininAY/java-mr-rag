@@ -14,15 +14,14 @@ import java.util.*;
 /**
  * RAG context pipeline for MR review.
  * <p>
- * Stages match {@link #run}:
+ * Stages:
  * <ol>
  *   <li><b>Parse</b> — {@link DiffParser}: GitLab {@link Diff}s → {@link ChangedLine}s.</li>
- *   <li><b>Filter</b> — ordered {@link ContextFilter} chain (each sees the previous output).</li>
- *   <li><b>Group</b> — {@link AstChangeGrouper}: lines → {@link ChangeGroup}s via pure AST graph.
- *       is not injected here and is not part of the active pipeline.</li>
- *   <li><b>Collect context</b> — per type, {@link ContextStrategy}s → {@link ContextCollector}
- *       (also resolves relevant classes/nodes for logging / future use).</li>
- *   <li><b>Represent</b> — {@link GroupRepresentationBuilder}: one {@link GroupRepresentation} per group.</li>
+ *   <li><b>Filter</b> — ordered {@link ContextFilter} chain.</li>
+ *   <li><b>Group</b> — {@link AstChangeGrouper}: lines → {@link UnionLine}s via AST graph.</li>
+ *   <li><b>Collect context</b> — all {@link ContextStrategy}s applied to each union;
+ *       each strategy filters applicable lines internally.</li>
+ *   <li><b>Represent</b> — {@link GroupRepresentationBuilder}: one {@link GroupRepresentation} per union.</li>
  * </ol>
  */
 @Slf4j
@@ -37,12 +36,12 @@ public class ContextPipeline {
     private final GroupRepresentationBuilder representationBuilder;
 
     /**
-     * Execute the full Context pipeline.
+     * Execute the full context pipeline.
      *
      * @param diffs       source diffs from MR
      * @param sourceGraph AST graph of the source (feature) branch
      * @param targetGraph AST graph of the target (base) branch
-     * @return one {@link GroupRepresentation} per input group, in original order
+     * @return one {@link GroupRepresentation} per union, in original order
      */
     public List<GroupRepresentation> run(List<Diff> diffs, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         log.info("ContextPipeline.run: {} diffs", diffs.size());
@@ -51,7 +50,7 @@ public class ContextPipeline {
         Set<ChangedLine> changedLines = diffParser.parse(diffs);
         log.info("ContextPipeline.step1: {} changedLines", changedLines.size());
 
-        // Step 2: ordered filter chain via reduce (sequential stream — combiner unused)
+        // Step 2: ordered filter chain
         Set<ChangedLine> filteredLines = filters.stream()
                 .reduce(
                         changedLines,
@@ -62,18 +61,23 @@ public class ContextPipeline {
                         });
         log.info("ContextPipeline.step2: {} filteredLines", filteredLines.size());
 
-        // Step 3: group lines via AST graph
-        List<UnionLine> groups = astChangeGrouper.group(filteredLines, sourceGraph, targetGraph);
-        log.info("ContextPipeline.step3: {} groups", groups.size());
+        // Step 3: group lines into UnionLines via AST graph
+        List<UnionLine> unions = astChangeGrouper.group(filteredLines, sourceGraph, targetGraph);
+        log.info("ContextPipeline.step3: {} unions", unions.size());
 
-        // Shared collector — context may overlap across groups intentionally
-        ContextCollector collector = new ContextCollector();
+        // Steps 4-5: collect context + build representations
+        List<GroupRepresentation> result = new ArrayList<>(unions.size());
+        for (UnionLine union : unions) {
+            List<EnrichmentSnippet> snippets = strategies.stream()
+                    .flatMap(s -> s.collectContext(union, sourceGraph, targetGraph).stream())
+                    .toList();
+            log.debug("ContextPipeline: union={} snippets={}", union.id(), snippets.size());
+            result.add(representationBuilder.build(union, snippets, sourceGraph));
+        }
 
-        log.info("ContextPipeline: context collected — {} total snippet(s)", collector.totalSize());
-
-        // Step 6: build per-group representations
-        List<GroupRepresentation> result = new ArrayList<>(groups.size());
+        log.info("ContextPipeline: done — {} representation(s), {} total snippet(s)",
+                result.size(),
+                result.stream().mapToInt(r -> r.contextSnippets().size()).sum());
         return result;
     }
-
 }

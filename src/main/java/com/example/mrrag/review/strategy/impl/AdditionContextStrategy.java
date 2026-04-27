@@ -13,11 +13,14 @@ import org.springframework.stereotype.Component;
 import java.util.*;
 
 /**
- * Strategy for {@link ChangeType#ADDITION}.
+ * Collects context for ADD lines in a {@link UnionLine}.
  *
- * <p>Focuses on newly called declarations — follows outgoing edges from
- * ADD lines to collect method/field/variable declarations that provide
- * context about what the new code is calling.
+ * <p>For each ADD line, follows outgoing edges from its enclosing AST nodes
+ * to collect method/field/variable declarations that provide context about
+ * what the new code is calling.
+ *
+ * <p>Uses {@link UnionLine#nodeOrigins()} to determine the correct graph
+ * (source for ADD nodes) when resolving each node's outgoing edges.
  */
 @Slf4j
 @Component
@@ -30,18 +33,15 @@ public class AdditionContextStrategy implements ContextStrategy {
     private int maxSnippetLines;
 
     @Override
-    public boolean supports(ChangeType changeType) {
-        return changeType == ChangeType.ADDITION;
-    }
-
-    @Override
-    public List<EnrichmentSnippet> collectContext(ChangeGroup group, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+    public List<EnrichmentSnippet> collectContext(UnionLine union, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         List<EnrichmentSnippet> snippets = new ArrayList<>();
         Set<String> seenDecl = new HashSet<>();
 
-        List<ChangedLine> addLines = group.changedLines().stream()
+        List<ChangedLine> addLines = union.changedLines().stream()
                 .filter(l -> l.type() == ChangedLine.LineType.ADD)
                 .toList();
+
+        if (addLines.isEmpty()) return snippets;
 
         for (ChangedLine cl : addLines) {
             if (snippets.size() >= maxSnippetsPerGroup) break;
@@ -84,7 +84,7 @@ public class AdditionContextStrategy implements ContextStrategy {
             }
         }
 
-        log.debug("AdditionContextStrategy: group={} snippets={}", group.id(), snippets.size());
-        return filterAlreadyInDiff(group, snippets);
+        log.debug("AdditionContextStrategy: union={} snippets={}", union.id(), snippets.size());
+        return filterAlreadyInDiff(union, snippets);
     }
 }

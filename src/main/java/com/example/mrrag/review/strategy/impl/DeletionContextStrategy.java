@@ -15,10 +15,13 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Strategy for {@link ChangeType#DELETION}.
+ * Collects context for DELETE lines in a {@link UnionLine}.
  *
- * <p>Focuses on deleted declarations — looks up the old (target) graph to
- * find usages of what was removed, helping the reviewer understand the impact.
+ * <p>Looks up the target (base) graph to find usages of what was removed,
+ * helping the reviewer understand the impact of the deletion.
+ *
+ * <p>Uses {@link UnionLine#nodeOrigins()} — DELETE nodes are resolved
+ * against {@code targetGraph}.
  */
 @Slf4j
 @Component
@@ -28,17 +31,14 @@ public class DeletionContextStrategy implements ContextStrategy {
     private int maxSnippetsPerGroup;
 
     @Override
-    public boolean supports(ChangeType changeType) {
-        return changeType == ChangeType.DELETION;
-    }
-
-    @Override
-    public List<EnrichmentSnippet> collectContext(ChangeGroup group, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+    public List<EnrichmentSnippet> collectContext(UnionLine union, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
         List<EnrichmentSnippet> snippets = new ArrayList<>();
 
-        List<ChangedLine> deleted = group.changedLines().stream()
+        List<ChangedLine> deleted = union.changedLines().stream()
                 .filter(l -> l.type() == ChangedLine.LineType.DELETE)
                 .toList();
+
+        if (deleted.isEmpty()) return snippets;
 
         for (ChangedLine cl : deleted) {
             if (snippets.size() >= maxSnippetsPerGroup) break;
@@ -75,12 +75,12 @@ public class DeletionContextStrategy implements ContextStrategy {
                         type,
                         decl.filePath(), decl.startLine(), decl.endLine(), decl.simpleName(),
                         usageLines,
-                        decl.simpleName() + " is deleted but still referenced in " + usageLines.lines() + " place(s)"
+                        decl.simpleName() + " is deleted but still referenced in " + usageLines.lines().count() + " place(s)"
                 ));
             }
         }
 
-        log.debug("DeletionContextStrategy: group={} snippets={}", group.id(), snippets.size());
+        log.debug("DeletionContextStrategy: union={} snippets={}", union.id(), snippets.size());
         return snippets;
     }
 }

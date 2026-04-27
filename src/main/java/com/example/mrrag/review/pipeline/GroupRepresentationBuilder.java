@@ -2,7 +2,6 @@ package com.example.mrrag.review.pipeline;
 
 import com.example.mrrag.graph.markdown.MarkdownRenderUtils;
 import com.example.mrrag.graph.model.GraphNode;
-import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import org.springframework.stereotype.Component;
@@ -11,65 +10,72 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Builds a {@link GroupRepresentation} for a single ChangeGroup.
+ * Builds a {@link GroupRepresentation} for a single {@link UnionLine}.
  *
  * <p>Output structure per group:
  * <ol>
- *   <li>Header: group id + change type.</li>
- *   <li>Per-file {@code diff} block — all lines received (ADD/DELETE only).
- *       Each line is prefixed with its line number ({@code @N}).</li>
- *   <li><b>Method signature</b> section (optional) — shown when the group
- *       carries a non-null {@link ChangeGroup#preMethodKey()} (set by the legacy
- *       {@link ChangeGrouper} Phase 1). Renders the method signature line(s)
- *       from the graph so the reviewer can immediately see which element was
- *       annotated/documented.</li>
- *   <li><b>Intermediate nodes</b> section (optional) — shown when the group
- *       carries non-empty {@link ChangeGroup#intermediateNodes()} (set by
- *       {@link AstChangeGrouper}). Lists the node IDs and their file/line for
- *       context.</li>
+ *   <li>Header: union id + change type (computed from changedLines).</li>
+ *   <li>Per-file {@code diff} block — ADD/DELETE lines with line numbers.</li>
  *   <li><b>Enclosing context</b> section — one block per
- *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet.
- *       Lines are numbered in {@code lineNo| text} format.</li>
- *   <li><b>Context snippets</b> section — all other enrichment snippets,
- *       also with numbered lines.</li>
+ *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet.</li>
+ *   <li><b>Context snippets</b> section — all other enrichment snippets.</li>
  * </ol>
  */
 @Component
 public class GroupRepresentationBuilder {
 
-    /**
-     * Build a representation without graph access (no method-signature injection).
-     * Used by tests and callers that don't hold a graph reference.
-     */
     public GroupRepresentation build(
-            ChangeGroup group,
-            ChangeType changeType,
+            UnionLine union,
             List<EnrichmentSnippet> contextSnippets
     ) {
-        return build(group, changeType, contextSnippets, null);
+        return build(union, contextSnippets, null);
     }
 
-    /**
-     * Build a representation, optionally injecting method-signature context
-     * for groups whose Javadoc/annotations were attached to a method in Phase 1.
-     *
-     * @param graph source-branch AST graph; may be {@code null}
-     */
     public GroupRepresentation build(
-            ChangeGroup group,
-            ChangeType changeType,
+            UnionLine union,
             List<EnrichmentSnippet> contextSnippets,
             ProjectGraph graph
     ) {
-        String markdown = buildMarkdown(group, changeType, contextSnippets, graph);
+        ChangeType changeType = classifyUnion(union);
+        String primaryFile = resolvePrimaryFile(union);
+        String markdown = buildMarkdown(union, changeType, contextSnippets, graph);
         return new GroupRepresentation(
-                group.id(),
+                union.id(),
                 changeType,
-                group.primaryFile(),
-                group.changedLines(),
+                primaryFile,
+                new ArrayList<>(union.changedLines()),
                 contextSnippets,
                 markdown
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Classification
+    // -----------------------------------------------------------------------
+
+    static ChangeType classifyUnion(UnionLine union) {
+        boolean hasAdd = false;
+        boolean hasDel = false;
+        Set<String> files = new HashSet<>();
+        for (ChangedLine l : union.changedLines()) {
+            if (l.type() == ChangedLine.LineType.ADD) hasAdd = true;
+            if (l.type() == ChangedLine.LineType.DELETE) hasDel = true;
+            files.add(l.filePath());
+        }
+        if (files.size() > 1) return ChangeType.CROSS_SCOPE;
+        if (hasAdd && hasDel) return ChangeType.MODIFICATION;
+        if (hasDel) return ChangeType.DELETION;
+        return ChangeType.ADDITION;
+    }
+
+    static String resolvePrimaryFile(UnionLine union) {
+        return union.changedLines().stream()
+                .filter(l -> l.type() != ChangedLine.LineType.CONTEXT)
+                .collect(Collectors.groupingBy(ChangedLine::filePath, Collectors.counting()))
+                .entrySet().stream()
+                .max(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey)
+                .orElse(union.id());
     }
 
     // -----------------------------------------------------------------------
@@ -77,18 +83,18 @@ public class GroupRepresentationBuilder {
     // -----------------------------------------------------------------------
 
     private String buildMarkdown(
-            ChangeGroup group,
+            UnionLine union,
             ChangeType changeType,
             List<EnrichmentSnippet> snippets,
             ProjectGraph graph
     ) {
         StringBuilder sb = new StringBuilder();
-        sb.append("### Change group `").append(group.id())
+        sb.append("### Change group `").append(union.id())
                 .append("` — ").append(changeType).append("\n");
 
         // --- 1. Per-file diff blocks ---
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
-        for (ChangedLine l : group.changedLines()) {
+        for (ChangedLine l : union.changedLines()) {
             byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
         }
 
@@ -105,13 +111,10 @@ public class GroupRepresentationBuilder {
             sb.append("```\n\n");
         }
 
-        // --- 2. Method signature block (legacy ChangeGrouper: preMethodKey) ---
-        renderMethodSignatureBlock(sb, group, graph);
+        // --- 2. AST graph nodes block ---
+        renderGraphNodesBlock(sb, union);
 
-        // --- 2b. Intermediate nodes block (AstChangeGrouper) ---
-        renderIntermediateNodesBlock(sb, group);
-
-        if (snippets.isEmpty()) return sb.toString();
+        if (snippets == null || snippets.isEmpty()) return sb.toString();
 
         List<EnrichmentSnippet> methodBodies = snippets.stream()
                 .filter(s -> s.type() == EnrichmentSnippet.SnippetType.METHOD_BODY)
@@ -163,85 +166,18 @@ public class GroupRepresentationBuilder {
     }
 
     /**
-     * Appends a "Method signature" block when the group carries a
-     * non-null {@link ChangeGroup#preMethodKey()} and the graph is non-null.
-     * Used only by groups produced by the legacy {@link ChangeGrouper}.
+     * Appends a block listing all AST graph nodes associated with this union.
+     * Rendered only when {@link UnionLine#graphNodes()} is non-empty.
      */
-    private void renderMethodSignatureBlock(StringBuilder sb, ChangeGroup group, ProjectGraph graph) {
-        if (graph == null) return;
-        String rawKey = group.preMethodKey();
-        if (rawKey == null || rawKey.isBlank()) return;
-
-        int methodStartLine;
-        try {
-            methodStartLine = Integer.parseInt(rawKey.trim());
-        } catch (NumberFormatException e) {
-            return;
-        }
-
-        GraphNode methodNode = null;
-        Set<String> groupFiles = new LinkedHashSet<>();
-        for (ChangedLine l : group.changedLines()) groupFiles.add(l.filePath());
-
-        outer:
-        for (String file : groupFiles) {
-            for (GraphNode n : graph.nodes.values()) {
-                if (n.kind() == NodeKind.METHOD
-                        && file.equals(n.filePath())
-                        && n.startLine() == methodStartLine) {
-                    methodNode = n;
-                    break outer;
-                }
-            }
-        }
-        if (methodNode == null) return;
-
-        sb.append("**Method signature:**\n\n");
-        sb.append("`").append(simpleMethodName(methodNode.id())).append("`")
-                .append(" @ `").append(methodNode.filePath())
-                .append(":").append(methodNode.startLine()).append("`\n\n");
-
-        String src = methodNode.sourceSnippet();
-        if (src != null && !src.isBlank()) {
-            String[] lines = src.split("\n", -1);
-            int sigLines = 0;
-            StringBuilder sigSrc = new StringBuilder();
-            for (String line : lines) {
-                sigSrc.append(line).append('\n');
-                sigLines++;
-                String trimmed = line.stripTrailing();
-                if (trimmed.endsWith("{") || trimmed.endsWith(";") || sigLines >= 5) break;
-            }
-            sb.append("```java\n");
-            MarkdownRenderUtils.appendNumberedSnippet(
-                    sb, sigSrc.toString(), methodNode.startLine(),
-                    methodNode.startLine() + sigLines - 1);
-            sb.append("```\n\n");
-        }
-    }
-
-    /**
-     * Appends an "AST intermediates" block listing the bridge nodes found by
-     * {@link AstChangeGrouper} BFS between the two anchor nodes.
-     * Rendered only when {@link ChangeGroup#intermediateNodes()} is non-empty.
-     */
-    private void renderIntermediateNodesBlock(StringBuilder sb, ChangeGroup group) {
-        if (!group.hasIntermediates()) return;
-        sb.append("**AST bridge nodes (").append(group.intermediateNodes().size()).append("):**\n\n");
-        for (GraphNode n : group.intermediateNodes()) {
+    private void renderGraphNodesBlock(StringBuilder sb, UnionLine union) {
+        if (union.graphNodes() == null || union.graphNodes().isEmpty()) return;
+        sb.append("**AST nodes (").append(union.graphNodes().size()).append("):**\n\n");
+        for (GraphNode n : union.graphNodes()) {
             sb.append("- `").append(n.id()).append("` (")
                     .append(n.kind()).append(") @ `")
                     .append(n.filePath()).append(":")
                     .append(n.startLine()).append("`\n");
         }
         sb.append('\n');
-    }
-
-    private static String simpleMethodName(String qualifiedId) {
-        if (qualifiedId == null) return "";
-        int hash = qualifiedId.lastIndexOf('#');
-        String name = hash >= 0 ? qualifiedId.substring(hash + 1) : qualifiedId;
-        int paren = name.indexOf('(');
-        return paren >= 0 ? name.substring(0, paren) : name;
     }
 }
