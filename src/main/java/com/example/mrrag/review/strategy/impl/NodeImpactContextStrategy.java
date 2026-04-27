@@ -6,6 +6,7 @@ import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
+import com.example.mrrag.review.strategy.CallerSnippetExtractor;
 import com.example.mrrag.review.strategy.ContextStrategy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,12 +19,9 @@ import java.util.*;
  * follows <em>incoming</em> edges to surface callers and field-readers that are
  * affected by the change.
  *
- * <p>Uses {@link UnionLine#nodeOrigins()} to pick the correct graph per node:
- * <ul>
- *   <li><b>ADD-only</b> — incoming in {@code sourceGraph}: who already calls the new symbol.</li>
- *   <li><b>DELETE-only</b> — incoming in {@code targetGraph}: who still depends on removed symbol.</li>
- *   <li><b>ADD + DELETE</b> — both graphs; snippets labelled with branch context.</li>
- * </ul>
+ * <p>For {@code METHOD_CALLERS} / {@code FIELD_USAGES} snippets only the
+ * call-site window (±{@code app.enrichment.callerWindowLines} lines) is
+ * included — not the entire caller method body.
  */
 @Slf4j
 @Component
@@ -34,6 +32,9 @@ public class NodeImpactContextStrategy implements ContextStrategy {
 
     @Value("${app.enrichment.maxCallersPerNode:5}")
     private int maxCallersPerNode;
+
+    @Value("${app.enrichment.callerWindowLines:5}")
+    private int callerWindowLines;
 
     @Override
     public List<EnrichmentSnippet> collectContext(
@@ -106,11 +107,15 @@ public class NodeImpactContextStrategy implements ContextStrategy {
             GraphNode caller = graph.nodes.get(edge.caller());
             if (caller == null || caller.kind() != NodeKind.METHOD) continue;
 
+            String window   = CallerSnippetExtractor.extract(caller, edge.startLine(), callerWindowLines);
+            int    winStart = CallerSnippetExtractor.windowStartLine(caller, edge.startLine(), callerWindowLines);
+            int    winEnd   = CallerSnippetExtractor.windowEndLine(caller, edge.startLine(), callerWindowLines);
+
             snippets.add(new EnrichmentSnippet(
                     snippetType,
-                    caller.filePath(), caller.startLine(), caller.endLine(),
+                    caller.filePath(), winStart, winEnd,
                     caller.simpleName(),
-                    caller.sourceSnippet(),
+                    window,
                     "'" + caller.simpleName() + "' calls '" + node.simpleName() + "'",
                     lineContext
             ));
