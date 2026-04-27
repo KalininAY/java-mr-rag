@@ -4,6 +4,7 @@ import com.example.mrrag.graph.markdown.MarkdownRenderUtils;
 import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -19,11 +20,15 @@ import java.util.stream.Collectors;
  *   <li><b>Enclosing context</b> section — METHOD_BODY snippets.</li>
  *   <li><b>Context snippets</b> section — all other enrichment snippets,
  *       each labelled with {@code [ADD]} or {@code [DELETE]} from
- *       {@link EnrichmentSnippet#lineContext()}.</li>
+ *       {@link EnrichmentSnippet#lineContext()}.
+ *       All snippets are capped at {@code app.enrichment.maxSnippetLines} lines (default 20).</li>
  * </ol>
  */
 @Component
 public class GroupRepresentationBuilder {
+
+    @Value("${app.enrichment.maxSnippetLines:20}")
+    private int maxSnippetLines;
 
     public GroupRepresentation build(
             UnionLine union,
@@ -98,7 +103,6 @@ public class GroupRepresentationBuilder {
         for (ChangedLine l : union.changedLines()) {
             byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
         }
-
         for (Map.Entry<String, List<ChangedLine>> entry : byFile.entrySet()) {
             if (entry.getValue().isEmpty()) continue;
             sb.append("**File:** `").append(entry.getKey()).append("`\n\n");
@@ -131,12 +135,7 @@ public class GroupRepresentationBuilder {
                 sb.append("`").append(s.symbolName()).append("`")
                         .append(" @ `").append(s.filePath())
                         .append(":").append(s.startLine()).append("`\n\n");
-                String src = s.sourceSnippet();
-                if (src != null && !src.isBlank()) {
-                    sb.append("```\n");
-                    MarkdownRenderUtils.appendNumberedSnippet(sb, src, s.startLine(), s.endLine());
-                    sb.append("```\n\n");
-                }
+                renderSnippetBlock(sb, s, "  ");
             }
         }
 
@@ -147,20 +146,11 @@ public class GroupRepresentationBuilder {
                 String ctxLabel = lineContextLabel(s.lineContext());
                 sb.append("- **").append(s.type()).append("** ")
                         .append(ctxLabel)
-                        .append(" `").append(s.symbolName()).append("` @ `")
+                        .append("`").append(s.symbolName()).append("` @ `")
                         .append(s.filePath()).append(":")
                         .append(s.startLine()).append("`  \n");
                 sb.append("  _").append(s.explanation()).append("_\n");
-                String src = s.sourceSnippet();
-                if (src != null && !src.isBlank()) {
-                    sb.append("  ```\n");
-                    String[] lines = src.split("\n", -1);
-                    for (String line : MarkdownRenderUtils.numberedSnippetLines(
-                            lines, s.startLine(), s.endLine(), true)) {
-                        sb.append("  ").append(line).append('\n');
-                    }
-                    sb.append("  ```\n");
-                }
+                renderSnippetBlock(sb, s, "  ");
                 sb.append('\n');
             }
         }
@@ -168,7 +158,37 @@ public class GroupRepresentationBuilder {
         return sb.toString();
     }
 
-    /** Returns a short bracketed label for the line context, e.g. {@code [ADD]}. */
+    /**
+     * Renders a fenced code block for the snippet, capping at {@link #maxSnippetLines} lines.
+     * If the snippet was truncated, appends a {@code // ... N more lines} comment.
+     *
+     * @param indent prefix for each line (e.g. {@code "  "} for list items, {@code ""} for top-level)
+     */
+    private void renderSnippetBlock(StringBuilder sb, EnrichmentSnippet s, String indent) {
+        String src = s.sourceSnippet();
+        if (src == null || src.isBlank()) return;
+
+        String[] allLines = src.split("\n", -1);
+        boolean truncated = allLines.length > maxSnippetLines;
+        String[] visibleLines = truncated
+                ? Arrays.copyOf(allLines, maxSnippetLines)
+                : allLines;
+
+        int endLine = s.startLine() + visibleLines.length - 1;
+
+        sb.append(indent).append("```\n");
+        for (String line : MarkdownRenderUtils.numberedSnippetLines(
+                visibleLines, s.startLine(), endLine, true)) {
+            sb.append(indent).append(line).append('\n');
+        }
+        if (truncated) {
+            sb.append(indent).append("// ... ").append(allLines.length - maxSnippetLines)
+                    .append(" more line(s)\n");
+        }
+        sb.append(indent).append("```\n");
+    }
+
+    /** Returns a short bracketed label for the line context, e.g. {@code [ADD] }. */
     private static String lineContextLabel(EnrichmentSnippet.LineContext ctx) {
         if (ctx == null) return "";
         return switch (ctx) {
@@ -178,9 +198,7 @@ public class GroupRepresentationBuilder {
         };
     }
 
-    /**
-     * Appends a block listing all AST graph nodes associated with this union.
-     */
+    /** Appends a block listing all AST graph nodes associated with this union. */
     private void renderGraphNodesBlock(StringBuilder sb, UnionLine union) {
         if (union.graphNodes() == null || union.graphNodes().isEmpty()) return;
         sb.append("**AST nodes (").append(union.graphNodes().size()).append("):**\n\n");
