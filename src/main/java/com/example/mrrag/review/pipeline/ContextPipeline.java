@@ -35,6 +35,7 @@ public class ContextPipeline {
     private final AstChangeGrouper astChangeGrouper;
     private final GroupRepresentationBuilder representationBuilder;
 
+
     /**
      * Execute the full context pipeline.
      *

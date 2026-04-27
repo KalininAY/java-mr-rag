@@ -76,6 +76,8 @@ graph:
       enabled: true
     IMPORT:
       enabled: false
+    HAS_IMPORT:
+      enabled: false
 
 logging:
   level:

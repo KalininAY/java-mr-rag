@@ -1,7 +1,6 @@
 package com.example.mrrag.review.model;
 
 /**
- * Semantic label for a {@link com.example.mrrag.review.model.ChangeGroup}, computed in
  * <p>
  * It is <em>not</em> a 1:1 mapping from {@link com.example.mrrag.review.model.ChangedLine.LineType}:
  * {@code CONTEXT} lines do not set the add/delete flags; classification uses only
