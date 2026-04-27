@@ -28,24 +28,16 @@ public record EnrichmentSnippet(
         BOTH
     }
 
+    /** Backward-compat 7-arg constructor — defaults {@code lineContext} to {@link LineContext#BOTH}. */
+    public EnrichmentSnippet(SnippetType type, String filePath, int startLine, int endLine,
+                             String symbolName, String sourceSnippet, String explanation) {
+        this(type, filePath, startLine, endLine, symbolName, sourceSnippet, explanation, LineContext.BOTH);
+    }
+
     /** Full-body convenience constructor — uses {@code node.sourceSnippet()}, LineContext.BOTH. */
     public EnrichmentSnippet(SnippetType type, GraphNode node, String explanation) {
         this(type, node.filePath(), node.startLine(), node.endLine(),
                 node.simpleName(), node.sourceSnippet(), explanation, LineContext.BOTH);
-    }
-
-    /** Full-body constructor with explicit lineContext. */
-    public EnrichmentSnippet(SnippetType type, String filePath, int startLine, int endLine,
-                             String symbolName, String sourceSnippet, String explanation,
-                             LineContext lineContext) {
-        this.type = type;
-        this.filePath = filePath;
-        this.startLine = startLine;
-        this.endLine = endLine;
-        this.symbolName = symbolName;
-        this.sourceSnippet = sourceSnippet;
-        this.explanation = explanation;
-        this.lineContext = lineContext;
     }
 
     /**

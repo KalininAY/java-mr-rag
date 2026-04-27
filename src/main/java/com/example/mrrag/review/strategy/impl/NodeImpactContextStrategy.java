@@ -24,9 +24,6 @@ import java.util.*;
  *   <li><b>DELETE-only</b> — incoming in {@code targetGraph}: who still depends on removed symbol.</li>
  *   <li><b>ADD + DELETE</b> — both graphs; snippets labelled with branch context.</li>
  * </ul>
- *
- * <p>Emits one {@link EnrichmentSnippet} per caller with the caller's {@code sourceSnippet}.
- * Only {@link NodeKind#METHOD} and {@link NodeKind#FIELD} nodes are processed.
  */
 @Slf4j
 @Component
@@ -54,22 +51,23 @@ public class NodeImpactContextStrategy implements ContextStrategy {
             List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
             boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
             boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
-            boolean modified = hasAdd && hasDel;
 
             if (hasAdd) {
                 GraphNode sourceNode = sourceGraph.nodes.get(node.id());
                 if (sourceNode != null) {
-                    collectCallerSnippets(sourceNode, sourceGraph,
-                            modified ? "[source branch] " : "",
-                            seenKey, snippets);
+                    EnrichmentSnippet.LineContext ctx = hasDel
+                            ? EnrichmentSnippet.LineContext.BOTH
+                            : EnrichmentSnippet.LineContext.ADD;
+                    collectCallerSnippets(sourceNode, sourceGraph, ctx, seenKey, snippets);
                 }
             }
             if (hasDel) {
                 GraphNode targetNode = targetGraph.nodes.get(node.id());
                 if (targetNode != null) {
-                    collectCallerSnippets(targetNode, targetGraph,
-                            modified ? "[target branch] " : "",
-                            seenKey, snippets);
+                    EnrichmentSnippet.LineContext ctx = hasAdd
+                            ? EnrichmentSnippet.LineContext.BOTH
+                            : EnrichmentSnippet.LineContext.DELETE;
+                    collectCallerSnippets(targetNode, targetGraph, ctx, seenKey, snippets);
                 }
             }
         }
@@ -81,7 +79,7 @@ public class NodeImpactContextStrategy implements ContextStrategy {
     private void collectCallerSnippets(
             GraphNode node,
             ProjectGraph graph,
-            String labelPrefix,
+            EnrichmentSnippet.LineContext lineContext,
             Set<String> seenKey,
             List<EnrichmentSnippet> snippets) {
 
@@ -102,7 +100,7 @@ public class NodeImpactContextStrategy implements ContextStrategy {
             if (snippets.size() >= maxSnippetsPerGroup) break;
             if (count >= maxCallersPerNode) break;
 
-            String key = edge.caller() + "#" + labelPrefix;
+            String key = edge.caller() + "#" + lineContext;
             if (!seenKey.add(key)) continue;
 
             GraphNode caller = graph.nodes.get(edge.caller());
@@ -113,7 +111,8 @@ public class NodeImpactContextStrategy implements ContextStrategy {
                     caller.filePath(), caller.startLine(), caller.endLine(),
                     caller.simpleName(),
                     caller.sourceSnippet(),
-                    labelPrefix + "'" + caller.simpleName() + "' calls '" + node.simpleName() + "'"
+                    "'" + caller.simpleName() + "' calls '" + node.simpleName() + "'",
+                    lineContext
             ));
             count++;
         }

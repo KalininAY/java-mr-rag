@@ -15,13 +15,6 @@ import java.util.*;
 /**
  * Collects context when a {@link UnionLine} contains both ADD and DELETE lines,
  * or spans multiple files (CROSS_SCOPE).
- *
- * <p>Picks METHOD nodes directly from {@link UnionLine#graphNodes()} whose
- * {@link UnionLine#nodeOrigins()} contain both ADD and DELETE lines — these
- * are truly modified methods, not just added or deleted ones.
- *
- * <p>Then delegates to {@link AdditionContextStrategy} and
- * {@link DeletionContextStrategy} for cross-reference snippets.
  */
 @Slf4j
 @Component
@@ -52,10 +45,8 @@ public class ModificationContextStrategy implements ContextStrategy {
 
         List<EnrichmentSnippet> snippets = new ArrayList<>();
 
-        // 1. METHOD_BODY for nodes touched by BOTH add and delete (modified in place)
         collectModifiedMethodBodies(union, sourceGraph, targetGraph, snippets);
 
-        // 2. Cross-reference snippets via sub-strategies
         if (snippets.size() < maxSnippetsPerGroup) {
             additionStrategy.collectContext(union, sourceGraph, targetGraph).stream()
                     .limit(maxSnippetsPerGroup - snippets.size())
@@ -71,15 +62,6 @@ public class ModificationContextStrategy implements ContextStrategy {
         return filterAlreadyInDiff(union, snippets);
     }
 
-    /**
-     * Finds METHOD nodes in {@link UnionLine#graphNodes()} whose
-     * {@link UnionLine#nodeOrigins()} contain both ADD and DELETE lines —
-     * these are truly modified methods, not just added or deleted ones.
-     *
-     * <p>Prefers the {@code sourceGraph} version of the node (new body);
-     * falls back to {@code targetGraph} if not present in source,
-     * and finally to the node from the union itself.
-     */
     private void collectModifiedMethodBodies(
             UnionLine union,
             ProjectGraph sourceGraph,
@@ -98,7 +80,6 @@ public class ModificationContextStrategy implements ContextStrategy {
             boolean nodeHasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
             if (!nodeHasAdd || !nodeHasDel) continue;
 
-            // prefer sourceGraph (new version); fall back to targetGraph; finally use union node
             GraphNode resolved = sourceGraph.nodes.get(node.id());
             if (resolved == null) resolved = targetGraph.nodes.get(node.id());
             if (resolved == null) resolved = node;
@@ -109,7 +90,8 @@ public class ModificationContextStrategy implements ContextStrategy {
                     resolved.filePath(), resolved.startLine(), end,
                     resolved.simpleName(),
                     resolved.sourceSnippet(),
-                    "Body of modified method '" + resolved.simpleName() + "'"
+                    "Body of modified method '" + resolved.simpleName() + "'",
+                    EnrichmentSnippet.LineContext.BOTH
             ));
         }
     }
