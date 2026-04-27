@@ -3,7 +3,10 @@ package com.example.mrrag.review.model;
 import com.example.mrrag.graph.model.GraphNode;
 
 /**
- * A contextual code snippet attached to a ChangeGroup to help the LLM understand impact.
+ * A contextual code snippet attached to a UnionLine to help the LLM understand impact.
+ *
+ * <p>{@link #lineContext()} indicates whether this snippet was collected for an ADD line,
+ * a DELETE line, or both — so the LLM knows which side of the diff it relates to.
  */
 public record EnrichmentSnippet(
         SnippetType type,
@@ -12,19 +15,45 @@ public record EnrichmentSnippet(
         int endLine,
         String symbolName,
         String sourceSnippet,
-        String explanation
+        String explanation,
+        LineContext lineContext
 ) {
-    /** Full-body convenience constructor — uses {@code node.sourceSnippet()}. */
+    /** Which side of the diff triggered this snippet. */
+    public enum LineContext {
+        /** Snippet was collected for an ADD (+) line. */
+        ADD,
+        /** Snippet was collected for a DELETE (-) line. */
+        DELETE,
+        /** Snippet relates to both ADD and DELETE lines in the same union. */
+        BOTH
+    }
+
+    /** Full-body convenience constructor — uses {@code node.sourceSnippet()}, LineContext.BOTH. */
     public EnrichmentSnippet(SnippetType type, GraphNode node, String explanation) {
-        this(type, node.filePath(), node.startLine(), node.endLine(), node.simpleName(), node.sourceSnippet(), explanation);
+        this(type, node.filePath(), node.startLine(), node.endLine(),
+                node.simpleName(), node.sourceSnippet(), explanation, LineContext.BOTH);
+    }
+
+    /** Full-body constructor with explicit lineContext. */
+    public EnrichmentSnippet(SnippetType type, String filePath, int startLine, int endLine,
+                             String symbolName, String sourceSnippet, String explanation,
+                             LineContext lineContext) {
+        this.type = type;
+        this.filePath = filePath;
+        this.startLine = startLine;
+        this.endLine = endLine;
+        this.symbolName = symbolName;
+        this.sourceSnippet = sourceSnippet;
+        this.explanation = explanation;
+        this.lineContext = lineContext;
     }
 
     /**
      * Declaration-only factory — uses {@code node.declarationSnippet()} instead of the full body.
-     * Suitable for {@link SnippetType#VARIABLE_DECLARATION} and {@link SnippetType#FIELD_DECLARATION}
-     * where including the entire enclosing method/class body would bloat the LLM context.
+     * Suitable for {@link SnippetType#VARIABLE_DECLARATION} and {@link SnippetType#FIELD_DECLARATION}.
      */
-    public static EnrichmentSnippet ofDeclaration(SnippetType type, GraphNode node, String explanation) {
+    public static EnrichmentSnippet ofDeclaration(SnippetType type, GraphNode node,
+                                                   String explanation, LineContext lineContext) {
         return new EnrichmentSnippet(
                 type,
                 node.filePath(),
@@ -32,8 +61,14 @@ public record EnrichmentSnippet(
                 node.startLine(),
                 node.simpleName(),
                 node.declarationSnippet(),
-                explanation
+                explanation,
+                lineContext
         );
+    }
+
+    /** Backward-compat overload — defaults to LineContext.ADD. */
+    public static EnrichmentSnippet ofDeclaration(SnippetType type, GraphNode node, String explanation) {
+        return ofDeclaration(type, node, explanation, LineContext.ADD);
     }
 
     public enum SnippetType {

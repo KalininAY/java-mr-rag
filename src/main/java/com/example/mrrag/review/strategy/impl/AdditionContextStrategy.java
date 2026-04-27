@@ -15,16 +15,7 @@ import java.util.stream.Collectors;
 /**
  * Collects context for ADD lines in a {@link UnionLine}.
  *
- * <p>Iterates {@link UnionLine#graphNodes()} directly — these are the AST nodes
- * already resolved by {@link com.example.mrrag.review.pipeline.AstChangeGrouper},
- * no secondary {@code nodesAtLine()} lookup needed.
- *
- * <p>Only processes nodes whose {@link UnionLine#nodeOrigins()} contain at least
- * one ADD line — pure DELETE nodes are skipped.
- *
- * <p>For each qualifying node follows outgoing edges in {@code sourceGraph} whose
- * {@code startLine} matches one of the ADD origin lines. Edges with {@code startLine == 0}
- * (synthetic / unresolved) are always included as a safety fallback.
+ * <p>All emitted snippets carry {@link EnrichmentSnippet.LineContext#ADD}.
  */
 @Slf4j
 @Component
@@ -45,12 +36,10 @@ public class AdditionContextStrategy implements ContextStrategy {
         for (GraphNode node : union.graphNodes()) {
             if (snippets.size() >= maxSnippetsPerGroup) break;
 
-            // skip nodes with no ADD origin — pure deletions
             List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
             boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
             if (!hasAdd) continue;
 
-            // line numbers of ADD-type origins for this node
             Set<Integer> addLines = origins.stream()
                     .filter(l -> l.type() == ChangedLine.LineType.ADD)
                     .map(l -> l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber())
@@ -59,13 +48,10 @@ public class AdditionContextStrategy implements ContextStrategy {
             for (GraphEdge edge : sourceGraph.outgoing(node.id())) {
                 if (snippets.size() >= maxSnippetsPerGroup) break;
 
-                // only follow edges that originate from an ADD line;
-                // edges with startLine == 0 (synthetic) are let through as fallback
                 if (edge.startLine() > 0 && !addLines.contains(edge.startLine())) continue;
 
                 String targetId = edge.callee();
-                if (seenDecl.contains(targetId)) continue;
-                seenDecl.add(targetId);
+                if (!seenDecl.add(targetId)) continue;
 
                 GraphNode target = sourceGraph.nodes.get(targetId);
                 if (target == null) continue;
@@ -73,13 +59,16 @@ public class AdditionContextStrategy implements ContextStrategy {
                 switch (edge.kind()) {
                     case INVOKES -> snippets.add(EnrichmentSnippet.ofDeclaration(
                             EnrichmentSnippet.SnippetType.METHOD_DECLARATION, target,
-                            "Declaration of method '" + target.simpleName() + "' called in added code"));
+                            "Declaration of method '" + target.simpleName() + "' called in added code",
+                            EnrichmentSnippet.LineContext.ADD));
                     case READS_FIELD, WRITES_FIELD -> snippets.add(EnrichmentSnippet.ofDeclaration(
                             EnrichmentSnippet.SnippetType.FIELD_DECLARATION, target,
-                            "Declaration of field '" + target.simpleName() + "' accessed in added code"));
+                            "Declaration of field '" + target.simpleName() + "' accessed in added code",
+                            EnrichmentSnippet.LineContext.ADD));
                     case READS_LOCAL_VAR, WRITES_LOCAL_VAR -> snippets.add(EnrichmentSnippet.ofDeclaration(
                             EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION, target,
-                            "Declaration of variable '" + target.simpleName() + "' used in added code"));
+                            "Declaration of variable '" + target.simpleName() + "' used in added code",
+                            EnrichmentSnippet.LineContext.ADD));
                     default -> { }
                 }
             }

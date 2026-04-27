@@ -17,8 +17,11 @@ import java.util.*;
  * Collects context for DELETE lines in a {@link UnionLine}.
  *
  * <p>For each deleted node finds its callers/readers in {@code targetGraph}
- * and emits one {@link EnrichmentSnippet} per caller with the caller's
- * {@code sourceSnippet} so the LLM can assess the impact of the deletion.
+ * and emits one {@link EnrichmentSnippet} per unique caller with
+ * {@link EnrichmentSnippet.LineContext#DELETE}.
+ *
+ * <p>Deduplication is performed globally across all nodes in the union:
+ * a caller is emitted at most once even if it references multiple deleted symbols.
  */
 @Slf4j
 @Component
@@ -37,6 +40,7 @@ public class DeletionContextStrategy implements ContextStrategy {
         if (union.graphNodes().isEmpty()) return List.of();
 
         List<EnrichmentSnippet> snippets = new ArrayList<>();
+        // global dedup across all deleted nodes in this union
         Set<String> seenCaller = new HashSet<>();
 
         for (GraphNode node : union.graphNodes()) {
@@ -56,11 +60,12 @@ public class DeletionContextStrategy implements ContextStrategy {
 
             for (GraphEdge edge : usageEdges) {
                 if (snippets.size() >= maxSnippetsPerGroup) break;
-                if (seenCaller.contains(edge.caller())) continue;
 
                 GraphNode caller = targetGraph.nodes.get(edge.caller());
                 if (caller == null || caller.kind() != NodeKind.METHOD) continue;
-                seenCaller.add(caller.id());
+
+                // deduplicate: same caller may appear for multiple deleted nodes
+                if (!seenCaller.add(caller.id())) continue;
 
                 EnrichmentSnippet.SnippetType snippetType = targetNode.kind() == NodeKind.FIELD
                         ? EnrichmentSnippet.SnippetType.FIELD_USAGES
@@ -71,7 +76,8 @@ public class DeletionContextStrategy implements ContextStrategy {
                         caller.filePath(), caller.startLine(), caller.endLine(),
                         caller.simpleName(),
                         caller.sourceSnippet(),
-                        "'" + caller.simpleName() + "' calls deleted '" + targetNode.simpleName() + "'"
+                        "'" + caller.simpleName() + "' calls deleted '" + targetNode.simpleName() + "'",
+                        EnrichmentSnippet.LineContext.DELETE
                 ));
             }
         }

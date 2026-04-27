@@ -14,11 +14,12 @@ import java.util.stream.Collectors;
  *
  * <p>Output structure per group:
  * <ol>
- *   <li>Header: union id + change type (computed from changedLines).</li>
+ *   <li>Header: union id + change type.</li>
  *   <li>Per-file {@code diff} block — ADD/DELETE lines with line numbers.</li>
- *   <li><b>Enclosing context</b> section — one block per
- *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet.</li>
- *   <li><b>Context snippets</b> section — all other enrichment snippets.</li>
+ *   <li><b>Enclosing context</b> section — METHOD_BODY snippets.</li>
+ *   <li><b>Context snippets</b> section — all other enrichment snippets,
+ *       each labelled with {@code [ADD]} or {@code [DELETE]} from
+ *       {@link EnrichmentSnippet#lineContext()}.</li>
  * </ol>
  */
 @Component
@@ -143,8 +144,10 @@ public class GroupRepresentationBuilder {
         if (!otherSnippets.isEmpty()) {
             sb.append("**Context snippets (").append(otherSnippets.size()).append("):**\n\n");
             for (EnrichmentSnippet s : otherSnippets) {
-                sb.append("- **").append(s.type()).append("** `")
-                        .append(s.symbolName()).append("` @ `")
+                String ctxLabel = lineContextLabel(s.lineContext());
+                sb.append("- **").append(s.type()).append("** ")
+                        .append(ctxLabel)
+                        .append(" `").append(s.symbolName()).append("` @ `")
                         .append(s.filePath()).append(":")
                         .append(s.startLine()).append("`  \n");
                 sb.append("  _").append(s.explanation()).append("_\n");
@@ -165,9 +168,18 @@ public class GroupRepresentationBuilder {
         return sb.toString();
     }
 
+    /** Returns a short bracketed label for the line context, e.g. {@code [ADD]}. */
+    private static String lineContextLabel(EnrichmentSnippet.LineContext ctx) {
+        if (ctx == null) return "";
+        return switch (ctx) {
+            case ADD    -> "[ADD] ";
+            case DELETE -> "[DELETE] ";
+            case BOTH   -> "[ADD/DELETE] ";
+        };
+    }
+
     /**
      * Appends a block listing all AST graph nodes associated with this union.
-     * Rendered only when {@link UnionLine#graphNodes()} is non-empty.
      */
     private void renderGraphNodesBlock(StringBuilder sb, UnionLine union) {
         if (union.graphNodes() == null || union.graphNodes().isEmpty()) return;
