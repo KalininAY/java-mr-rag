@@ -1,8 +1,5 @@
 package com.example.mrrag.review.pipeline;
 
-import com.example.mrrag.graph.AstGraphUtils;
-import com.example.mrrag.graph.model.GraphNode;
-import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.filter.ContextFilter;
 import com.example.mrrag.review.model.*;
@@ -23,7 +20,6 @@ import java.util.*;
  *   <li><b>Filter</b> — ordered {@link ContextFilter} chain (each sees the previous output).</li>
  *   <li><b>Group</b> — {@link AstChangeGrouper}: lines → {@link ChangeGroup}s via pure AST graph.
  *       is not injected here and is not part of the active pipeline.</li>
- *   <li><b>Classify</b> — {@link #classifyGroup} → {@link ChangeType} per group.</li>
  *   <li><b>Collect context</b> — per type, {@link ContextStrategy}s → {@link ContextCollector}
  *       (also resolves relevant classes/nodes for logging / future use).</li>
  *   <li><b>Represent</b> — {@link GroupRepresentationBuilder}: one {@link GroupRepresentation} per group.</li>
@@ -80,83 +76,4 @@ public class ContextPipeline {
         return result;
     }
 
-    private Map<ChangeType, List<ChangeGroup>> classifyGroups(List<ChangeGroup> groups) {
-        Map<ChangeType, List<ChangeGroup>> result = new LinkedHashMap<>();
-        for (ChangeGroup g : groups) {
-            result.computeIfAbsent(classifyGroup(g), k -> new ArrayList<>()).add(g);
-        }
-        return result;
-    }
-
-    /**
-     * Classify a single group by inspecting its {@link ChangedLine} types and
-     * the number of distinct files involved.
-     */
-    public static ChangeType classifyGroup(ChangeGroup group) {
-        boolean hasAdd = false;
-        boolean hasDelete = false;
-        Set<String> files = new HashSet<>();
-
-        for (ChangedLine l : group.changedLines()) {
-            if (l.type() == ChangedLine.LineType.ADD) hasAdd = true;
-            if (l.type() == ChangedLine.LineType.DELETE) hasDelete = true;
-            files.add(l.filePath());
-        }
-
-        if (files.size() > 1) return ChangeType.CROSS_SCOPE;
-        if (hasAdd && hasDelete) return ChangeType.MODIFICATION;
-        if (hasDelete) return ChangeType.DELETION;
-        return ChangeType.ADDITION;
-    }
-
-    private List<GraphNode> findRelevantClasses(ChangeGroup group, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
-        Set<String> changedFiles = new HashSet<>();
-        for (ChangedLine l : group.changedLines()) changedFiles.add(l.filePath());
-
-        List<GraphNode> result = new ArrayList<>();
-        for (String rawFile : changedFiles) {
-            collectClassNodes(rawFile, sourceGraph, result);
-            collectClassNodes(rawFile, targetGraph, result);
-        }
-        return result;
-    }
-
-    private void collectClassNodes(String rawFile, ProjectGraph graph, List<GraphNode> out) {
-        if (graph == null) return;
-        String file = AstGraphUtils.normalizeFilePath(rawFile, graph);
-        graph.nodes.values().stream()
-                .filter(n -> file.equals(n.filePath()))
-                .filter(n -> n.kind() == NodeKind.CLASS
-                        || n.kind() == NodeKind.INTERFACE)
-                .forEach(out::add);
-    }
-
-    private List<GraphNode> findRelevantNodes(ChangeGroup group, List<GraphNode> relevantClasses,
-                                              ProjectGraph sourceGraph, ProjectGraph targetGraph) {
-        List<GraphNode> result = new ArrayList<>();
-
-        // Members declared inside the relevant classes (via DECLARES edges)
-        for (ProjectGraph graph : List.of(sourceGraph, targetGraph)) {
-            if (graph == null) continue;
-            for (GraphNode cls : relevantClasses) {
-                graph.outgoing(cls.id()).stream()
-                        .map(e -> graph.nodes.get(e.callee()))
-                        .filter(Objects::nonNull)
-                        .forEach(result::add);
-            }
-        }
-
-        // Nodes directly at changed lines
-        for (ChangedLine l : group.changedLines()) {
-            if (l.type() == ChangedLine.LineType.CONTEXT) continue;
-            int line = l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber();
-            if (line <= 0) continue;
-            for (ProjectGraph graph : List.of(sourceGraph, targetGraph)) {
-                if (graph == null) continue;
-                String file = AstGraphUtils.normalizeFilePath(l.filePath(), graph);
-                result.addAll(graph.nodesAtLine(file, line));
-            }
-        }
-        return result;
-    }
 }
