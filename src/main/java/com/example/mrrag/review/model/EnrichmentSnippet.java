@@ -14,8 +14,26 @@ public record EnrichmentSnippet(
         String sourceSnippet,
         String explanation
 ) {
+    /** Full-body convenience constructor — uses {@code node.sourceSnippet()}. */
     public EnrichmentSnippet(SnippetType type, GraphNode node, String explanation) {
         this(type, node.filePath(), node.startLine(), node.endLine(), node.simpleName(), node.sourceSnippet(), explanation);
+    }
+
+    /**
+     * Declaration-only factory — uses {@code node.declarationSnippet()} instead of the full body.
+     * Suitable for {@link SnippetType#VARIABLE_DECLARATION} and {@link SnippetType#FIELD_DECLARATION}
+     * where including the entire enclosing method/class body would bloat the LLM context.
+     */
+    public static EnrichmentSnippet ofDeclaration(SnippetType type, GraphNode node, String explanation) {
+        return new EnrichmentSnippet(
+                type,
+                node.filePath(),
+                node.startLine(),
+                node.startLine(),
+                node.simpleName(),
+                node.declarationSnippet(),
+                explanation
+        );
     }
 
     public enum SnippetType {
