@@ -87,7 +87,7 @@ public class GraphBuilderImpl implements GraphBuilder {
             return new ProjectGraph();
         }
 
-        int nThreads = 1;
+        int nThreads = 5;
         List<List<ProjectSource>> batches = SourceBatchPartitioner.partition(sources, nThreads);
 
         log.info("doBuildGraphFromSources: {} files -> {} import-aware batches (threads={})",

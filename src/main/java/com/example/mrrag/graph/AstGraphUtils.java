@@ -359,9 +359,15 @@ public final class AstGraphUtils {
                     : el instanceof CtTypeMember m ? m.getDeclaringType()
                     : el.getParent(CtType.class);
             if (owner != null) {
-                String suffix = owner.getQualifiedName()
-                        .replace('$', '/')
-                        .replace('.', '/') + ".java";
+                // Поднимаемся до top-level типа (у inner/anonymous классов декларирующий тип != null)
+                CtType<?> topLevel = owner;
+                while (topLevel.getDeclaringType() != null) {
+                    topLevel = topLevel.getDeclaringType();
+                }
+
+                String qualifiedName = topLevel.getQualifiedName(); // без $, только top-level
+                String suffix = qualifiedName.replace('.', '/') + ".java";
+
                 String found = repoPaths.stream()
                         .filter(p -> p.replace('\\', '/').endsWith(suffix))
                         .findFirst().orElse(null);
