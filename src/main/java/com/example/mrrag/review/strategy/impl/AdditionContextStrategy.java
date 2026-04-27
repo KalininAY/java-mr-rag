@@ -69,14 +69,16 @@ public class AdditionContextStrategy implements ContextStrategy {
                                 EnrichmentSnippet.SnippetType.METHOD_DECLARATION,
                                 target,
                                 "Declaration of method '" + target.simpleName() + "' called in added code"));
-                        case READS_FIELD, WRITES_FIELD -> snippets.add(new EnrichmentSnippet(
-                                EnrichmentSnippet.SnippetType.FIELD_DECLARATION,
-                                target,
-                                "Declaration of field '" + target.simpleName() + "' accessed in added code"));
-                        case READS_LOCAL_VAR, WRITES_LOCAL_VAR -> snippets.add(new EnrichmentSnippet(
-                                EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION,
-                                target,
-                                "Declaration of variable '" + target.simpleName() + "' used in added code"));
+                        case READS_FIELD, WRITES_FIELD -> snippets.add(
+                                EnrichmentSnippet.ofDeclaration(
+                                        EnrichmentSnippet.SnippetType.FIELD_DECLARATION,
+                                        target,
+                                        "Declaration of field '" + target.simpleName() + "' accessed in added code"));
+                        case READS_LOCAL_VAR, WRITES_LOCAL_VAR -> snippets.add(
+                                EnrichmentSnippet.ofDeclaration(
+                                        EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION,
+                                        target,
+                                        "Declaration of variable '" + target.simpleName() + "' used in added code"));
                         default -> {
                         }
                     }
