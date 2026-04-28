@@ -23,10 +23,6 @@ import java.util.stream.Collectors;
  *       {@link ChangeGrouper} Phase 1). Renders the method signature line(s)
  *       from the graph so the reviewer can immediately see which element was
  *       annotated/documented.</li>
- *   <li><b>Intermediate nodes</b> section (optional) — shown when the group
- *       carries non-empty {@link ChangeGroup#intermediateNodes()} (set by
- *       {@link AstChangeGrouper}). Lists the node IDs and their file/line for
- *       context.</li>
  *   <li><b>Enclosing context</b> section — one block per
  *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet.
  *       Lines are numbered in {@code lineNo| text} format.</li>
@@ -107,9 +103,6 @@ public class GroupRepresentationBuilder {
 
         // --- 2. Method signature block (legacy ChangeGrouper: preMethodKey) ---
         renderMethodSignatureBlock(sb, group, graph);
-
-        // --- 2b. Intermediate nodes block (AstChangeGrouper) ---
-        renderIntermediateNodesBlock(sb, group);
 
         if (snippets.isEmpty()) return sb.toString();
 
@@ -218,23 +211,6 @@ public class GroupRepresentationBuilder {
                     methodNode.startLine() + sigLines - 1);
             sb.append("```\n\n");
         }
-    }
-
-    /**
-     * Appends an "AST intermediates" block listing the bridge nodes found by
-     * {@link AstChangeGrouper} BFS between the two anchor nodes.
-     * Rendered only when {@link ChangeGroup#intermediateNodes()} is non-empty.
-     */
-    private void renderIntermediateNodesBlock(StringBuilder sb, ChangeGroup group) {
-        if (!group.hasIntermediates()) return;
-        sb.append("**AST bridge nodes (").append(group.intermediateNodes().size()).append("):**\n\n");
-        for (GraphNode n : group.intermediateNodes()) {
-            sb.append("- `").append(n.id()).append("` (")
-                    .append(n.kind()).append(") @ `")
-                    .append(n.filePath()).append(":")
-                    .append(n.startLine()).append("`\n");
-        }
-        sb.append('\n');
     }
 
     private static String simpleMethodName(String qualifiedId) {
