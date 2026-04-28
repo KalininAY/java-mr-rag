@@ -1,5 +1,7 @@
 package com.example.mrrag.graph.model;
 
+import com.example.mrrag.graph.GraphBuilder;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -8,7 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Thread-safe symbol graph.
  *
  * <p>All collections use concurrent implementations so that
- * {@link com.example.mrrag.graph.GraphBuilderImpl} can populate
+ * {@link GraphBuilder} can populate
  * the graph from multiple threads simultaneously.
  */
 public class ProjectGraph {

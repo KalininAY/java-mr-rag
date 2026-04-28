@@ -1,7 +1,7 @@
 package com.example.mrrag.graph.cache;
 
 import com.example.mrrag.app.source.ProjectSource;
-import com.example.mrrag.graph.GraphBuilderImpl;
+import com.example.mrrag.graph.GraphBuilder;
 import com.example.mrrag.graph.model.GraphEdge;
 import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.ProjectGraph;
@@ -22,7 +22,7 @@ import java.util.Map;
  *   <li>{@link #removeFiles} — evicts all nodes and edges belonging to the
  *       changed files from every index in {@link ProjectGraph}.</li>
  *   <li>{@link #addFiles} — re-parses changed files via Spoon (reusing the
- *       existing {@link GraphBuilderImpl#buildBatch} logic) and merges the
+ *       existing {@link GraphBuilder#buildBatch} logic) and merges the
  *       resulting partial graph into the live graph.</li>
  * </ol>
  *
@@ -36,7 +36,7 @@ import java.util.Map;
 public class GraphPatcher {
 
     /** Exposed for patching — package-private bridge into GraphBuilderImpl. */
-    private final GraphBuilderImpl graphBuilderImpl;
+    private final GraphBuilder graphBuilderImpl;
 
     // ------------------------------------------------------------------
     // Public API

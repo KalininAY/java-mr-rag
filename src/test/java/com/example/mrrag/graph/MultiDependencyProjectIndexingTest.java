@@ -2,7 +2,6 @@ package com.example.mrrag.graph;
 
 import com.example.mrrag.app.config.EdgeKindConfig;
 import com.example.mrrag.app.config.GraphCacheProperties;
-import com.example.mrrag.app.service.AstGraphService;
 import com.example.mrrag.app.source.LocalProjectSourceProvider;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
@@ -265,7 +264,7 @@ class MultiDependencyProjectIndexingTest {
     // ---------------------------------------------------------------
 
     private static AstGraphService buildService(Path cacheDir) {
-        return new AstGraphService(new GraphBuilderImpl(
+        return new AstGraphService(new GraphBuilder(
                 allEdgesEnabled(),
                 buildStore(cacheDir)));
     }

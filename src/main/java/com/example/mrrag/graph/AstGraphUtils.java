@@ -7,7 +7,6 @@ import spoon.reflect.cu.position.BodyHolderSourcePosition;
 import spoon.reflect.cu.position.CompoundSourcePosition;
 import spoon.reflect.declaration.*;
 import spoon.reflect.reference.*;
-import spoon.reflect.visitor.filter.TypeFilter;
 
 import java.nio.file.Path;
 import java.util.*;
@@ -16,7 +15,7 @@ import java.util.stream.IntStream;
 
 /**
  * Utility class containing stateless helper methods extracted from
- * {@link GraphBuilderImpl} to keep the main service class focused on
+ * {@link GraphBuilder} to keep the main service class focused on
  * orchestration rather than low-level details.
  *
  * <h2>Responsibilities</h2>

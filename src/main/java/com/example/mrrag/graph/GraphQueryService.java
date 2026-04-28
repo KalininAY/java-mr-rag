@@ -45,7 +45,6 @@ public class GraphQueryService {
             withBody.stream()
                     .filter(Objects::nonNull)
                     .min(Comparator.comparingInt(n -> n.sourceSnippet().length()))
-//                    .map(n -> n.declaration())
                     .ifPresent(result::add);
         } else {
             // Если есть узлы без тела, то добавляем все узлы без тела
@@ -56,12 +55,7 @@ public class GraphQueryService {
                 .filter(Objects::nonNull)
                 .filter(it-> it.kind() == NodeKind.METHOD || it.kind() == NodeKind.LAMBDA || it.kind() == NodeKind.CONSTRUCTOR)
                 .min(Comparator.comparingInt(n -> n.sourceSnippet().length()))
-//                    .map(n -> n.declaration())
                 .ifPresent(result::add);
-
-//        graph.nodes.values().stream()
-//                .filter(n -> filePath.equals(n.filePath()) && n.startLine() <= line && n.endLine() >= line && (n.kind() == NodeKind.METHOD || n.kind() == NodeKind.CONSTRUCTOR))
-//                .forEach(result::add);
 
         return List.copyOf(result);
     }
