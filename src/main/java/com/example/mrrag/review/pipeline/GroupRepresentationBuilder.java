@@ -21,28 +21,14 @@ import java.util.stream.Collectors;
  *   <li><b>Context snippets</b> section — all other enrichment snippets,
  *       each labelled with {@code [ADD]} or {@code [DELETE]} from
  *       {@link EnrichmentSnippet#lineContext()}.
- *       Snippet sizes are capped by type:
- *       <ul>
- *         <li>{@code VARIABLE_DECLARATION} / {@code FIELD_DECLARATION} — 1 line (just the declaration).</li>
- *         <li>{@code METHOD_DECLARATION} — {@code app.enrichment.maxSignatureLines} lines (default 5, signature only).</li>
- *         <li>All others — {@code app.enrichment.maxSnippetLines} lines (default 20).</li>
- *       </ul>
- *   </li>
+ *       All snippets are capped at {@code app.enrichment.maxSnippetLines} lines (default 20).</li>
  * </ol>
  */
 @Component
 public class GroupRepresentationBuilder {
 
-    /** Hard cap for method/constructor body snippets. */
     @Value("${app.enrichment.maxSnippetLines:20}")
     private int maxSnippetLines;
-
-    /**
-     * Number of lines shown for {@code METHOD_DECLARATION} / {@code CONSTRUCTOR_DECLARATION}
-     * snippets (signature-only preview).
-     */
-    @Value("${app.enrichment.maxSignatureLines:5}")
-    private int maxSignatureLines;
 
     public GroupRepresentation build(
             UnionLine union,
@@ -173,25 +159,7 @@ public class GroupRepresentationBuilder {
     }
 
     /**
-     * Resolves effective line limit for a snippet based on its {@link EnrichmentSnippet.SnippetType}.
-     *
-     * <ul>
-     *   <li>{@code VARIABLE_DECLARATION} — always 1 line (only the declaration statement).</li>
-     *   <li>{@code METHOD_DECLARATION} / {@code CONSTRUCTOR_DECLARATION} — {@link #maxSignatureLines}
-     *       (show the signature without the body).</li>
-     *   <li>All other types — {@link #maxSnippetLines}.</li>
-     * </ul>
-     */
-    private int effectiveLineLimit(EnrichmentSnippet.SnippetType type) {
-        return switch (type) {
-            case VARIABLE_DECLARATION -> 1;
-            case METHOD_DECLARATION, CONSTRUCTOR_DECLARATION -> maxSignatureLines;
-            default -> maxSnippetLines;
-        };
-    }
-
-    /**
-     * Renders a fenced code block for the snippet, capping at the type-specific line limit.
+     * Renders a fenced code block for the snippet, capping at {@link #maxSnippetLines} lines.
      * If the snippet was truncated, appends a {@code // ... N more lines} comment.
      *
      * @param indent prefix for each line (e.g. {@code "  "} for list items, {@code ""} for top-level)
@@ -200,11 +168,10 @@ public class GroupRepresentationBuilder {
         String src = s.sourceSnippet();
         if (src == null || src.isBlank()) return;
 
-        int lineLimit = effectiveLineLimit(s.type());
         String[] allLines = src.split("\n", -1);
-        boolean truncated = allLines.length > lineLimit;
+        boolean truncated = allLines.length > maxSnippetLines;
         String[] visibleLines = truncated
-                ? Arrays.copyOf(allLines, lineLimit)
+                ? Arrays.copyOf(allLines, maxSnippetLines)
                 : allLines;
 
         int endLine = s.startLine() + visibleLines.length - 1;
@@ -215,7 +182,7 @@ public class GroupRepresentationBuilder {
             sb.append(indent).append(line).append('\n');
         }
         if (truncated) {
-            sb.append(indent).append("// ... ").append(allLines.length - lineLimit)
+            sb.append(indent).append("// ... ").append(allLines.length - maxSnippetLines)
                     .append(" more line(s)\n");
         }
         sb.append(indent).append("```\n");
