@@ -14,6 +14,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 @Slf4j
 @RestController
@@ -50,10 +52,9 @@ public class MrReviewController {
     )
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
-    public ReviewContext review(@RequestBody @Valid ReviewRequest request) {
-        ReviewContext reviewContext = reviewService.buildReviewContext(request);
-        String s = renderContext(reviewContext);
-        return reviewContext;
+    public Mono<ReviewContext> review(@RequestBody @Valid ReviewRequest request) {
+        return Mono.fromCallable(() -> reviewService.buildReviewContext(request))
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     @Operation(
@@ -80,11 +81,10 @@ public class MrReviewController {
     @GetMapping(value = "markdown",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.TEXT_PLAIN_VALUE)
-    public String reviewMarkdown(@RequestBody @Valid ReviewRequest request) {
-        return renderContext(reviewService.buildReviewContext(request));
+    public Mono<String> reviewMarkdown(@RequestBody @Valid ReviewRequest request) {
+        return Mono.fromCallable(() -> renderContext(reviewService.buildReviewContext(request)))
+                .subscribeOn(Schedulers.boundedElastic());
     }
-
-    // -----------------------------------------------------------------------
 
     private String renderContext(ReviewContext ctx) {
         StringBuilder sb = new StringBuilder();
@@ -93,7 +93,6 @@ public class MrReviewController {
         sb.append("`").append(ctx.sourceBranch()).append("` \u2192 `")
                 .append(ctx.targetBranch()).append("`\n\n");
         sb.append("---\n\n");
-
         for (GroupRepresentation group : ctx.representations()) {
             sb.append(group.markdown());
             sb.append("---\n\n");

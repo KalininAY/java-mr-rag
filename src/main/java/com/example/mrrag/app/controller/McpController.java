@@ -12,17 +12,16 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
- * MCP (Model Context Protocol) endpoint.
+ * MCP (Model Context Protocol) REST entry point.
  *
- * <p>Предназначен для вызова из LLM-агентов: принимает минимальный
- * набор параметров MR и возвращает полный {@link ReviewContext},
- * который агент использует как контекст для ревью.
+ * <p>Предназначен для вызова из MCP-совместимых LLM-агентов.
+ * Фактическая регистрация tool {@code review_mr} выполняется через
+ * {@link com.example.mrrag.mcp.ReviewMcpTool} + Spring AI MCP SSE server.
  */
 @Slf4j
 @RestController
@@ -34,7 +33,7 @@ public class McpController {
     private final ReviewService reviewService;
 
     @Operation(
-            summary = "Построить контекст ревью для MR",
+            summary = "Построить контекст ревью для MR (MCP)",
             description = """
                     Принимает namespace, repo и mrIid.
                     Возвращает полный ReviewContext: ветки, заголовок MR,
@@ -66,9 +65,10 @@ public class McpController {
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public ReviewContext review(@RequestBody @Valid ReviewRequest request) {
+    public Mono<ReviewContext> review(@RequestBody @Valid ReviewRequest request) {
         log.info("McpController.review: {}/{} mrIid={}",
                 request.namespace(), request.repo(), request.mrIid());
-        return reviewService.buildReviewContext(request);
+        return Mono.fromCallable(() -> reviewService.buildReviewContext(request))
+                .subscribeOn(Schedulers.boundedElastic());
     }
 }

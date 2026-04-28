@@ -22,19 +22,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.Arrays;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-/**
- * REST endpoints for graph building.
- *
- * <ul>
- *   <li>{@code POST /api/graph/remote} — no-clone, reads files via GitLab API (no caching)</li>
- *   <li>{@code POST /api/graph/local}  — clone once, serve from cache, incremental patch on new commits</li>
- * </ul>
- */
 @Slf4j
 @RestController
 @Validated
@@ -44,13 +38,9 @@ import java.util.stream.Collectors;
         description = "Построение AST-графа через GitLab API")
 public class GraphApiController {
 
-    private final GraphBuilder                  graphService;
-    private final CodeRepositoryGateway         gatewayRepo;
+    private final GraphBuilder            graphService;
+    private final CodeRepositoryGateway   gatewayRepo;
     private final CachedManagementService cachedService;
-
-    // ------------------------------------------------------------------
-    // /remote — no local clone, no caching
-    // ------------------------------------------------------------------
 
     @Operation(
             summary = "Построить граф по revision (без клонирования)",
@@ -67,15 +57,13 @@ public class GraphApiController {
     @PostMapping(value = "/remote",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
-    public GraphBuildStats remote(@RequestBody @Valid RemoteProjectRequest request) {
-        ProjectSourceProvider provider = new GitLabRemoteSourceProvider(gatewayRepo, request);
-        ProjectGraph graph = graphService.buildGraph(provider);
-        return toStats(request, "(virtual — no clone)", graph);
+    public Mono<GraphBuildStats> remote(@RequestBody @Valid RemoteProjectRequest request) {
+        return Mono.fromCallable(() -> {
+            ProjectSourceProvider provider = new GitLabRemoteSourceProvider(gatewayRepo, request);
+            ProjectGraph graph = graphService.buildGraph(provider);
+            return toStats(request, "(virtual — no clone)", graph);
+        }).subscribeOn(Schedulers.boundedElastic());
     }
-
-    // ------------------------------------------------------------------
-    // /local — clone once, cached, incremental patch on new commits
-    // ------------------------------------------------------------------
 
     @Operation(
             summary = "Построить граф с кэшированием (клон один раз, инкрементальное обновление)",
@@ -94,15 +82,13 @@ public class GraphApiController {
     @PostMapping(value = "/local",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
-    public GraphBuildStats local(@RequestBody @Valid RemoteProjectRequest request) {
-        ProjectKey key = ProjectKey.from(request);
-        ProjectGraph graph = cachedService.getOrBuildGraph(key, request.token());
-        return toStats(request, "(cached clone)", graph);
+    public Mono<GraphBuildStats> local(@RequestBody @Valid RemoteProjectRequest request) {
+        return Mono.fromCallable(() -> {
+            ProjectKey key = ProjectKey.from(request);
+            ProjectGraph graph = cachedService.getOrBuildGraph(key, request.token());
+            return toStats(request, "(cached clone)", graph);
+        }).subscribeOn(Schedulers.boundedElastic());
     }
-
-    // ------------------------------------------------------------------
-    // Internal helpers
-    // ------------------------------------------------------------------
 
     private GraphBuildStats toStats(RemoteProjectRequest request, String workspaceDir,
                                     ProjectGraph graph) {
