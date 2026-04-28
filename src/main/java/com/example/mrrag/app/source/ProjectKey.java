@@ -1,22 +1,28 @@
 package com.example.mrrag.app.source;
 
+import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
+
 /**
- * Stable identity of a project branch used as a cache/registry key.
+ * Immutable identity key for a specific branch of a GitLab project.
  *
- * <p>Identifies a branch by its GitLab coordinates: {@code namespace/repo@branch}.
- * Unlike the old {@code (Path, fingerprint)} form, this key is independent of
- * the local filesystem layout and works equally well for local clones and
- * remote (API-only) providers.
+ * <p>Used as the cache key in {@link com.example.mrrag.graph.cache.RepositoryCacheService}
+ * and {@link com.example.mrrag.graph.cache.BranchGraphRegistry}.
  *
- * <p>The mutable state of the graph (which commit was last built) lives in
- * {@link com.example.mrrag.graph.cache.VersionedGraph}, not here.
+ * @param namespace GitLab namespace (group or user)
+ * @param repo      repository slug
+ * @param branch    branch name
  */
 public record ProjectKey(String namespace, String repo, String branch) {
 
-    public ProjectKey {
-        if (namespace == null || namespace.isBlank()) throw new IllegalArgumentException("namespace must not be blank");
-        if (repo      == null || repo.isBlank())      throw new IllegalArgumentException("repo must not be blank");
-        if (branch    == null || branch.isBlank())    throw new IllegalArgumentException("branch must not be blank");
+    /**
+     * Convenience factory that builds a key from a REST request,
+     * defaulting to {@code "master"} when the branch field is blank.
+     */
+    public static ProjectKey from(RemoteProjectRequest request) {
+        String branch = (request.branch() == null || request.branch().isBlank())
+                ? "master"
+                : request.branch();
+        return new ProjectKey(request.namespace(), request.repo(), branch);
     }
 
     @Override

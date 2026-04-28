@@ -1,7 +1,6 @@
 package com.example.mrrag.app.controller;
 
 import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
-import com.example.mrrag.app.source.GitLabLocalSourceProvider;
 import com.example.mrrag.app.source.GitLabRemoteSourceProvider;
 import com.example.mrrag.app.source.ProjectKey;
 import com.example.mrrag.app.source.ProjectSourceProvider;
@@ -25,7 +24,6 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Arrays;
-import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -33,10 +31,8 @@ import java.util.stream.Collectors;
  * REST endpoints for graph building.
  *
  * <ul>
- *   <li>{@code POST /api/graph/remote}  — no-clone, reads files via GitLab API</li>
- *   <li>{@code POST /api/graph/local}   — clones on every call, no caching</li>
- *   <li>{@code POST /api/graph/cached}  — clone once, incremental patch on new commits</li>
- *   <li>{@code POST /api/graph/sync}    — explicit pull + incremental patch trigger</li>
+ *   <li>{@code POST /api/graph/remote} — no-clone, reads files via GitLab API (no caching)</li>
+ *   <li>{@code POST /api/graph/local}  — clone once, serve from cache, incremental patch on new commits</li>
  * </ul>
  */
 @Slf4j
@@ -44,23 +40,23 @@ import java.util.stream.Collectors;
 @Validated
 @RequestMapping("/api/graph")
 @RequiredArgsConstructor
-@Tag(name = "Граф (GitLab API)", description = "Построение AST-графа напрямую через GitLab API без клонирования репозитория")
+@Tag(name = "Граф (GitLab API)",
+        description = "Построение AST-графа через GitLab API")
 public class GraphApiController {
 
-    private final GraphBuilder                graphService;
-    private final CodeRepositoryGateway       gatewayRepo;
+    private final GraphBuilder                  graphService;
+    private final CodeRepositoryGateway         gatewayRepo;
     private final CachedSourceManagementService cachedService;
 
     // ------------------------------------------------------------------
-    // /remote
+    // /remote — no local clone, no caching
     // ------------------------------------------------------------------
 
     @Operation(
             summary = "Построить граф по revision (без клонирования)",
             description = """
-                    Загружает исходные файлы Java-проекта через GitLab Repository Files API и строит
-                    AST-граф символов (узлы + рёбра). Клонирование не выполняется — файлы читаются
-                    напрямую из GitLab.
+                    Загружает исходные файлы через GitLab Repository Files API и строит AST-граф.
+                    Клонирование не выполняется, кэш не используется.
                     """,
             responses = {
                     @ApiResponse(responseCode = "200",
@@ -78,14 +74,16 @@ public class GraphApiController {
     }
 
     // ------------------------------------------------------------------
-    // /local
+    // /local — clone once, cached, incremental patch on new commits
     // ------------------------------------------------------------------
 
     @Operation(
-            summary = "Клонировать репозиторий и построить граф",
+            summary = "Построить граф с кэшированием (клон один раз, инкрементальное обновление)",
             description = """
-                    Клонирует Git-репозиторий и строит AST-граф Java-проекта.
-                    Не использует кэш — клонирование выполняется при каждом запросе.
+                    При первом запросе клонирует ветку и строит полный AST-граф.
+                    Повторный запрос с тем же namespace/repo/branch: если SHA не изменился —
+                    возвращает граф из памяти; если появились новые коммиты — перестраивает
+                    только изменённые файлы.
                     """,
             responses = {
                     @ApiResponse(responseCode = "200",
@@ -97,75 +95,9 @@ public class GraphApiController {
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public GraphBuildStats local(@RequestBody @Valid RemoteProjectRequest request) {
-        ProjectSourceProvider provider = new GitLabLocalSourceProvider(gatewayRepo, request);
-        ProjectGraph graph = graphService.buildGraph(provider);
-        return toStats(request, "workspaceDir", graph);
-    }
-
-    // ------------------------------------------------------------------
-    // /cached  — clone once, patch on new commits
-    // ------------------------------------------------------------------
-
-    @Operation(
-            summary = "Построить граф с кэшем (инкрементально)",
-            description = """
-                    При первом запросе клонирует ветку и строит полный граф.
-                    При повторных запросах: если SHA не изменился — возвращает кэш; если появились
-                    новые коммиты — инкрементально перестраивает только изменённые файлы.
-                    """,
-            responses = {
-                    @ApiResponse(responseCode = "200",
-                            content = @Content(schema = @Schema(implementation = GraphBuildStats.class))),
-                    @ApiResponse(responseCode = "500", description = "Ошибка клонирования или построения графа")
-            }
-    )
-    @PostMapping(value = "/cached",
-            consumes = MediaType.APPLICATION_JSON_VALUE,
-            produces = MediaType.APPLICATION_JSON_VALUE)
-    public GraphBuildStats cached(@RequestBody @Valid RemoteProjectRequest request) {
-        ProjectKey key = new ProjectKey(
-                request.namespace(), request.repo(),
-                request.branch() == null || request.branch().isBlank() ? "master" : request.branch());
-
+        ProjectKey key = ProjectKey.from(request);
         ProjectGraph graph = cachedService.getOrBuildGraph(key, request.token());
         return toStats(request, "(cached clone)", graph);
-    }
-
-    // ------------------------------------------------------------------
-    // /sync  — explicit pull + incremental patch
-    // ------------------------------------------------------------------
-
-    @Operation(
-            summary = "Синхронизировать ветку и обновить граф",
-            description = """
-                    Выполняет git pull для указанной ветки и инкрементально перестраивает граф
-                    по изменённым файлам. Подходит для вебхука по push-событию или ручного обновления.
-                    Возвращает список изменённых .java файлов.
-                    """,
-            responses = {
-                    @ApiResponse(responseCode = "200",
-                            description = "Пустой список — нет изменений; иначе — список репарсенных .java файлов",
-                            content = @Content(schema = @Schema(implementation = List.class))),
-                    @ApiResponse(responseCode = "500", description = "Ошибка синхронизации")
-            }
-    )
-    @PostMapping(value = "/sync",
-            consumes = MediaType.APPLICATION_JSON_VALUE,
-            produces = MediaType.APPLICATION_JSON_VALUE)
-    public List<String> sync(@RequestBody @Valid RemoteProjectRequest request) {
-        ProjectKey key = new ProjectKey(
-                request.namespace(), request.repo(),
-                request.branch() == null || request.branch().isBlank() ? "master" : request.branch());
-
-        List<String> changed = cachedService.syncAndGetChanges(key, request.token());
-
-        if (!changed.isEmpty()) {
-            // Trigger incremental patch so the graph is up-to-date after sync
-            cachedService.getOrBuildGraph(key, request.token());
-        }
-
-        log.info("GraphApiController.sync: {} — {} files changed", key, changed.size());
-        return changed;
     }
 
     // ------------------------------------------------------------------

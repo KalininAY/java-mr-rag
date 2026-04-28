@@ -1,9 +1,8 @@
 package com.example.mrrag.app.service;
 
-import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
 import com.example.mrrag.app.controller.requestDTO.ReviewRequest;
-import com.example.mrrag.app.source.GitLabLocalSourceProvider;
-import com.example.mrrag.graph.GraphBuilder;
+import com.example.mrrag.app.source.ProjectKey;
+import com.example.mrrag.graph.cache.CachedSourceManagementService;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.pipeline.ContextPipeline;
@@ -21,13 +20,12 @@ import java.util.concurrent.CompletableFuture;
  * Orchestrates the full review pipeline:
  * <ol>
  *   <li>Fetch MR from GitLab</li>
- *   <li>Clone source branch → &lt;project&gt;-mr&lt;id&gt;/from-&lt;branch&gt;-&lt;ts&gt; (parallel with target)</li>
- *   <li>Clone target branch → &lt;project&gt;-mr&lt;id&gt;/to-&lt;branch&gt;-&lt;ts&gt;   (parallel with source)</li>
- *   <li>Build AST graphs for both branches (parallel)</li>
+ *   <li>Obtain AST graphs for source and target branches via
+ *       {@link CachedSourceManagementService} (parallel) —
+ *       clones only on first call, reuses or patches on subsequent calls</li>
  *   <li>Parse git diff</li>
  *   <li>Run RAG pipeline ({@link ContextPipeline}) → classify, find classes/nodes,
  *       collect context per change type, build {@link GroupRepresentation}s</li>
- *   <li>Cleanup both temp dirs</li>
  *   <li>Return {@link ReviewContext}</li>
  * </ol>
  */
@@ -36,54 +34,39 @@ import java.util.concurrent.CompletableFuture;
 @RequiredArgsConstructor
 public class ReviewService {
 
-    private final CodeRepositoryGateway repoGateway;
-    private final GraphBuilder astGraphService;
-    private final ContextPipeline contextPipeline;
+    private final CodeRepositoryGateway         repoGateway;
+    private final CachedSourceManagementService cachedService;
+    private final ContextPipeline               contextPipeline;
 
     public ReviewContext buildReviewContext(ReviewRequest request) {
         log.info("Building review context for project={} mrIid={}",
                 request.namespace() + "/" + request.repo(), request.mrIid());
 
-        MergeRequest mr = repoGateway.getMergeRequest(request.namespace(), request.repo(), request.mrIid(), null);
+        MergeRequest mr = repoGateway.getMergeRequest(
+                request.namespace(), request.repo(), request.mrIid(), null);
 
-        // --- Parallel clone ---
-        log.info("Cloning source branch '{}' and target branch '{}' in parallel...",
+        ProjectKey sourceKey = new ProjectKey(
+                request.namespace(), request.repo(), mr.getSourceBranch());
+        ProjectKey targetKey = new ProjectKey(
+                request.namespace(), request.repo(), mr.getTargetBranch());
+
+        log.info("Obtaining AST graphs for source='{}' and target='{}' in parallel",
                 mr.getSourceBranch(), mr.getTargetBranch());
 
-        GitLabLocalSourceProvider sourceProvider = new GitLabLocalSourceProvider(
-                repoGateway,
-                new RemoteProjectRequest(request.namespace(), request.repo(), mr.getSourceBranch(), null, null, false));
-        GitLabLocalSourceProvider targetProvider = new GitLabLocalSourceProvider(
-                repoGateway,
-                new RemoteProjectRequest(request.namespace(), request.repo(), mr.getTargetBranch(), null, null, false));
+        // Build / reuse both graphs in parallel
+        CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(
+                () -> cachedService.getOrBuildGraph(sourceKey, request.token()));
 
-        log.info("Both branches cloned successfully: source={}, target={}",
-                mr.getSourceBranch(), mr.getTargetBranch());
-        // --- Parallel AST graph build ---
-        log.info("Building AST graphs in parallel...");
-
-        CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
-            try {
-                return astGraphService.buildGraph(sourceProvider);
-            } catch (Exception e) {
-                throw new RuntimeException("Failed to build source AST graph", e);
-            }
-        });
-
-        CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(() -> {
-            try {
-                return astGraphService.buildGraph(targetProvider);
-            } catch (Exception e) {
-                throw new RuntimeException("Failed to build target AST graph", e);
-            }
-        });
+        CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(
+                () -> cachedService.getOrBuildGraph(targetKey, request.token()));
 
         ProjectGraph sourceGraph = sourceGraphFuture.join();
         ProjectGraph targetGraph = targetGraphFuture.join();
-        log.info("Both AST graphs built successfully");
+        log.info("Both AST graphs ready");
 
         log.info("Fetching MR diffs...");
-        List<Diff> diffs = repoGateway.getMrDiffs(request.namespace(), request.repo(), request.mrIid(), null);
+        List<Diff> diffs = repoGateway.getMrDiffs(
+                request.namespace(), request.repo(), request.mrIid(), null);
 
         log.info("Running ContextPipeline...");
         List<GroupRepresentation> representations = contextPipeline.run(diffs, sourceGraph, targetGraph);
