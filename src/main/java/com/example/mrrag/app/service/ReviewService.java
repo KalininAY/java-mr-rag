@@ -55,10 +55,10 @@ public class ReviewService {
 
         // Build / reuse both graphs in parallel
         CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(
-                () -> cachedService.getOrBuildGraph(sourceKey, request.token()));
+                () -> cachedService.getOrBuildGraph(sourceKey, null));
 
         CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(
-                () -> cachedService.getOrBuildGraph(targetKey, request.token()));
+                () -> cachedService.getOrBuildGraph(targetKey, null));
 
         ProjectGraph sourceGraph = sourceGraphFuture.join();
         ProjectGraph targetGraph = targetGraphFuture.join();

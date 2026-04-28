@@ -55,7 +55,7 @@ public class CachedSourceManagementService {
 
         log.info("CachedSourceManagementService.getOrBuildGraph: {} @ {}", key, currentSha);
 
-        ProjectSourceProvider fullProvider = providerFrom(entry);
+        ProjectSourceProvider fullProvider = new LocalProjectSourceProvider(entry.projectKey(), entry.localPath());
 
         return incrementalBuilder.getOrBuild(
                 key,
@@ -98,15 +98,6 @@ public class CachedSourceManagementService {
         cacheService.invalidate(key);
         registry.invalidate(key);
         log.info("CachedSourceManagementService.invalidate: evicted cache and graph for {}", key);
-    }
-
-    // ------------------------------------------------------------------
-    // Internal helpers
-    // ------------------------------------------------------------------
-
-    /** Builds a provider from an already-resolved cache entry — no extra getOrInit call. */
-    private ProjectSourceProvider providerFrom(BranchCacheEntry entry) {
-        return new LocalProjectSourceProvider(entry.projectKey(), entry.localPath());
     }
 
     private List<ProjectSource> loadChangedSources(ProjectKey key, String token,
