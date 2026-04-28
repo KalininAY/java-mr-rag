@@ -1,5 +1,6 @@
 package com.example.mrrag.graph.cache;
 
+import com.example.mrrag.app.source.ProjectKey;
 import com.example.mrrag.app.source.ProjectSource;
 import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.graph.GraphBuilder;
@@ -17,7 +18,7 @@ import java.util.function.Supplier;
  *
  * <h2>Decision tree per request</h2>
  * <pre>
- * registry.get(branchKey)
+ * registry.get(projectKey)
  *   empty?  → full build via GraphBuilder  → store in registry
  *   present?
  *     same SHA? → return as-is
@@ -39,12 +40,12 @@ public class IncrementalGraphBuilder {
 
     private final BranchGraphRegistry registry;
     private final GraphPatcher         patcher;
-    private final GraphBuilder graphBuilder;
+    private final GraphBuilder         graphBuilder;
 
     /**
      * Returns an up-to-date {@link ProjectGraph} for the given branch.
      *
-     * @param branchKey              identifies the branch slot in the registry
+     * @param projectKey             identifies the branch slot in the registry
      * @param currentCommitSha       SHA of the commit being analysed right now
      * @param fullProvider           used for a cold-start full build
      * @param changedFilesSupplier   lazy: returns repo-relative paths of changed {@code .java} files
@@ -53,19 +54,19 @@ public class IncrementalGraphBuilder {
      * @return fully populated (or incrementally patched) graph
      */
     public ProjectGraph getOrBuild(
-            BranchKey branchKey,
+            ProjectKey projectKey,
             String currentCommitSha,
             ProjectSourceProvider fullProvider,
             Supplier<List<String>>        changedFilesSupplier,
             Supplier<List<ProjectSource>> changedSourcesSupplier) {
 
-        Optional<VersionedGraph> cached = registry.get(branchKey);
+        Optional<VersionedGraph> cached = registry.get(projectKey);
 
         // ── Cold start ────────────────────────────────────────────────
         if (cached.isEmpty()) {
-            log.info("IncrementalGraphBuilder: cold start for {} @ {}", branchKey, currentCommitSha);
+            log.info("IncrementalGraphBuilder: cold start for {} @ {}", projectKey, currentCommitSha);
             ProjectGraph full = graphBuilder.buildGraph(fullProvider);
-            registry.put(branchKey, new VersionedGraph(currentCommitSha, full));
+            registry.put(projectKey, new VersionedGraph(currentCommitSha, full));
             return full;
         }
 
@@ -73,13 +74,13 @@ public class IncrementalGraphBuilder {
 
         // ── Cache hit (same SHA) ───────────────────────────────────────
         if (vg.commitSha().equals(currentCommitSha)) {
-            log.debug("IncrementalGraphBuilder: cache hit for {} @ {}", branchKey, currentCommitSha);
+            log.debug("IncrementalGraphBuilder: cache hit for {} @ {}", projectKey, currentCommitSha);
             return vg.graph();
         }
 
         // ── Incremental patch (SHA changed) ───────────────────────────
         log.info("IncrementalGraphBuilder: patching {} from {} → {}",
-                branchKey, vg.commitSha(), currentCommitSha);
+                projectKey, vg.commitSha(), currentCommitSha);
 
         List<String>        changedFiles   = changedFilesSupplier.get();
         List<ProjectSource> changedSources = changedSourcesSupplier.get();
@@ -90,7 +91,7 @@ public class IncrementalGraphBuilder {
         patcher.addFiles(vg.graph(), changedSources,
                 fullProvider.localProjectRoot().orElse(null));
 
-        registry.put(branchKey, new VersionedGraph(currentCommitSha, vg.graph()));
+        registry.put(projectKey, new VersionedGraph(currentCommitSha, vg.graph()));
         return vg.graph();
     }
 }

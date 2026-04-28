@@ -1,5 +1,6 @@
 package com.example.mrrag.graph.cache;
 
+import com.example.mrrag.app.source.ProjectKey;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -12,25 +13,27 @@ import java.util.concurrent.ConcurrentMap;
  *
  * <p>Thread-safe: backed by {@link ConcurrentHashMap}.
  * Lifecycle is application-scoped — graphs survive across requests
- * and are updated incrementally via {@link com.example.mrrag.graph.cache.GraphPatcher}.
+ * and are updated incrementally via {@link GraphPatcher}.
+ *
+ * <p>Keyed by {@link ProjectKey} ({@code namespace/repo@branch}).
  */
 @Slf4j
 @Component
 public class BranchGraphRegistry {
 
-    private final ConcurrentMap<BranchKey, VersionedGraph> cache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<ProjectKey, VersionedGraph> cache = new ConcurrentHashMap<>();
 
     /**
      * Returns the cached graph for the given branch, if present.
      */
-    public Optional<VersionedGraph> get(BranchKey key) {
+    public Optional<VersionedGraph> get(ProjectKey key) {
         return Optional.ofNullable(cache.get(key));
     }
 
     /**
      * Stores (or replaces) the graph for the given branch.
      */
-    public void put(BranchKey key, VersionedGraph vg) {
+    public void put(ProjectKey key, VersionedGraph vg) {
         cache.put(key, vg);
         log.debug("BranchGraphRegistry: stored graph for {} @ sha={}", key, vg.commitSha());
     }
@@ -38,7 +41,7 @@ public class BranchGraphRegistry {
     /**
      * Evicts the cached graph for the given branch.
      */
-    public void invalidate(BranchKey key) {
+    public void invalidate(ProjectKey key) {
         VersionedGraph removed = cache.remove(key);
         if (removed != null) {
             log.info("BranchGraphRegistry: evicted graph for {}", key);
@@ -48,7 +51,7 @@ public class BranchGraphRegistry {
     /**
      * Returns {@code true} if a graph is cached for the given branch.
      */
-    public boolean contains(BranchKey key) {
+    public boolean contains(ProjectKey key) {
         return cache.containsKey(key);
     }
 
