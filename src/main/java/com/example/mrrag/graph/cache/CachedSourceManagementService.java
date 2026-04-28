@@ -18,11 +18,11 @@ import java.util.List;
  * <h2>Decision tree</h2>
  * <pre>
  * getOrBuildGraph(key, token)
- *   └─ getOrInit(key)       ← ensures local clone exists, called exactly once
- *       ├─ graph absent?     → full build via fullProvider
+ *   └─ refreshCache(key)     ← always checks remote HEAD; pulls if SHA changed
+ *       ├─ graph absent?      → full build via fullProvider
  *       └─ graph present?
  *           ├─ same SHA?       → return as-is
- *           └─ SHA changed?    → pull + incremental patch
+ *           └─ SHA changed?    → incremental patch
  * </pre>
  */
 @Slf4j
@@ -41,53 +41,30 @@ public class CachedSourceManagementService {
     /**
      * Returns an up-to-date {@link ProjectGraph} for the given branch.
      *
-     * <p>{@link RepositoryCacheService#getOrInit} is called exactly once;
-     * the resulting {@link BranchCacheEntry} is reused to build the provider
-     * and passed as the current SHA to {@link IncrementalGraphBuilder}.
+     * <p>Always resolves the current HEAD SHA via
+     * {@link RepositoryCacheService#refreshCache}: if the SHA has not changed
+     * the call is cheap (no pull, no rebuild); if it has changed the clone is
+     * pulled and the graph is patched incrementally.
      *
      * @param key   branch identifier
      * @param token GitLab personal-access token (nullable)
      * @return fully populated graph
      */
     public ProjectGraph getOrBuildGraph(ProjectKey key, String token) {
-        BranchCacheEntry entry = cacheService.getOrInit(key, token);
+        BranchCacheEntry entry = cacheService.refreshCache(key, token);
         String currentSha = entry.lastCommitSha();
 
         log.info("CachedSourceManagementService.getOrBuildGraph: {} @ {}", key, currentSha);
 
-        ProjectSourceProvider fullProvider = new LocalProjectSourceProvider(entry.projectKey(), entry.localPath());
+        ProjectSourceProvider fullProvider = providerFrom(entry);
 
         return incrementalBuilder.getOrBuild(
                 key,
                 currentSha,
                 fullProvider,
-                () -> syncAndGetChanges(key, token),
-                () -> loadChangedSources(key, token, fullProvider)
+                () -> changedFilesBetween(key, token, entry),
+                () -> loadChangedSources(key, token, entry, fullProvider)
         );
-    }
-
-    /**
-     * Pulls the latest commits and returns changed {@code .java} file paths
-     * since the last cached SHA. Empty list means no new commits.
-     *
-     * @param key   branch identifier
-     * @param token GitLab personal-access token (nullable)
-     */
-    public List<String> syncAndGetChanges(ProjectKey key, String token) {
-        BranchCacheEntry before = cacheService.get(key)
-                .orElseThrow(() -> new IllegalStateException(
-                        "No cache entry for " + key + " — call getOrBuildGraph first"));
-        String oldSha = before.lastCommitSha();
-
-        BranchCacheEntry after = cacheService.refreshCache(key, token);
-        String newSha = after.lastCommitSha();
-
-        if (oldSha == null || oldSha.equals(newSha)) {
-            log.debug("CachedSourceManagementService.syncAndGetChanges: {} no new commits", key);
-            return List.of();
-        }
-
-        return cacheService.getChangedFiles(key, oldSha, newSha, token);
     }
 
     /**
@@ -100,9 +77,39 @@ public class CachedSourceManagementService {
         log.info("CachedSourceManagementService.invalidate: evicted cache and graph for {}", key);
     }
 
+    // ------------------------------------------------------------------
+    // Internal helpers
+    // ------------------------------------------------------------------
+
+    /** Builds a provider from an already-resolved cache entry — no extra gateway call. */
+    private ProjectSourceProvider providerFrom(BranchCacheEntry entry) {
+        return new LocalProjectSourceProvider(entry.projectKey(), entry.localPath());
+    }
+
+    /**
+     * Returns changed {@code .java} paths between the SHA recorded in
+     * {@code entry} (= previous HEAD before this request's pull) and the
+     * current HEAD stored in the refreshed entry.
+     *
+     * <p>Called lazily — only when {@link IncrementalGraphBuilder} detects
+     * that the SHA has changed.
+     */
+    private List<String> changedFilesBetween(ProjectKey key, String token,
+                                             BranchCacheEntry previousEntry) {
+        BranchCacheEntry current = cacheService.get(key)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Cache entry missing for " + key));
+        String oldSha = previousEntry.lastCommitSha();
+        String newSha = current.lastCommitSha();
+
+        if (oldSha == null || oldSha.equals(newSha)) return List.of();
+        return cacheService.getChangedFiles(key, oldSha, newSha, token);
+    }
+
     private List<ProjectSource> loadChangedSources(ProjectKey key, String token,
+                                                   BranchCacheEntry previousEntry,
                                                    ProjectSourceProvider fullProvider) {
-        List<String> changedPaths = syncAndGetChanges(key, token);
+        List<String> changedPaths = changedFilesBetween(key, token, previousEntry);
         if (changedPaths.isEmpty()) return List.of();
         return fullProvider.getSources().stream()
                 .filter(src -> changedPaths.contains(src.path()))
