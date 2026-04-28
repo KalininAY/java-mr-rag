@@ -2,6 +2,7 @@ package com.example.mrrag.graph.cache;
 
 import com.example.mrrag.app.source.ProjectSource;
 import com.example.mrrag.app.source.ProjectSourceProvider;
+import com.example.mrrag.graph.GraphBuilder;
 import com.example.mrrag.graph.model.ProjectGraph;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -38,7 +39,7 @@ public class IncrementalGraphBuilder {
 
     private final BranchGraphRegistry registry;
     private final GraphPatcher         patcher;
-    private final GraphBuilder         graphBuilder;
+    private final GraphBuilder graphBuilder;
 
     /**
      * Returns an up-to-date {@link ProjectGraph} for the given branch.
@@ -63,7 +64,7 @@ public class IncrementalGraphBuilder {
         // ── Cold start ────────────────────────────────────────────────
         if (cached.isEmpty()) {
             log.info("IncrementalGraphBuilder: cold start for {} @ {}", branchKey, currentCommitSha);
-            ProjectGraph full = graphBuilder.buildGraph(fullProvider, false);
+            ProjectGraph full = graphBuilder.buildGraph(fullProvider);
             registry.put(branchKey, new VersionedGraph(currentCommitSha, full));
             return full;
         }

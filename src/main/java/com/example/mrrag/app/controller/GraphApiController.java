@@ -3,6 +3,7 @@ package com.example.mrrag.app.controller;
 import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
 import com.example.mrrag.app.source.GitLabLocalSourceProvider;
 import com.example.mrrag.graph.GraphBuildStats;
+import com.example.mrrag.graph.GraphBuilder;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
@@ -36,7 +37,7 @@ import java.util.stream.Collectors;
 @Tag(name = "Граф (GitLab API)", description = "Построение AST-графа напрямую через GitLab API без клонирования репозитория")
 public class GraphApiController {
 
-    private final AstGraphService graphService;
+    private final GraphBuilder graphService;
     private final CodeRepositoryGateway gatewayRepo;
 
     @Operation(
@@ -72,7 +73,7 @@ public class GraphApiController {
         ProjectSourceProvider provider =
                 new GitLabRemoteSourceProvider(gatewayRepo, request);
 
-        ProjectGraph graph = graphService.buildGraph(provider, request.force());
+        ProjectGraph graph = graphService.buildGraph(provider);
 
         Map<NodeKind, Long> nodesByKind = Arrays.stream(NodeKind.values())
                 .collect(Collectors.toMap(k -> k,
@@ -125,7 +126,7 @@ public class GraphApiController {
         ProjectSourceProvider sourceProvider =
                 new GitLabLocalSourceProvider(gatewayRepo, request);
 
-        ProjectGraph graph = graphService.buildGraph(sourceProvider, request.force());
+        ProjectGraph graph = graphService.buildGraph(sourceProvider);
 
         Map<NodeKind, Long> nodesByKind = Arrays.stream(NodeKind.values())
                 .collect(Collectors.toMap(

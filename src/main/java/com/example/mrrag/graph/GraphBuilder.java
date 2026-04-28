@@ -104,7 +104,7 @@ public class GraphBuilder {
         return doBuildGraphFromModel(model, sourceLines, classpathRoot);
     }
 
-    private static void mergeGraphs(ProjectGraph target, ProjectGraph source) {
+    public void mergeGraphs(ProjectGraph target, ProjectGraph source) {
         source.nodes.values().forEach(target::addNode);
         source.edgesFrom.forEach((caller, edges) ->
                 edges.forEach(target::addEdge));

@@ -3,7 +3,7 @@ package com.example.mrrag.app.controller;
 import com.example.mrrag.app.controller.requestDTO.ReviewRequest;
 import com.example.mrrag.review.model.GroupRepresentation;
 import com.example.mrrag.review.model.ReviewContext;
-import com.example.mrrag.review.ReviewService;
+import com.example.mrrag.app.service.ReviewService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;

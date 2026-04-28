@@ -64,11 +64,11 @@ public class GraphPatcher {
         int removedNodes = 0;
         int removedEdges = 0;
 
-        for (String file : filePaths) {
-            // 1. Collect nodes belonging to this file
-            List<GraphNode> fileNodes = graph.byFile.remove(file);
+        for (String filePath : filePaths) {
+            // 1. Collect nodes belonging to this filePath
+            List<GraphNode> fileNodes = graph.byFile.remove(filePath);
             if (fileNodes == null) {
-                log.debug("GraphPatcher.removeFiles: no nodes for file {}", file);
+                log.debug("GraphPatcher.removeFiles: no nodes for filePath {}", filePath);
                 continue;
             }
 
@@ -117,10 +117,10 @@ public class GraphPatcher {
                 removedNodes++;
             }
 
-            // 2. Prune stale edges in other nodes that reference this file
-            //    (e.g. an INVOKES edge recorded at the call-site file)
-            pruneEdgesByFile(graph.edgesFrom, file);
-            pruneEdgesByFile(graph.edgesTo,   file);
+            // 2. Prune stale edges in other nodes that reference this filePath
+            //    (e.g. an INVOKES edge recorded at the call-site filePath)
+            pruneEdgesByFile(graph.edgesFrom, filePath);
+            pruneEdgesByFile(graph.edgesTo,   filePath);
         }
 
         log.info("GraphPatcher.removeFiles: removed {} nodes, ~{} edges for {} files",
@@ -139,10 +139,10 @@ public class GraphPatcher {
         if (newSources == null || newSources.isEmpty()) return;
 
         log.info("GraphPatcher.addFiles: re-parsing {} files", newSources.size());
-        ProjectGraph patch = graphBuilderImpl.buildBatchPublic(newSources, projectRoot);
+        ProjectGraph patch = graphBuilderImpl.buildBatch(newSources, projectRoot);
 
         int nodesBefore = graph.nodes.size();
-        graphBuilderImpl.mergeGraphsPublic(graph, patch);
+        graphBuilderImpl.mergeGraphs(graph, patch);
         log.info("GraphPatcher.addFiles: merged patch — added {} nodes",
                 graph.nodes.size() - nodesBefore);
     }
@@ -152,7 +152,7 @@ public class GraphPatcher {
     // ------------------------------------------------------------------
 
     private static void pruneEdgesByFile(Map<String, List<GraphEdge>> edgeMap, String file) {
-        edgeMap.forEach((id, edges) -> edges.removeIf(e -> file.equals(e.file())));
+        edgeMap.forEach((id, edges) -> edges.removeIf(e -> file.equals(e.filePath())));
         // Remove empty lists to keep the map tidy
         edgeMap.entrySet().removeIf(e -> e.getValue().isEmpty());
     }

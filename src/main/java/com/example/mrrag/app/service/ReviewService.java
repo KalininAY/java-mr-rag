@@ -1,8 +1,9 @@
-package com.example.mrrag.review;
+package com.example.mrrag.app.service;
 
 import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
 import com.example.mrrag.app.controller.requestDTO.ReviewRequest;
 import com.example.mrrag.app.source.GitLabLocalSourceProvider;
+import com.example.mrrag.graph.GraphBuilder;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.pipeline.ContextPipeline;
@@ -36,7 +37,7 @@ import java.util.concurrent.CompletableFuture;
 public class ReviewService {
 
     private final CodeRepositoryGateway repoGateway;
-    private final AstGraphService astGraphService;
+    private final GraphBuilder astGraphService;
     private final ContextPipeline contextPipeline;
 
     public ReviewContext buildReviewContext(ReviewRequest request) {
@@ -63,7 +64,7 @@ public class ReviewService {
 
         CompletableFuture<ProjectGraph> sourceGraphFuture = CompletableFuture.supplyAsync(() -> {
             try {
-                return astGraphService.buildGraph(sourceProvider, false);
+                return astGraphService.buildGraph(sourceProvider);
             } catch (Exception e) {
                 throw new RuntimeException("Failed to build source AST graph", e);
             }
@@ -71,7 +72,7 @@ public class ReviewService {
 
         CompletableFuture<ProjectGraph> targetGraphFuture = CompletableFuture.supplyAsync(() -> {
             try {
-                return astGraphService.buildGraph(targetProvider, false);
+                return astGraphService.buildGraph(targetProvider);
             } catch (Exception e) {
                 throw new RuntimeException("Failed to build target AST graph", e);
             }

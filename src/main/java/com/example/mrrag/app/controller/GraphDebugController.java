@@ -2,6 +2,7 @@ package com.example.mrrag.app.controller;
 
 import com.example.mrrag.app.source.LocalProjectSourceProvider;
 import com.example.mrrag.graph.AstGraphUtils;
+import com.example.mrrag.graph.GraphBuilder;
 import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.graph.markdown.MarkdownGraphBuilder;
@@ -27,7 +28,7 @@ import java.util.stream.Collectors;
 @Tag(name = "Граф (отладка)", description = "Эндпоинты для отладки и инспекции AST-графа: статистика, узлы по файлу и строке")
 public class GraphDebugController {
 
-    private final AstGraphService graphService;
+    private final GraphBuilder graphService;
     private final MarkdownGraphBuilder linkedGraphBuilder;
 
     // ------------------------------------------------------------------
@@ -55,7 +56,7 @@ public class GraphDebugController {
     @GetMapping("/stats")
     public Map<String, Object> stats(@RequestParam String repoDir) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(new LocalProjectSourceProvider(root), true);
+        ProjectGraph graph = graphService.buildGraph(new LocalProjectSourceProvider(root));
 
         var build = linkedGraphBuilder.build(graph);
         String s = build.byId("bugbusters.modules.extensions.allure.model.AllureStep#findPlaceFrom()").toMarkdown();
@@ -102,7 +103,7 @@ public class GraphDebugController {
     public Map<String, Object> file(@RequestParam String repoDir,
                                     @RequestParam String diffPath) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(new LocalProjectSourceProvider(root), true);
+        ProjectGraph graph = graphService.buildGraph(new LocalProjectSourceProvider(root));
 
         String normalized = AstGraphUtils.normalizeFilePath(diffPath, graph);
         List<GraphNode> nodes = graph.nodesAtLine(normalized, -1);
@@ -150,7 +151,7 @@ public class GraphDebugController {
                                     @RequestParam String diffPath,
                                     @RequestParam int line) throws Exception {
         Path root = Path.of(repoDir);
-        ProjectGraph graph = graphService.buildGraph(new LocalProjectSourceProvider(root), true);
+        ProjectGraph graph = graphService.buildGraph(new LocalProjectSourceProvider(root));
 
         String normalized = AstGraphUtils.normalizeFilePath(diffPath, graph);
         List<GraphNode> enclosing = graph.nodesAtLine(normalized, line);
