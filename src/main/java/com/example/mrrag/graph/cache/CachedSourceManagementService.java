@@ -4,6 +4,7 @@ import com.example.mrrag.app.source.LocalProjectSourceProvider;
 import com.example.mrrag.app.source.ProjectKey;
 import com.example.mrrag.app.source.ProjectSource;
 import com.example.mrrag.app.source.ProjectSourceProvider;
+import com.example.mrrag.graph.GraphBuilder;
 import com.example.mrrag.graph.model.ProjectGraph;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,14 +13,17 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 
 /**
- * Thin orchestration layer: resolves the up-to-date clone via
- * {@link RepositoryCacheService} then delegates graph lifecycle to
- * {@link BranchGraphRegistry}.
+ * Orchestrates clone lifecycle ({@link RepositoryCacheService}) and
+ * graph lifecycle ({@link BranchGraphRegistry}, {@link GraphBuilder},
+ * {@link GraphPatcher}).
  *
- * <h2>Flow</h2>
+ * <h2>Decision tree</h2>
  * <pre>
- * refreshCache(key)        ← resolves HEAD SHA; pulls only if SHA changed
- *   └─ registry.getOrBuild()  ← cold start | cache hit | incremental patch
+ * refreshCache(key)   ← resolves HEAD SHA; git pull only if SHA changed
+ *   registry.get(key)
+ *     empty?          → full build via GraphBuilder  → registry.put
+ *     same SHA?       → return as-is
+ *     SHA changed?    → patch (removeFiles + addFiles) → registry.put
  * </pre>
  */
 @Slf4j
@@ -29,6 +33,8 @@ public class CachedSourceManagementService {
 
     private final RepositoryCacheService cacheService;
     private final BranchGraphRegistry   registry;
+    private final GraphBuilder          graphBuilder;
+    private final GraphPatcher          patcher;
 
     // ------------------------------------------------------------------
     // Public API
@@ -36,9 +42,7 @@ public class CachedSourceManagementService {
 
     /**
      * Returns an up-to-date {@link ProjectGraph} for the given branch.
-     *
-     * <p>Always checks the remote HEAD SHA. If unchanged the call is
-     * cheap (one API lookup, no pull, no rebuild).
+     * Always checks the remote HEAD SHA; cheap when nothing changed.
      *
      * @param key   branch identifier
      * @param token GitLab personal-access token (nullable)
@@ -52,13 +56,40 @@ public class CachedSourceManagementService {
         ProjectSourceProvider fullProvider =
                 new LocalProjectSourceProvider(entry.projectKey(), entry.localPath());
 
-        return registry.getOrBuild(
-                key,
-                currentSha,
-                fullProvider,
-                () -> changedFilesBetween(key, token, entry),
-                () -> loadChangedSources(key, token, entry, fullProvider)
-        );
+        VersionedGraph cached = registry.get(key).orElse(null);
+
+        // Cold start
+        if (cached == null) {
+            log.info("CachedSourceManagementService: cold start {} @ {}", key, currentSha);
+            ProjectGraph graph = graphBuilder.buildGraph(fullProvider);
+            registry.put(key, new VersionedGraph(currentSha, graph));
+            return graph;
+        }
+
+        // Cache hit
+        if (cached.commitSha().equals(currentSha)) {
+            log.debug("CachedSourceManagementService: cache hit {} @ {}", key, currentSha);
+            return cached.graph();
+        }
+
+        // Incremental patch
+        log.info("CachedSourceManagementService: patching {} {} → {}",
+                key, cached.commitSha(), currentSha);
+
+        List<String> changedFiles = cacheService.getChangedFiles(
+                key, cached.commitSha(), currentSha, token);
+        List<ProjectSource> changedSources = fullProvider.getSources().stream()
+                .filter(src -> changedFiles.contains(src.path()))
+                .toList();
+
+        log.info("CachedSourceManagementService: {} changed .java files", changedFiles.size());
+
+        patcher.removeFiles(cached.graph(), changedFiles);
+        patcher.addFiles(cached.graph(), changedSources,
+                fullProvider.localProjectRoot().orElse(null));
+
+        registry.put(key, new VersionedGraph(currentSha, cached.graph()));
+        return cached.graph();
     }
 
     /**
@@ -69,30 +100,5 @@ public class CachedSourceManagementService {
         cacheService.invalidate(key);
         registry.invalidate(key);
         log.info("CachedSourceManagementService.invalidate: evicted {}", key);
-    }
-
-    // ------------------------------------------------------------------
-    // Internal helpers
-    // ------------------------------------------------------------------
-
-    private List<String> changedFilesBetween(ProjectKey key, String token,
-                                             BranchCacheEntry previousEntry) {
-        BranchCacheEntry current = cacheService.get(key)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Cache entry missing for " + key));
-        String oldSha = previousEntry.lastCommitSha();
-        String newSha = current.lastCommitSha();
-        if (oldSha == null || oldSha.equals(newSha)) return List.of();
-        return cacheService.getChangedFiles(key, oldSha, newSha, token);
-    }
-
-    private List<ProjectSource> loadChangedSources(ProjectKey key, String token,
-                                                   BranchCacheEntry previousEntry,
-                                                   ProjectSourceProvider fullProvider) {
-        List<String> changedPaths = changedFilesBetween(key, token, previousEntry);
-        if (changedPaths.isEmpty()) return List.of();
-        return fullProvider.getSources().stream()
-                .filter(src -> changedPaths.contains(src.path()))
-                .toList();
     }
 }
