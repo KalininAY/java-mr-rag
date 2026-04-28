@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.merge.MergeStrategy;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.gitlab4j.api.GitLabApi;
 import org.gitlab4j.api.GitLabApiException;
@@ -57,7 +58,7 @@ public class GitLabGateway implements CodeRepositoryGateway {
 
         Path path = Path.of(workspaceDir, getPath(namespace, repo, branch));
 
-        if (path.toFile().exists()) deleteDirectory(path.toFile());
+        if (path.toFile().exists()) return pull(namespace, repo, branch, token);
 
         log.debug("cloneProject: cloning '{}/{}' branch='{}'", namespace, repo, branch);
 
@@ -97,6 +98,7 @@ public class GitLabGateway implements CodeRepositoryGateway {
         log.info("Pull: pulling '{}/{}' branch='{}'", namespace, repo, branch);
         try (Git git = Git.open(path.toFile())) {
             git.pull()
+                    .setStrategy(MergeStrategy.OURS)
                     .setCredentialsProvider(credentials(token))
                     .call();
             return path;
