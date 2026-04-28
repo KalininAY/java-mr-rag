@@ -49,7 +49,8 @@ public class CachedSourceManagementService {
 
         log.info("CachedSourceManagementService.getOrBuildGraph: {} @ {}", key, currentSha);
 
-        ProjectSourceProvider fullProvider = providerFrom(entry);
+        ProjectSourceProvider fullProvider =
+                new LocalProjectSourceProvider(entry.projectKey(), entry.localPath());
 
         return registry.getOrBuild(
                 key,
@@ -73,10 +74,6 @@ public class CachedSourceManagementService {
     // ------------------------------------------------------------------
     // Internal helpers
     // ------------------------------------------------------------------
-
-    private ProjectSourceProvider providerFrom(BranchCacheEntry entry) {
-        return new LocalProjectSourceProvider(entry.projectKey(), entry.localPath());
-    }
 
     private List<String> changedFilesBetween(ProjectKey key, String token,
                                              BranchCacheEntry previousEntry) {
