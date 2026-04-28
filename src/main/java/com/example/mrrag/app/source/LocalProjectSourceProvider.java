@@ -50,6 +50,11 @@ public class LocalProjectSourceProvider implements ProjectSourceProvider {
     }
 
     @Override
+    public ProjectKey projectKey() {
+        return new ProjectKey("local", "local", "no");
+    }
+
+    @Override
     public List<ProjectSource> getSources() {
         log.info("Scanning local clone for .java files: {}", projectRoot);
 
