@@ -17,14 +17,15 @@ import java.util.List;
  * graph lifecycle ({@link BranchGraphRegistry}, {@link GraphBuilder},
  * {@link GraphPatcher}).
  *
- * <h2>Decision tree</h2>
- * <pre>
- * refreshCache(key)   ← resolves HEAD SHA; git pull only if SHA changed
- *   registry.get(key)
- *     empty?          → full build via GraphBuilder  → registry.put
- *     same SHA?       → return as-is
- *     SHA changed?    → patch (removeFiles + addFiles) → registry.put
- * </pre>
+ * <h2>Flow</h2>
+ * <ol>
+ *   <li>Get cache entry + resolve latest commit SHA</li>
+ *   <li>Cache absent  → clone + full build</li>
+ *   <li>Resolve current HEAD SHA for the branch</li>
+ *   <li>Compare cached SHA vs current SHA</li>
+ *   <li>Equal          → return cached graph</li>
+ *   <li>Different      → git pull + incremental patch</li>
+ * </ol>
  */
 @Slf4j
 @Service
@@ -40,56 +41,55 @@ public class CachedSourceManagementService {
     // Public API
     // ------------------------------------------------------------------
 
-    /**
-     * Returns an up-to-date {@link ProjectGraph} for the given branch.
-     * Always checks the remote HEAD SHA; cheap when nothing changed.
-     *
-     * @param key   branch identifier
-     * @param token GitLab personal-access token (nullable)
-     */
     public ProjectGraph getOrBuildGraph(ProjectKey key, String token) {
-        BranchCacheEntry entry = cacheService.refreshCache(key, token);
-        String currentSha = entry.lastCommitSha();
+
+        // 1. Get existing cache entry and the latest remote commit SHA
+        BranchCacheEntry cachedEntry = cacheService.get(key).orElse(null);
+        VersionedGraph   cachedGraph = registry.get(key).orElse(null);
+        String currentSha = cacheService.resolveCurrentSha(key, token);
 
         log.info("CachedSourceManagementService.getOrBuildGraph: {} @ {}", key, currentSha);
 
-        ProjectSourceProvider fullProvider =
-                new LocalProjectSourceProvider(entry.projectKey(), entry.localPath());
-
-        VersionedGraph cached = registry.get(key).orElse(null);
-
-        // Cold start
-        if (cached == null) {
+        // 2. Cache absent -> clone + full build
+        if (cachedEntry == null || cachedGraph == null) {
             log.info("CachedSourceManagementService: cold start {} @ {}", key, currentSha);
-            ProjectGraph graph = graphBuilder.buildGraph(fullProvider);
+            BranchCacheEntry entry = cacheService.initCache(key, token);
+            ProjectSourceProvider provider =
+                    new LocalProjectSourceProvider(entry.projectKey(), entry.localPath());
+            ProjectGraph graph = graphBuilder.buildGraph(provider);
             registry.put(key, new VersionedGraph(currentSha, graph));
             return graph;
         }
 
-        // Cache hit
-        if (cached.commitSha().equals(currentSha)) {
+        // 3+4. Compare cached SHA vs current SHA
+        String cachedSha = cachedGraph.commitSha();
+
+        // 5. Equal -> return cached graph
+        if (cachedSha.equals(currentSha)) {
             log.debug("CachedSourceManagementService: cache hit {} @ {}", key, currentSha);
-            return cached.graph();
+            return cachedGraph.graph();
         }
 
-        // Incremental patch
-        log.info("CachedSourceManagementService: patching {} {} → {}",
-                key, cached.commitSha(), currentSha);
+        // 6. Different -> git pull + incremental patch
+        log.info("CachedSourceManagementService: patching {} {} → {}", key, cachedSha, currentSha);
 
-        List<String> changedFiles = cacheService.getChangedFiles(
-                key, cached.commitSha(), currentSha, token);
-        List<ProjectSource> changedSources = fullProvider.getSources().stream()
+        BranchCacheEntry updatedEntry = cacheService.pullCache(key, token);
+        ProjectSourceProvider provider =
+                new LocalProjectSourceProvider(updatedEntry.projectKey(), updatedEntry.localPath());
+
+        List<String> changedFiles = cacheService.getChangedFiles(key, cachedSha, currentSha, token);
+        List<ProjectSource> changedSources = provider.getSources().stream()
                 .filter(src -> changedFiles.contains(src.path()))
                 .toList();
 
         log.info("CachedSourceManagementService: {} changed .java files", changedFiles.size());
 
-        patcher.removeFiles(cached.graph(), changedFiles);
-        patcher.addFiles(cached.graph(), changedSources,
-                fullProvider.localProjectRoot().orElse(null));
+        patcher.removeFiles(cachedGraph.graph(), changedFiles);
+        patcher.addFiles(cachedGraph.graph(), changedSources,
+                provider.localProjectRoot().orElse(null));
 
-        registry.put(key, new VersionedGraph(currentSha, cached.graph()));
-        return cached.graph();
+        registry.put(key, new VersionedGraph(currentSha, cachedGraph.graph()));
+        return cachedGraph.graph();
     }
 
     /**

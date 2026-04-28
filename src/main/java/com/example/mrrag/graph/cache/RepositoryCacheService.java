@@ -13,11 +13,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Manages stable local clones of project branches via
- * {@link CodeRepositoryGateway#cloneOrPull}.
- *
- * <p>One live clone per {@link ProjectKey} — no SHA or timestamp in path.
- * The clone is reused across requests; new commits are pulled in-place.
+ * Manages stable local clones of project branches.
+ * One live clone per {@link ProjectKey} — no SHA or timestamp in path.
  */
 @Slf4j
 @Service
@@ -34,22 +31,21 @@ public class RepositoryCacheService {
     // ------------------------------------------------------------------
 
     /**
-     * Returns the existing entry or clones the branch on first call.
+     * Resolves the current HEAD SHA for the branch via the GitLab API.
+     * Does not touch the local clone.
      */
-    public BranchCacheEntry getOrInit(ProjectKey key, String token) {
-        return entries.computeIfAbsent(key, k -> initCache(k, token));
+    public String resolveCurrentSha(ProjectKey key, String token) {
+        return gateway.resolveCommitSha(key.namespace(), key.repo(), key.branch(), token);
     }
 
     /**
-     * Clones the branch via {@link CodeRepositoryGateway#cloneOrPull} and
-     * records the HEAD SHA. Replaces any existing entry.
+     * Clones the branch and records the HEAD SHA.
+     * Replaces any existing entry.
      */
     public BranchCacheEntry initCache(ProjectKey key, String token) {
         log.info("RepositoryCacheService.initCache: {}", key);
-        Path localPath = gateway.cloneOrPull(
-                key.namespace(), key.repo(), key.branch(), token);
-        String sha = gateway.resolveCommitSha(
-                key.namespace(), key.repo(), key.branch(), token);
+        Path localPath = gateway.cloneOrPull(key.namespace(), key.repo(), key.branch(), token);
+        String sha = gateway.resolveCommitSha(key.namespace(), key.repo(), key.branch(), token);
         BranchCacheEntry entry = new BranchCacheEntry(
                 key, localPath, sha, BranchCacheEntry.CacheStatus.READY);
         entries.put(key, entry);
@@ -58,54 +54,25 @@ public class RepositoryCacheService {
     }
 
     /**
-     * Pulls latest commits via {@link CodeRepositoryGateway#cloneOrPull}.
-     *
-     * <p>If the HEAD SHA has not changed, returns the existing entry unchanged.
-     * If a new SHA is detected, creates a fresh {@link BranchCacheEntry} with
-     * the same {@code localPath} (pull updated it in-place) and the new SHA.
+     * Executes {@code git pull} on the existing clone.
+     * Caller is responsible for checking that a new SHA exists before calling this.
      */
-    public BranchCacheEntry refreshCache(ProjectKey key, String token) {
-        BranchCacheEntry current = entries.get(key);
-        if (current == null) {
-            log.warn("RepositoryCacheService.refreshCache: no entry for {} — init", key);
-            return initCache(key, token);
-        }
-
-        // Resolve new SHA before pull to decide whether work is needed
-        String newSha = gateway.resolveCommitSha(
-                key.namespace(), key.repo(), key.branch(), token);
-
-        if (newSha.equals(current.lastCommitSha())) {
-            log.debug("RepositoryCacheService.refreshCache: {} already up-to-date @ {}",
-                    key, newSha);
-            return current;
-        }
-
-        log.info("RepositoryCacheService.refreshCache: pulling {} {} -> {}",
-                key, current.lastCommitSha(), newSha);
-        current.setStatus(BranchCacheEntry.CacheStatus.UPDATING);
-        try {
-            Path localPath = gateway.cloneOrPull(
-                    key.namespace(), key.repo(), key.branch(), token);
-            BranchCacheEntry updated = new BranchCacheEntry(
-                    key, localPath, newSha, BranchCacheEntry.CacheStatus.READY);
-            entries.put(key, updated);
-            log.info("RepositoryCacheService.refreshCache: {} updated to {}", key, newSha);
-            return updated;
-        } catch (Exception ex) {
-            current.setStatus(BranchCacheEntry.CacheStatus.READY);
-            throw ex;
-        }
+    public BranchCacheEntry pullCache(ProjectKey key, String token) {
+        log.info("RepositoryCacheService.pullCache: {}", key);
+        Path localPath = gateway.cloneOrPull(key.namespace(), key.repo(), key.branch(), token);
+        String sha = gateway.resolveCommitSha(key.namespace(), key.repo(), key.branch(), token);
+        BranchCacheEntry entry = new BranchCacheEntry(
+                key, localPath, sha, BranchCacheEntry.CacheStatus.READY);
+        entries.put(key, entry);
+        log.info("RepositoryCacheService.pullCache: updated {} @ {}", key, sha);
+        return entry;
     }
 
-    /**
-     * Returns changed {@code .java} file paths between two SHAs.
-     */
+    /** Returns changed {@code .java} file paths between two SHAs. */
     public List<String> getChangedFiles(ProjectKey key,
                                         String fromSha, String toSha,
                                         String token) {
-        return gateway.getCommitDiff(
-                key.namespace(), key.repo(), fromSha, toSha, token);
+        return gateway.getCommitDiff(key.namespace(), key.repo(), fromSha, toSha, token);
     }
 
     /** Returns the current entry for the branch, if present. */
@@ -115,8 +82,7 @@ public class RepositoryCacheService {
 
     /** Removes the in-memory entry (does not delete the clone directory). */
     public void invalidate(ProjectKey key) {
-        BranchCacheEntry removed = entries.remove(key);
-        if (removed != null)
+        if (entries.remove(key) != null)
             log.info("RepositoryCacheService.invalidate: evicted {}", key);
     }
 }
