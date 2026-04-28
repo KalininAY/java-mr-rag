@@ -6,19 +6,20 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.server.ResponseStatusException;
 
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
     /**
-     * 404 for unknown static resources (browser plugins, VAADIN probes, etc.).
-     * No logging — these are noise from the environment, not application errors.
+     * 404 for unknown routes / static resources (browser plugins, probes, etc.).
+     * Replaces spring-webmvc NoResourceFoundException — not available in WebFlux.
      */
-    @ExceptionHandler(NoResourceFoundException.class)
-    public ProblemDetail handleNoResource(NoResourceFoundException ex) {
-        return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
+    @ExceptionHandler(ResponseStatusException.class)
+    public ProblemDetail handleResponseStatus(ResponseStatusException ex) {
+        return ProblemDetail.forStatusAndDetail(
+                HttpStatus.resolve(ex.getStatusCode().value()), ex.getReason());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -39,6 +40,4 @@ public class GlobalExceptionHandler {
         return ProblemDetail.forStatusAndDetail(
                 HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());
     }
-
-
 }
