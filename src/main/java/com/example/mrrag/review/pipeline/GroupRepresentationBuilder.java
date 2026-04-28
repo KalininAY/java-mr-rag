@@ -116,9 +116,6 @@ public class GroupRepresentationBuilder {
             sb.append("```\n\n");
         }
 
-        // --- 2. AST graph nodes block ---
-        renderGraphNodesBlock(sb, union);
-
         if (snippets == null || snippets.isEmpty()) return sb.toString();
 
         List<EnrichmentSnippet> methodBodies = snippets.stream()
@@ -128,7 +125,7 @@ public class GroupRepresentationBuilder {
                 .filter(s -> s.type() != EnrichmentSnippet.SnippetType.METHOD_BODY)
                 .collect(Collectors.toCollection(ArrayList::new));
 
-        // --- 3. Enclosing context (METHOD_BODY snippets) ---
+        // --- 2. Enclosing context (METHOD_BODY snippets) ---
         if (!methodBodies.isEmpty()) {
             sb.append("**Enclosing context (").append(methodBodies.size()).append("):**\n\n");
             for (EnrichmentSnippet s : methodBodies) {
@@ -139,7 +136,7 @@ public class GroupRepresentationBuilder {
             }
         }
 
-        // --- 4. Other context snippets ---
+        // --- 3. Other context snippets ---
         if (!otherSnippets.isEmpty()) {
             sb.append("**Context snippets (").append(otherSnippets.size()).append("):**\n\n");
             for (EnrichmentSnippet s : otherSnippets) {
@@ -196,18 +193,5 @@ public class GroupRepresentationBuilder {
             case DELETE -> "[DELETE] ";
             case BOTH   -> "[ADD/DELETE] ";
         };
-    }
-
-    /** Appends a block listing all AST graph nodes associated with this union. */
-    private void renderGraphNodesBlock(StringBuilder sb, UnionLine union) {
-        if (union.graphNodes() == null || union.graphNodes().isEmpty()) return;
-        sb.append("**AST nodes (").append(union.graphNodes().size()).append("):**\n\n");
-        for (GraphNode n : union.graphNodes()) {
-            sb.append("- `").append(n.id()).append("` (")
-                    .append(n.kind()).append(") @ `")
-                    .append(n.filePath()).append(":")
-                    .append(n.startLine()).append("`\n");
-        }
-        sb.append('\n');
     }
 }
