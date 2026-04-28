@@ -19,8 +19,9 @@ import java.util.Map;
  *
  * <h2>Patch lifecycle</h2>
  * <ol>
- *   <li>{@link #removeFiles} — evicts all nodes and edges belonging to the
- *       changed files from every index in {@link ProjectGraph}.</li>
+ *   <li>{@link #deleteByFilePath} / {@link #removeFiles} — evicts all nodes
+ *       and edges belonging to the changed files from every index in
+ *       {@link ProjectGraph}.</li>
  *   <li>{@link #addFiles} — re-parses changed files via Spoon (reusing the
  *       existing {@link GraphBuilder#buildBatch} logic) and merges the
  *       resulting partial graph into the live graph.</li>
@@ -43,6 +44,22 @@ public class GraphPatcher {
     // ------------------------------------------------------------------
 
     /**
+     * Removes all nodes and edges that originate from a single file.
+     *
+     * <p>Convenience wrapper over {@link #removeFiles} for the common case
+     * of processing one deleted file at a time (e.g. when iterating over
+     * the deleted-files list from a git diff).
+     *
+     * @param graph    the live graph to mutate
+     * @param filePath repository-relative path of the file to remove
+     */
+    public void deleteByFilePath(ProjectGraph graph, String filePath) {
+        if (filePath == null || filePath.isBlank()) return;
+        log.debug("GraphPatcher.deleteByFilePath: {}", filePath);
+        removeFiles(graph, List.of(filePath));
+    }
+
+    /**
      * Removes all nodes and edges that originate from the given file paths.
      *
      * <p>After this call the graph contains no trace of the supplied files:
@@ -51,7 +68,7 @@ public class GraphPatcher {
      *       {@code nodes}, {@code bySimpleName}, {@code byLine}, {@code byFile};</li>
      *   <li>edges sourced from those nodes are removed from
      *       {@code edgesFrom} and {@code edgesTo};</li>
-     *   <li>edges in other nodes' {@code edgesFrom}/{@code edgesTo} lists
+     *   <li>edges in other nodes\u2019 {@code edgesFrom}/{@code edgesTo} lists
      *       whose {@code file()} matches are also pruned.</li>
      * </ul>
      *
