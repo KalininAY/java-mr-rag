@@ -17,9 +17,7 @@ public interface CodeRepositoryGateway {
      * Клонирует проект GitLab в каталог с именем по коммиту/ветке.
      * Используется для разовых операций (e.g. remote endpoint).
      */
-    Path cloneProject(@NotBlank String namespace, @NotBlank String repo,
-                      @NotBlank String branch, @Nullable String commit,
-                      boolean force, @Nullable String token);
+    Path clone(@NotBlank String namespace, @NotBlank String repo, @NotBlank String branch, @Nullable String token);
 
     /**
      * Клонирует ветку в фиксированный каталог {@code cache/{namespace}_{repo}__{branch}}
@@ -30,34 +28,44 @@ public interface CodeRepositoryGateway {
      *
      * @return путь к локальному клону
      */
-    Path cloneOrPull(@NotBlank String namespace, @NotBlank String repo,
-                     @NotBlank String branch, @Nullable String token);
-
-    /** Получает Merge Request по namespace/repo и mrIid. */
-    MergeRequest getMergeRequest(@NotBlank String namespace, @NotBlank String repo,
-                                 long mrIid, @Nullable String token);
-
-    /** Получает diffs Merge Request. */
-    List<Diff> getMrDiffs(@NotBlank String namespace, @NotBlank String repo,
-                          long mrIid, @Nullable String token);
-
-    /** Получает сырой контент файла по пути и ревизии. */
-    String getFileContent(@NotBlank String namespace, @NotBlank String repo,
-                          @NotBlank String branch, @NotBlank String filePath,
-                          @Nullable String token);
-
-    /** Получает дерево репозитория по ревизии. */
-    List<TreeItem> getRepositoryTree(@NotBlank String namespace, @NotBlank String repo,
-                                     @NotBlank String branch, @Nullable String token);
-
-    /** Удаляет локальный клон репозитория. */
-    void cleanup(Path repoDir);
+    Path pull(@NotBlank String namespace, @NotBlank String repo, @NotBlank String branch, @Nullable String token);
 
     /**
      * Резолвит имя ветки или тег в полный 40-символьный commit SHA.
      */
-    String resolveCommitSha(@NotBlank String namespace, @NotBlank String repo,
-                            @NotBlank String ref, @Nullable String token);
+    String getLastCommit(@NotBlank String namespace, @NotBlank String repo, @NotBlank String branch, @Nullable String token);
+
+    /**
+     * Получает Merge Request по namespace/repo и mrIid.
+     */
+    MergeRequest getMergeRequest(@NotBlank String namespace, @NotBlank String repo,
+                                 long mrIid, @Nullable String token);
+
+    /**
+     * Получает diffs Merge Request.
+     */
+    List<Diff> getMrDiffs(@NotBlank String namespace, @NotBlank String repo,
+                          long mrIid, @Nullable String token);
+
+    /**
+     * Получает сырой контент файла по пути и ревизии.
+     */
+    String getFileContent(@NotBlank String namespace, @NotBlank String repo,
+                          @NotBlank String branch, @NotBlank String filePath,
+                          @Nullable String token);
+
+    /**
+     * Получает дерево репозитория по ревизии.
+     */
+    List<TreeItem> getRepositoryTree(@NotBlank String namespace, @NotBlank String repo,
+                                     @NotBlank String branch, @Nullable String token);
+
+    /**
+     * Удаляет локальный клон репозитория.
+     */
+    void cleanup(Path repoDir);
+
+
 
     /**
      * Возвращает список репозиторно-относительных путей {@code .java}-файлов,
@@ -66,4 +74,6 @@ public interface CodeRepositoryGateway {
     List<String> getCommitDiff(@NotBlank String namespace, @NotBlank String repo,
                                @NotBlank String fromSha, @NotBlank String toSha,
                                @Nullable String token);
+
+    String getPath(@NotBlank String namespace, @NotBlank String repo, @NotBlank String branch);
 }

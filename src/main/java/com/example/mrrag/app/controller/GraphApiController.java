@@ -7,7 +7,7 @@ import com.example.mrrag.app.source.ProjectSourceProvider;
 import com.example.mrrag.app.repo.CodeRepositoryGateway;
 import com.example.mrrag.graph.GraphBuildStats;
 import com.example.mrrag.graph.GraphBuilder;
-import com.example.mrrag.graph.cache.CachedSourceManagementService;
+import com.example.mrrag.graph.cache.CachedManagementService;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
@@ -46,7 +46,7 @@ public class GraphApiController {
 
     private final GraphBuilder                  graphService;
     private final CodeRepositoryGateway         gatewayRepo;
-    private final CachedSourceManagementService cachedService;
+    private final CachedManagementService cachedService;
 
     // ------------------------------------------------------------------
     // /remote — no local clone, no caching

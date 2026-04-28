@@ -1,5 +1,6 @@
 package com.example.mrrag.app.source;
 
+import com.example.mrrag.graph.cache.CachedManagementService;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -48,7 +49,7 @@ public class LocalProjectSourceProvider implements ProjectSourceProvider {
 
     /**
      * Preferred constructor — used by
-     * {@link com.example.mrrag.graph.cache.CachedSourceManagementService}.
+     * {@link CachedManagementService}.
      *
      * @param projectKey identity of the branch this clone belongs to
      * @param projectRoot path to the local clone directory

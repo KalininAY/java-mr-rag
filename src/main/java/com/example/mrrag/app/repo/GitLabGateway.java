@@ -3,13 +3,10 @@ package com.example.mrrag.app.repo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.api.PullResult;
 import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.transport.URIish;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.gitlab4j.api.GitLabApi;
 import org.gitlab4j.api.GitLabApiException;
-import org.gitlab4j.api.models.Commit;
 import org.gitlab4j.api.models.CompareResults;
 import org.gitlab4j.api.models.Diff;
 import org.gitlab4j.api.models.MergeRequest;
@@ -21,12 +18,8 @@ import org.springframework.validation.annotation.Validated;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.time.Instant;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -48,7 +41,9 @@ public class GitLabGateway implements CodeRepositoryGateway {
     @Value("${app.workspace.dir:/tmp/mr-rag-workspace}")
     private String workspaceDir;
 
-    /** Open Git handles for cache directories, keyed by absolute path string. */
+    /**
+     * Open Git handles for cache directories, keyed by absolute path string.
+     */
     private final ConcurrentMap<String, Git> openHandles = new ConcurrentHashMap<>();
 
     // ------------------------------------------------------------------
@@ -56,21 +51,16 @@ public class GitLabGateway implements CodeRepositoryGateway {
     // ------------------------------------------------------------------
 
     @Override
-    public Path cloneProject(String namespace, String repo, String branch,
-                             String commit, boolean force, String token) {
-        if (commit == null)
-            commit = getLastCommit(namespace, repo, branch, token).getId();
+    public Path clone(String namespace, String repo, String branch, String token) {
         if (token == null)
             token = defaultToken;
 
-        Path path = Path.of(workspaceDir,
-                getClonePath(namespace, repo, branch, commit, token));
+        Path path = Path.of(workspaceDir, getPath(namespace, repo, branch));
 
-        if (path.toFile().exists() && !force) return path;
         if (path.toFile().exists()) deleteDirectory(path.toFile());
 
-        log.debug("cloneProject: cloning '{}/{}' branch='{}' commit={}",
-                namespace, repo, branch, commit);
+        log.debug("cloneProject: cloning '{}/{}' branch='{}'", namespace, repo, branch);
+
         Git git = null;
         try {
             git = Git.cloneRepository()
@@ -81,12 +71,9 @@ public class GitLabGateway implements CodeRepositoryGateway {
                     .setCloneAllBranches(false)
                     .setDepth(1)
                     .call();
-            git.checkout().setName(commit).call();
             return path;
-        } catch (GitAPIException | URISyntaxException e) {
-            throw new CodeRepositoryException(
-                    "Failed to clone '%s/%s' branch='%s' commit='%s'"
-                            .formatted(namespace, repo, branch, commit), e);
+        } catch (GitAPIException e) {
+            throw new CodeRepositoryException("Failed to clone '%s/%s' branch='%s'".formatted(namespace, repo, branch), e);
         } finally {
             if (git != null) git.close();
         }
@@ -97,59 +84,25 @@ public class GitLabGateway implements CodeRepositoryGateway {
      * При повторном вызове выполняет {@code git pull} через открытый JGit-хендл.
      */
     @Override
-    public Path cloneOrPull(String namespace, String repo, String branch, String token) {
+    public Path pull(String namespace, String repo, String branch, String token) {
         if (token == null) token = defaultToken;
 
-        String safeBranch = branch.replaceAll("[^a-zA-Z0-9._-]", "_");
-        String safeNs    = namespace.replaceAll("[/\\\\:*?\"<>|]", "_");
-        Path path = Path.of(workspaceDir, "cache",
-                safeNs + "_" + repo + "__" + safeBranch);
-
-        String pathKey = path.toAbsolutePath().toString();
+        Path path = Path.of(workspaceDir, getPath(namespace, repo, branch));
 
         if (!path.toFile().exists()) {
-            log.info("cloneOrPull: cloning '{}/{}' branch='{}' -> {}",
-                    namespace, repo, branch, path);
-            try {
-                Git git = Git.cloneRepository()
-                        .setCredentialsProvider(credentials(token))
-                        .setURI(projectUrl(namespace, repo))
-                        .setDirectory(path.toFile())
-                        .setBranch(branch)
-                        .setCloneAllBranches(false)
-                        .setDepth(1)
-                        .call();
-                openHandles.put(pathKey, git);
-                log.info("cloneOrPull: clone complete -> {}", path);
-            } catch (GitAPIException | URISyntaxException e) {
-                throw new CodeRepositoryException(
-                        "Failed to clone '%s/%s' branch='%s'"
-                                .formatted(namespace, repo, branch), e);
-            }
-        } else {
-            log.info("cloneOrPull: pulling '{}/{}' branch='{}'", namespace, repo, branch);
-            Git git = openHandles.computeIfAbsent(pathKey, k -> {
-                try {
-                    return Git.open(path.toFile());
-                } catch (IOException ex) {
-                    throw new CodeRepositoryException(
-                            "Failed to open existing clone at " + path, ex);
-                }
-            });
-            try {
-                final String finalToken = token;
-                PullResult result = git.pull()
-                        .setCredentialsProvider(credentials(finalToken))
-                        .call();
-                log.info("cloneOrPull: pull success={} {}",
-                        result.isSuccessful(), path);
-            } catch (GitAPIException e) {
-                throw new CodeRepositoryException(
-                        "Failed to pull '%s/%s' branch='%s'"
-                                .formatted(namespace, repo, branch), e);
-            }
+            log.warn("Not found path for pull: path = '{}', begin clone", path);
+            return clone(namespace, repo, branch, token);
         }
-        return path;
+
+        log.info("Pull: pulling '{}/{}' branch='{}'", namespace, repo, branch);
+        try (Git git = Git.open(path.toFile())) {
+            git.pull()
+                    .setCredentialsProvider(credentials(token))
+                    .call();
+            return path;
+        } catch (IOException | GitAPIException e) {
+            throw new CodeRepositoryException("Failed pull repository '%s/%s' branch='%s'".formatted(namespace, repo, branch), e);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -233,21 +186,16 @@ public class GitLabGateway implements CodeRepositoryGateway {
     }
 
     @Override
-    public String resolveCommitSha(String namespace, String repo,
-                                   String ref, String token) {
-        if (ref != null && ref.length() == 40 && ref.matches("[0-9a-fA-F]+"))
-            return ref;
+    public String getLastCommit(String namespace, String repo, String branch, String token) {
         return gitLabApi(token, api -> {
             try {
                 Project project = api.getProjectApi()
                         .getProject(namespace + "/" + repo);
                 return api.getRepositoryApi()
-                        .getBranch(project.getId(), ref)
+                        .getBranch(project.getId(), branch)
                         .getCommit().getId();
             } catch (GitLabApiException e) {
-                throw new CodeRepositoryException(
-                        "Failed to resolve ref '%s' in '%s/%s'"
-                                .formatted(ref, namespace, repo), e);
+                throw new CodeRepositoryException("Failed to resolve branch '%s' in '%s/%s'".formatted(branch, namespace, repo), e);
             }
         });
     }
@@ -272,6 +220,13 @@ public class GitLabGateway implements CodeRepositoryGateway {
         });
     }
 
+    @Override
+    public String getPath(String namespace, String repo, String branch) {
+        String namespaceSafe = namespace.replaceAll("[/\\\\:*?\"<>|]", "_");
+        String branchSafe = branch.replaceAll("[^a-zA-Z0-9._-]", "_");
+        return "%s_%s_%s".formatted(namespaceSafe, repo, branchSafe);
+    }
+
     // ------------------------------------------------------------------
     // Internal helpers
     // ------------------------------------------------------------------
@@ -284,7 +239,10 @@ public class GitLabGateway implements CodeRepositoryGateway {
             return action.execute(api);
         } finally {
             if (api != gitLabApi) {
-                try { api.close(); } catch (Exception ignored) {}
+                try {
+                    api.close();
+                } catch (Exception ignored) {
+                }
             }
         }
     }
@@ -303,57 +261,6 @@ public class GitLabGateway implements CodeRepositoryGateway {
         return defaultUrl + "/" + namespace + "/" + repo + ".git";
     }
 
-    private String getClonePath(String namespace, String repo, String branch,
-                                String commitId, String token) {
-        if (commitId == null)
-            commitId = getLastCommit(namespace, repo, branch, token).getId();
-        String timestamp = getCommitTimestampDirName(namespace, repo, commitId, token);
-        String branchSafe    = branch.replaceAll("[^a-zA-Z0-9._-]", "_");
-        String commitSafe    = commitId.substring(0, Math.min(7, commitId.length()));
-        String namespaceSafe = namespace.replaceAll("[/\\\\:*?\"<>|]", "_");
-        return "%s_%s__%s__%s__%s".formatted(
-                namespaceSafe, repo, timestamp, branchSafe, commitSafe);
-    }
-
-    private String getCommitTimestampDirName(String namespace, String repo,
-                                              String commitId, String token) {
-        Commit commit = getCommit(namespace, repo, commitId, token);
-        Instant instant = commit.getCommittedDate().toInstant();
-        return instant.atZone(ZoneOffset.UTC)
-                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
-    }
-
-    private Commit getLastCommit(String namespace, String repo,
-                                 String branch, String token) {
-        return gitLabApi(token, api -> {
-            try {
-                Project project = api.getProjectApi()
-                        .getProject(namespace + "/" + repo);
-                return api.getRepositoryApi()
-                        .getBranch(project.getId(), branch).getCommit();
-            } catch (GitLabApiException e) {
-                throw new CodeRepositoryException(
-                        "Failed to get last commit for '%s/%s' branch='%s'"
-                                .formatted(namespace, repo, branch), e);
-            }
-        });
-    }
-
-    private Commit getCommit(String namespace, String repo,
-                             String commit, String token) {
-        return gitLabApi(token, api -> {
-            try {
-                Project project = api.getProjectApi()
-                        .getProject(namespace + "/" + repo);
-                return api.getCommitsApi()
-                        .getCommit(project.getId(), commit);
-            } catch (GitLabApiException e) {
-                throw new CodeRepositoryException(
-                        "Failed to get commit '%s' in '%s/%s'"
-                                .formatted(commit, namespace, repo), e);
-            }
-        });
-    }
 
     private void deleteDirectory(File dir) {
         File[] files = dir.listFiles();
@@ -365,9 +272,5 @@ public class GitLabGateway implements CodeRepositoryGateway {
         }
         if (!dir.delete())
             throw new RuntimeException("Failed to delete directory: " + dir);
-    }
-
-    public String getProjectUrl(String gitLabHost, String namespace, String repo) {
-        return gitLabHost + "/" + namespace + "/" + repo + ".git";
     }
 }

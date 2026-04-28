@@ -2,7 +2,7 @@ package com.example.mrrag.app.service;
 
 import com.example.mrrag.app.controller.requestDTO.ReviewRequest;
 import com.example.mrrag.app.source.ProjectKey;
-import com.example.mrrag.graph.cache.CachedSourceManagementService;
+import com.example.mrrag.graph.cache.CachedManagementService;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.pipeline.ContextPipeline;
@@ -21,7 +21,7 @@ import java.util.concurrent.CompletableFuture;
  * <ol>
  *   <li>Fetch MR from GitLab</li>
  *   <li>Obtain AST graphs for source and target branches via
- *       {@link CachedSourceManagementService} (parallel) —
+ *       {@link CachedManagementService} (parallel) —
  *       clones only on first call, reuses or patches on subsequent calls</li>
  *   <li>Parse git diff</li>
  *   <li>Run RAG pipeline ({@link ContextPipeline}) → classify, find classes/nodes,
@@ -35,7 +35,7 @@ import java.util.concurrent.CompletableFuture;
 public class ReviewService {
 
     private final CodeRepositoryGateway         repoGateway;
-    private final CachedSourceManagementService cachedService;
+    private final CachedManagementService cachedService;
     private final ContextPipeline               contextPipeline;
 
     public ReviewContext buildReviewContext(ReviewRequest request) {

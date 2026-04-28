@@ -16,19 +16,7 @@ import java.util.Map;
 
 /**
  * Applies incremental updates to a live {@link ProjectGraph}.
- *
- * <h2>Patch lifecycle</h2>
- * <ol>
- *   <li>{@link #deleteByFilePath} / {@link #removeFiles} — evicts all nodes
- *       and edges belonging to the changed files from every index in
- *       {@link ProjectGraph}.</li>
- *   <li>{@link #addFiles} — re-parses changed files via Spoon (reusing the
- *       existing {@link GraphBuilder#buildBatch} logic) and merges the
- *       resulting partial graph into the live graph.</li>
- * </ol>
- *
  * <p>Both methods operate in-place on the supplied {@code ProjectGraph} and
- * are <em>not</em> atomic — the caller ({@link IncrementalGraphBuilder})
  * is responsible for deciding when the graph is safe to expose.
  */
 @Slf4j
@@ -36,28 +24,10 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class GraphPatcher {
 
-    /** Exposed for patching — package-private bridge into GraphBuilderImpl. */
-    private final GraphBuilder graphBuilderImpl;
-
-    // ------------------------------------------------------------------
-    // Public API
-    // ------------------------------------------------------------------
-
     /**
-     * Removes all nodes and edges that originate from a single file.
-     *
-     * <p>Convenience wrapper over {@link #removeFiles} for the common case
-     * of processing one deleted file at a time (e.g. when iterating over
-     * the deleted-files list from a git diff).
-     *
-     * @param graph    the live graph to mutate
-     * @param filePath repository-relative path of the file to remove
+     * Exposed for patching — package-private bridge into GraphBuilderImpl.
      */
-    public void deleteByFilePath(ProjectGraph graph, String filePath) {
-        if (filePath == null || filePath.isBlank()) return;
-        log.debug("GraphPatcher.deleteByFilePath: {}", filePath);
-        removeFiles(graph, List.of(filePath));
-    }
+    private final GraphBuilder graphBuilderImpl;
 
     /**
      * Removes all nodes and edges that originate from the given file paths.
@@ -137,7 +107,7 @@ public class GraphPatcher {
             // 2. Prune stale edges in other nodes that reference this filePath
             //    (e.g. an INVOKES edge recorded at the call-site filePath)
             pruneEdgesByFile(graph.edgesFrom, filePath);
-            pruneEdgesByFile(graph.edgesTo,   filePath);
+            pruneEdgesByFile(graph.edgesTo, filePath);
         }
 
         log.info("GraphPatcher.removeFiles: removed {} nodes, ~{} edges for {} files",
