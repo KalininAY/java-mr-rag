@@ -1,12 +1,13 @@
 package com.example.mrrag.app.source;
 
 import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
+import com.example.mrrag.graph.cache.GraphCache;
 
 /**
  * Immutable identity key for a specific branch of a GitLab project.
  *
  * <p>Used as the cache key in {@link com.example.mrrag.graph.cache.RepositoryCacheService}
- * and {@link com.example.mrrag.graph.cache.BranchGraphRegistry}.
+ * and {@link GraphCache}.
  *
  * @param namespace GitLab namespace (group or user)
  * @param repo      repository slug

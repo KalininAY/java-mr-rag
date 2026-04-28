@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentMap;
  */
 @Slf4j
 @Component
-public class BranchGraphRegistry {
+public class GraphCache {
 
     private final ConcurrentMap<ProjectKey, VersionedGraph> cache = new ConcurrentHashMap<>();
 

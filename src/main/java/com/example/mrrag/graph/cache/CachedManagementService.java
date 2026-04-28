@@ -20,7 +20,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class CachedManagementService {
 
-    private final BranchGraphRegistry registry;
+    private final GraphCache graphCache;
     private final GraphBuilder graphBuilder;
     private final GraphPatcher patcher;
     private final CodeRepositoryGateway gateway;
@@ -35,11 +35,11 @@ public class CachedManagementService {
         String lastCommit = gateway.getLastCommit(key.namespace(), key.repo(), key.branch(), token);
 
         // 1. Если графа в кэше нет, то клонируем по последнему коммиту (сайд эффект возможен по коммиту)
-        VersionedGraph cachedGraph = registry.get(key).orElseGet(() -> {
+        VersionedGraph cachedGraph = graphCache.get(key).orElseGet(() -> {
             Path path = gateway.clone(key.namespace(), key.repo(), key.branch(), token);
             ProjectGraph projectGraph = graphBuilder.buildGraph(new LocalProjectSourceProvider(key, path));
-            registry.put(key, new VersionedGraph(lastCommit, projectGraph));
-            return registry.get(key).orElseThrow();
+            graphCache.put(key, new VersionedGraph(lastCommit, projectGraph));
+            return graphCache.get(key).orElseThrow();
         });
 
 
@@ -66,7 +66,7 @@ public class CachedManagementService {
         patcher.addFiles(cachedGraph.graph(), changedSources,
                 provider.localProjectRoot().orElseThrow());
 
-        registry.put(key, new VersionedGraph(lastCommit, cachedGraph.graph()));
+        graphCache.put(key, new VersionedGraph(lastCommit, cachedGraph.graph()));
         return cachedGraph.graph();
     }
 
@@ -75,7 +75,7 @@ public class CachedManagementService {
      * Next call to {@link #getOrBuildGraph} re-clones and rebuilds.
      */
     public void invalidate(ProjectKey key) {
-        registry.invalidate(key);
+        graphCache.invalidate(key);
         log.info("CachedSourceManagementService.invalidate: evicted {}", key);
     }
 }
