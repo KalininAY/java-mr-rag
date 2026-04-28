@@ -81,6 +81,32 @@ public class GraphBuilderImpl implements GraphBuilder {
         log.debug("invalidate: deleted disk cache for {}", key);
     }
 
+    // ------------------------------------------------------------------
+    // Package-level bridge methods for GraphPatcher
+    // ------------------------------------------------------------------
+
+    /**
+     * Parses {@code sources} via Spoon and returns a partial {@link ProjectGraph}.
+     * Exposed as public for use by
+     * {@link com.example.mrrag.graph.cache.GraphPatcher}.
+     */
+    public ProjectGraph buildBatchPublic(List<ProjectSource> sources, Path classpathRoot) {
+        return buildBatch(sources, classpathRoot);
+    }
+
+    /**
+     * Merges {@code source} graph into {@code target} in-place.
+     * Exposed as public for use by
+     * {@link com.example.mrrag.graph.cache.GraphPatcher}.
+     */
+    public void mergeGraphsPublic(ProjectGraph target, ProjectGraph source) {
+        mergeGraphs(target, source);
+    }
+
+    // ------------------------------------------------------------------
+    // Internal build pipeline
+    // ------------------------------------------------------------------
+
     private ProjectGraph doBuildGraphFromSources(List<ProjectSource> sources, Path classpathRoot) {
         if (sources.isEmpty()) {
             log.warn("doBuildGraphFromSources: empty source list, returning empty graph");
@@ -346,11 +372,9 @@ public class GraphBuilderImpl implements GraphBuilder {
         passes.add(() -> model.getElements(new TypeFilter<>(CtLambda.class)).forEach(lambda -> {
             String file = AstGraphUtils.graphFilePath(lambda, projectRoot, repoPaths);
             int[] ln = AstGraphUtils.lines(lambda, sourceLines);
-            // Считаем индекс лямбды внутри метода-родителя
             CtMethod<?> em = lambda.getParent(CtMethod.class);
             String encId = em != null ? AstGraphUtils.typeMemberExecId(em) : file;
 
-            // Порядковый номер среди лямбд метода
             List<CtLambda<?>> siblings = em != null
                     ? em.getElements(new TypeFilter<>(CtLambda.class)) : List.of(lambda);
             int idx = siblings.indexOf(lambda);
@@ -469,7 +493,6 @@ public class GraphBuilderImpl implements GraphBuilder {
             }));
         if (edgeConfig.isEnabled(EdgeKind.HAS_IMPORT)) {
             passes.add(() -> model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
-                // CtCompilationUnit доступен через позицию типа, даже для VirtualFile
                 var pos = type.getPosition();
                 if (pos == null || !pos.isValidPosition()) return;
                 CtCompilationUnit cu = pos.getCompilationUnit();
@@ -490,7 +513,6 @@ public class GraphBuilderImpl implements GraphBuilder {
                                 || kind == CtImportKind.FIELD
                                 || kind == CtImportKind.ALL_STATIC_MEMBERS;
                     } else {
-                        // Spoon не разрезолвил — парсим напрямую из исходника
                         int lineNum = imp.getPosition().isValidPosition() ? imp.getPosition().getLine() : -1;
                         ref = AstGraphUtils.parseImportRefFromSource(sourceLines, file, lineNum);
                         isStatic = AstGraphUtils.isStaticImportBySource(sourceLines, file, lineNum);

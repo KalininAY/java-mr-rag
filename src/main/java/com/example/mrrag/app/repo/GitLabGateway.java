@@ -9,6 +9,7 @@ import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.gitlab4j.api.GitLabApi;
 import org.gitlab4j.api.GitLabApiException;
 import org.gitlab4j.api.models.Commit;
+import org.gitlab4j.api.models.CompareResults;
 import org.gitlab4j.api.models.Diff;
 import org.gitlab4j.api.models.MergeRequest;
 import org.gitlab4j.api.models.Project;
@@ -175,6 +176,60 @@ public class GitLabGateway implements CodeRepositoryGateway {
         }
     }
 
+    /**
+     * Resolves a branch name or tag to its full 40-char commit SHA.
+     * If {@code ref} is already a full SHA it is returned as-is.
+     */
+    @Override
+    public String resolveCommitSha(String namespace, String repo, String ref, String token) {
+        if (ref != null && ref.length() == 40 && ref.matches("[0-9a-fA-F]+")) {
+            return ref;
+        }
+        return gitLabApi(token, api -> {
+            try {
+                Project project = api.getProjectApi().getProject(namespace + "/" + repo);
+                return api.getRepositoryApi().getBranch(project.getId(), ref).getCommit().getId();
+            } catch (GitLabApiException e) {
+                log.error("Failed to resolve ref '{}' for project '{}/{}'", ref, namespace, repo);
+                throw new CodeRepositoryException(
+                        "Failed to resolve ref '%s' in project '%s/%s'".formatted(ref, namespace, repo), e);
+            }
+        });
+    }
+
+    /**
+     * Returns repository-relative paths of {@code .java} files changed
+     * between {@code fromSha} (exclusive) and {@code toSha} (inclusive).
+     *
+     * <p>Uses GitLab Compare API: {@code GET /projects/:id/repository/compare}.
+     */
+    @Override
+    public List<String> getCommitDiff(String namespace, String repo,
+                                      String fromSha, String toSha, String token) {
+        return gitLabApi(token, api -> {
+            try {
+                String projectPath = "%s/%s".formatted(namespace, repo);
+                CompareResults compare = api.getRepositoryApi()
+                        .compare(projectPath, fromSha, toSha);
+                return compare.getDiffs().stream()
+                        .map(Diff::getNewPath)
+                        .filter(p -> p != null && p.endsWith(".java"))
+                        .distinct()
+                        .toList();
+            } catch (GitLabApiException e) {
+                log.error("Failed to get commit diff {}→{} for project '{}/{}'",
+                        fromSha, toSha, namespace, repo);
+                throw new CodeRepositoryException(
+                        "Failed to get commit diff '%s'→'%s' in project '%s/%s'"
+                                .formatted(fromSha, toSha, namespace, repo), e);
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Internal helpers
+    // ------------------------------------------------------------------
+
     private Long getProjectId(String namespace, String repo, String token) {
         return gitLabApi(token, api -> {
             try {
@@ -219,24 +274,17 @@ public class GitLabGateway implements CodeRepositoryGateway {
         String timestamp = getCommitTimestampDirName(namespace, repo, commitId, token);
         String branchSafe = branch.replaceAll("[^a-zA-Z0-9._-]", "_");
         String commitSafe = commitId.substring(0, Math.min(7, commitId.length()));
-
-        // namespace: заменяем '/' на подчёркивания, чтобы не было пути в пути
         String namespaceSafe = namespace.replaceAll("[/\\\\:*?\"<>|]", "_");
 
         return String.format("%s_%s__%s__%s__%s", namespaceSafe, repo, timestamp, branchSafe, commitSafe);
     }
 
-    public String getCommitTimestampDirName(
-            String namespace,
-            String repo,
-            String commitId,
-            String token
-    ) {
+    public String getCommitTimestampDirName(String namespace, String repo,
+                                             String commitId, String token) {
         Commit commit = getCommit(namespace, repo, commitId, token);
         Instant instant = commit.getCommittedDate().toInstant();
         return instant.atZone(ZoneOffset.UTC)
                 .format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
-
     }
 
     private Commit getLastCommit(String namespace, String repo, String branch, String token) {
@@ -245,7 +293,8 @@ public class GitLabGateway implements CodeRepositoryGateway {
                 Project project = api.getProjectApi().getProject(namespace + "/" + repo);
                 return api.getRepositoryApi().getBranch(project.getId(), branch).getCommit();
             } catch (GitLabApiException e) {
-                throw new CodeRepositoryException("Failed get commit project '%s/%s', branch '%s'".formatted(namespace, repo, branch), e);
+                throw new CodeRepositoryException(
+                        "Failed get commit project '%s/%s', branch '%s'".formatted(namespace, repo, branch), e);
             }
         });
     }
@@ -256,7 +305,8 @@ public class GitLabGateway implements CodeRepositoryGateway {
                 Project project = api.getProjectApi().getProject(namespace + "/" + repo);
                 return api.getCommitsApi().getCommit(project.getId(), commit);
             } catch (GitLabApiException e) {
-                throw new CodeRepositoryException("Failed get commit project '%s/%s', commit '%s'".formatted(namespace, repo, commit), e);
+                throw new CodeRepositoryException(
+                        "Failed get commit project '%s/%s', commit '%s'".formatted(namespace, repo, commit), e);
             }
         });
     }
