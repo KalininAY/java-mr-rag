@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -126,20 +127,87 @@ public class GitLabGateway implements CodeRepositoryGateway {
         });
     }
 
+    /**
+     * Получает diffs Merge Request.
+     * <p>
+     * GitLab может вернуть пустой {@code diff} для новых файлов
+     * ({@code newFile=true}, {@code a_mode="0"}). В этом случае метод
+     * дополнительно загружает содержимое файла через {@link #getFileContent}
+     * и синтезирует unified-diff строку, чтобы downstream-пайплайн всегда
+     * получал непустой diff.
+     */
     @Override
     public List<Diff> getMrDiffs(String namespace, String repo,
                                  long mrIid, String token) {
-        return gitLabApi(token, api -> {
+
+        MergeRequest mrWithChanges = gitLabApi(token, api -> {
             try {
                 return api.getMergeRequestApi()
-                        .getMergeRequestChanges(namespace + "/" + repo, mrIid)
-                        .getChanges();
+                        .getMergeRequestChanges(namespace + "/" + repo, mrIid);
             } catch (GitLabApiException e) {
                 throw new CodeRepositoryException(
                         "Failed to get diffs for MR '%d' in '%s/%s'"
                                 .formatted(mrIid, namespace, repo), e);
             }
         });
+
+        List<Diff> rawDiffs = mrWithChanges.getChanges();
+        String sourceBranch = mrWithChanges.getSourceBranch();
+
+        List<Diff> enriched = new ArrayList<>(rawDiffs.size());
+        for (Diff diff : rawDiffs) {
+            if (Boolean.TRUE.equals(diff.getNewFile())
+                    && (diff.getDiff() == null || diff.getDiff().isBlank())) {
+                enriched.add(enrichNewFileDiff(diff, namespace, repo, sourceBranch, token));
+            } else {
+                enriched.add(diff);
+            }
+        }
+        return enriched;
+    }
+
+    /**
+     * Для нового файла с пустым diff загружает содержимое файла и формирует
+     * синтетический unified-diff в виде «все строки добавлены».
+     */
+    private Diff enrichNewFileDiff(Diff diff,
+                                   String namespace, String repo,
+                                   String branch, String token) {
+        String filePath = diff.getNewPath();
+        log.debug("Enriching new-file diff for '{}' in '{}/{}' at '{}'",
+                filePath, namespace, repo, branch);
+        try {
+            String content = getFileContent(namespace, repo, branch, filePath, token);
+            diff.setDiff(buildAddedFileDiff(filePath, content));
+            log.debug("Enriched diff for '{}': {} chars", filePath, diff.getDiff().length());
+        } catch (Exception ex) {
+            log.warn("Could not enrich diff for new file '{}': {}", filePath, ex.getMessage());
+        }
+        return diff;
+    }
+
+    /**
+     * Строит unified-diff строку для нового файла (все строки — добавленные).
+     *
+     * <pre>
+     * --- /dev/null
+     * +++ b/path/to/File.java
+     * @@ -0,0 +1,N @@
+     * +line1
+     * +line2
+     * ...
+     * </pre>
+     */
+    private static String buildAddedFileDiff(String filePath, String content) {
+        String[] lines = content.split("\n", -1);
+        StringBuilder sb = new StringBuilder();
+        sb.append("--- /dev/null\n");
+        sb.append("+++ b/").append(filePath).append("\n");
+        sb.append("@@ -0,0 +1,").append(lines.length).append(" @@\n");
+        for (String line : lines) {
+            sb.append("+").append(line).append("\n");
+        }
+        return sb.toString();
     }
 
     @Override
