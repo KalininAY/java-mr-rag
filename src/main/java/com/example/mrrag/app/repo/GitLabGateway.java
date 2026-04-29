@@ -43,9 +43,6 @@ public class GitLabGateway implements CodeRepositoryGateway {
     @Value("${app.workspace.dir:/tmp/mr-rag-workspace}")
     private String workspaceDir;
 
-    /**
-     * Open Git handles for cache directories, keyed by absolute path string.
-     */
     private final ConcurrentMap<String, Git> openHandles = new ConcurrentHashMap<>();
 
     // ------------------------------------------------------------------
@@ -81,10 +78,6 @@ public class GitLabGateway implements CodeRepositoryGateway {
         }
     }
 
-    /**
-     * Клонирует ветку в фиксированный каталог {@code workspaceDir/cache/{ns}_{repo}__{branch}}.
-     * При повторном вызове выполняет {@code git pull} через открытый JGit-хендл.
-     */
     @Override
     public Path pull(String namespace, String repo, String branch, String token) {
         if (token == null) token = defaultToken;
@@ -128,22 +121,15 @@ public class GitLabGateway implements CodeRepositoryGateway {
     }
 
     /**
-     * Получает diffs Merge Request.
-     * <p>
-     * GitLab может вернуть пустой {@code diff} для новых ({@code newFile=true})
-     * и удалённых ({@code deletedFile=true}) файлов. В этих случаях метод
-     * дополнительно загружает содержимое файла и синтезирует unified-diff,
-     * чтобы downstream-пайплайн всегда получал непустой diff.
-     * <ul>
-     *   <li>Новый файл — контент берётся из source-ветки, все строки помечаются «+».</li>
-     *   <li>Удалённый файл — контент берётся из target-ветки, все строки помечаются «-».</li>
-     * </ul>
+     * Получает diffs MR. Если GitLab вернул пустой diff для нового
+     * ({@code newFile=true}) или удалённого ({@code deletedFile=true}) файла,
+     * дополняет diff синтетически через {@link #getFileContent}.
      */
     @Override
     public List<Diff> getMrDiffs(String namespace, String repo,
                                  long mrIid, String token) {
 
-        MergeRequest mrWithChanges = gitLabApi(token, api -> {
+        MergeRequest mr = gitLabApi(token, api -> {
             try {
                 return api.getMergeRequestApi()
                         .getMergeRequestChanges(namespace + "/" + repo, mrIid);
@@ -154,110 +140,56 @@ public class GitLabGateway implements CodeRepositoryGateway {
             }
         });
 
-        List<Diff> rawDiffs = mrWithChanges.getChanges();
-        String sourceBranch = mrWithChanges.getSourceBranch();
-        String targetBranch = mrWithChanges.getTargetBranch();
+        List<Diff> result = new ArrayList<>(mr.getChanges().size());
+        for (Diff diff : mr.getChanges()) {
+            result.add(enrichEmptyDiff(diff, namespace, repo, mr.getSourceBranch(), mr.getTargetBranch(), token));
+        }
+        return result;
+    }
 
-        List<Diff> enriched = new ArrayList<>(rawDiffs.size());
-        for (Diff diff : rawDiffs) {
-            boolean emptyDiff = diff.getDiff() == null || diff.getDiff().isBlank();
-            if (emptyDiff) {
-                if (Boolean.TRUE.equals(diff.getNewFile())) {
-                    enriched.add(enrichNewFileDiff(diff, namespace, repo, sourceBranch, token));
-                } else if (Boolean.TRUE.equals(diff.getDeletedFile())) {
-                    enriched.add(enrichDeletedFileDiff(diff, namespace, repo, targetBranch, token));
-                } else {
-                    enriched.add(diff);
-                }
+    /**
+     * Если diff пустой — загружает содержимое файла и синтезирует unified-diff.
+     * Новый файл — читается из source, все строки «+».
+     * Удалённый файл — читается из target, все строки «-».
+     */
+    private Diff enrichEmptyDiff(Diff diff,
+                                  String namespace, String repo,
+                                  String sourceBranch, String targetBranch,
+                                  String token) {
+        if (diff.getDiff() != null && !diff.getDiff().isBlank()) {
+            return diff;
+        }
+
+        boolean isNew     = Boolean.TRUE.equals(diff.getNewFile());
+        boolean isDeleted = Boolean.TRUE.equals(diff.getDeletedFile());
+        if (!isNew && !isDeleted) {
+            return diff;
+        }
+
+        String filePath = isDeleted ? diff.getOldPath() : diff.getNewPath();
+        String branch   = isDeleted ? targetBranch      : sourceBranch;
+        log.debug("Enriching {} diff for '{}' from branch '{}'",
+                isNew ? "new-file" : "deleted-file", filePath, branch);
+        try {
+            String content = getFileContent(namespace, repo, branch, filePath, token);
+            String[] lines = content.split("\n", -1);
+            StringBuilder sb = new StringBuilder();
+            if (isNew) {
+                sb.append("--- /dev/null\n");
+                sb.append("+++ b/").append(filePath).append("\n");
+                sb.append("@@ -0,0 +1,").append(lines.length).append(" @@\n");
+                for (String line : lines) sb.append("+").append(line).append("\n");
             } else {
-                enriched.add(diff);
+                sb.append("--- a/").append(filePath).append("\n");
+                sb.append("+++ /dev/null\n");
+                sb.append("@@ -1,").append(lines.length).append(" +0,0 @@\n");
+                for (String line : lines) sb.append("-").append(line).append("\n");
             }
-        }
-        return enriched;
-    }
-
-    /**
-     * Для нового файла с пустым diff загружает содержимое из source-ветки
-     * и синтезирует unified-diff (все строки добавлены).
-     */
-    private Diff enrichNewFileDiff(Diff diff,
-                                   String namespace, String repo,
-                                   String sourceBranch, String token) {
-        String filePath = diff.getNewPath();
-        log.debug("Enriching new-file diff for '{}' in '{}/{}' at '{}'",
-                filePath, namespace, repo, sourceBranch);
-        try {
-            String content = getFileContent(namespace, repo, sourceBranch, filePath, token);
-            diff.setDiff(buildAddedFileDiff(filePath, content));
-            log.debug("Enriched new-file diff for '{}': {} chars", filePath, diff.getDiff().length());
+            diff.setDiff(sb.toString());
         } catch (Exception ex) {
-            log.warn("Could not enrich diff for new file '{}': {}", filePath, ex.getMessage());
+            log.warn("Could not enrich diff for '{}': {}", filePath, ex.getMessage());
         }
         return diff;
-    }
-
-    /**
-     * Для удалённого файла с пустым diff загружает содержимое из target-ветки
-     * и синтезирует unified-diff (все строки удалены).
-     */
-    private Diff enrichDeletedFileDiff(Diff diff,
-                                       String namespace, String repo,
-                                       String targetBranch, String token) {
-        String filePath = diff.getOldPath();
-        log.debug("Enriching deleted-file diff for '{}' in '{}/{}' at '{}'",
-                filePath, namespace, repo, targetBranch);
-        try {
-            String content = getFileContent(namespace, repo, targetBranch, filePath, token);
-            diff.setDiff(buildDeletedFileDiff(filePath, content));
-            log.debug("Enriched deleted-file diff for '{}': {} chars", filePath, diff.getDiff().length());
-        } catch (Exception ex) {
-            log.warn("Could not enrich diff for deleted file '{}': {}", filePath, ex.getMessage());
-        }
-        return diff;
-    }
-
-    /**
-     * Строит unified-diff строку для нового файла (все строки — добавленные).
-     *
-     * <pre>
-     * --- /dev/null
-     * +++ b/path/to/File.java
-     * @@ -0,0 +1,N @@
-     * +line1
-     * </pre>
-     */
-    private static String buildAddedFileDiff(String filePath, String content) {
-        String[] lines = content.split("\n", -1);
-        StringBuilder sb = new StringBuilder();
-        sb.append("--- /dev/null\n");
-        sb.append("+++ b/").append(filePath).append("\n");
-        sb.append("@@ -0,0 +1,").append(lines.length).append(" @@\n");
-        for (String line : lines) {
-            sb.append("+").append(line).append("\n");
-        }
-        return sb.toString();
-    }
-
-    /**
-     * Строит unified-diff строку для удалённого файла (все строки — удалённые).
-     *
-     * <pre>
-     * --- a/path/to/File.java
-     * +++ /dev/null
-     * @@ -1,N +0,0 @@
-     * -line1
-     * </pre>
-     */
-    private static String buildDeletedFileDiff(String filePath, String content) {
-        String[] lines = content.split("\n", -1);
-        StringBuilder sb = new StringBuilder();
-        sb.append("--- a/").append(filePath).append("\n");
-        sb.append("+++ /dev/null\n");
-        sb.append("@@ -1,").append(lines.length).append(" +0,0 @@\n");
-        for (String line : lines) {
-            sb.append("-").append(line).append("\n");
-        }
-        return sb.toString();
     }
 
     @Override
@@ -359,10 +291,7 @@ public class GitLabGateway implements CodeRepositoryGateway {
             return action.execute(api);
         } finally {
             if (api != gitLabApi) {
-                try {
-                    api.close();
-                } catch (Exception ignored) {
-                }
+                try { api.close(); } catch (Exception ignored) {}
             }
         }
     }
@@ -380,7 +309,6 @@ public class GitLabGateway implements CodeRepositoryGateway {
     private String projectUrl(String namespace, String repo) {
         return defaultUrl + "/" + namespace + "/" + repo + ".git";
     }
-
 
     private void deleteDirectory(File dir) {
         File[] files = dir.listFiles();
