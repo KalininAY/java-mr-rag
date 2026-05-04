@@ -25,7 +25,12 @@ import java.util.stream.Collectors;
  *       declaring class of every method/field node in the union (via incoming DECLARES edges).</li>
  *   <li>Follows outgoing EXTENDS edges to surface parent class declarations.</li>
  *   <li>Follows outgoing IMPLEMENTS edges to surface implemented interface declarations.</li>
- *   <li>Follows outgoing INSTANTIATES edges to surface constructor declarations.</li>
+ *   <li>Follows outgoing INSTANTIATES / INSTANTIATES_ANONYMOUS edges to surface constructor
+ *       declarations. Note: the CLASS_DECLARATION deduplication in
+ *       {@link ContextStrategy#filterAlreadyInDiff} will drop the METHOD_DECLARATION produced
+ *       here when a CLASS_DECLARATION for the same location was already collected in Pass 1,
+ *       so there is no redundancy for classes that appear both as DECLARES targets and
+ *       INSTANTIATES targets.</li>
  * </ul>
  */
 @Slf4j
@@ -54,7 +59,6 @@ public class AdditionContextStrategy implements ContextStrategy {
             boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
             if (!hasAdd) continue;
 
-            // Find declaring class via incoming DECLARES edge
             sourceGraph.incoming(node.id()).stream()
                     .filter(e -> e.kind() == EdgeKind.DECLARES)
                     .map(e -> sourceGraph.nodes.get(e.caller()))
