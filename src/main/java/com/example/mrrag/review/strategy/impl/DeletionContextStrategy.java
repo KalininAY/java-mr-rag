@@ -21,6 +21,10 @@ import java.util.*;
  * and emits one {@link EnrichmentSnippet} per unique caller with
  * {@link EnrichmentSnippet.LineContext#DELETE}.
  *
+ * <p>Also adds a {@link EnrichmentSnippet.SnippetType#CLASS_DECLARATION} snippet
+ * for the declaring class of each deleted method/field node so the LLM understands
+ * the class context of the deletion.
+ *
  * <p>For {@code METHOD_CALLERS} / {@code FIELD_USAGES} snippets only the
  * call-site window (±{@code app.enrichment.callerWindowLines} lines) is
  * included — not the entire caller method body.
@@ -46,7 +50,37 @@ public class DeletionContextStrategy implements ContextStrategy {
 
         List<EnrichmentSnippet> snippets = new ArrayList<>();
         Set<String> seenCaller = new HashSet<>();
+        Set<String> seenClass = new HashSet<>();
 
+        // Pass 1: declaring classes for deleted method/field/constructor nodes
+        for (GraphNode node : union.graphNodes()) {
+            if (snippets.size() >= maxSnippetsPerGroup) break;
+            if (node.kind() != NodeKind.METHOD && node.kind() != NodeKind.FIELD
+                    && node.kind() != NodeKind.CONSTRUCTOR) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
+            if (!hasDel) continue;
+
+            GraphNode targetNode = targetGraph.nodes.get(node.id());
+            if (targetNode == null) continue;
+
+            targetGraph.incoming(targetNode.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.DECLARES)
+                    .map(e -> targetGraph.nodes.get(e.caller()))
+                    .filter(Objects::nonNull)
+                    .filter(cls -> cls.kind() == NodeKind.CLASS
+                            || cls.kind() == NodeKind.INTERFACE
+                            || cls.kind() == NodeKind.ANNOTATION)
+                    .filter(cls -> seenClass.add("CLASS:" + cls.id()))
+                    .findFirst()
+                    .ifPresent(cls -> snippets.add(EnrichmentSnippet.ofDeclaration(
+                            EnrichmentSnippet.SnippetType.CLASS_DECLARATION, cls,
+                            "Declaring class of deleted method/field '" + node.simpleName() + "'",
+                            EnrichmentSnippet.LineContext.DELETE)));
+        }
+
+        // Pass 2: callers/readers of deleted nodes
         for (GraphNode node : union.graphNodes()) {
             if (snippets.size() >= maxSnippetsPerGroup) break;
 
@@ -74,9 +108,9 @@ public class DeletionContextStrategy implements ContextStrategy {
                         ? EnrichmentSnippet.SnippetType.FIELD_USAGES
                         : EnrichmentSnippet.SnippetType.METHOD_CALLERS;
 
-                String window    = CallerSnippetExtractor.extract(caller, edge.startLine(), callerWindowLines);
-                int    winStart  = CallerSnippetExtractor.windowStartLine(caller, edge.startLine(), callerWindowLines);
-                int    winEnd    = CallerSnippetExtractor.windowEndLine(caller, edge.startLine(), callerWindowLines);
+                String window   = CallerSnippetExtractor.extract(caller, edge.startLine(), callerWindowLines);
+                int    winStart = CallerSnippetExtractor.windowStartLine(caller, edge.startLine(), callerWindowLines);
+                int    winEnd   = CallerSnippetExtractor.windowEndLine(caller, edge.startLine(), callerWindowLines);
 
                 snippets.add(new EnrichmentSnippet(
                         snippetType,

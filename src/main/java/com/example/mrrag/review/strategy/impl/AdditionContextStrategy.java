@@ -24,6 +24,8 @@ import java.util.stream.Collectors;
  *   <li>Adds a {@link EnrichmentSnippet.SnippetType#CLASS_DECLARATION} snippet for the
  *       declaring class of every method/field node in the union (via incoming DECLARES edges).</li>
  *   <li>Follows outgoing EXTENDS edges to surface parent class declarations.</li>
+ *   <li>Follows outgoing IMPLEMENTS edges to surface implemented interface declarations.</li>
+ *   <li>Follows outgoing INSTANTIATES edges to surface constructor declarations.</li>
  * </ul>
  */
 @Slf4j
@@ -42,7 +44,7 @@ public class AdditionContextStrategy implements ContextStrategy {
         List<EnrichmentSnippet> snippets = new ArrayList<>();
         Set<String> seenDecl = new HashSet<>();
 
-        // Pass 1: declaring classes for every method/field node in the union
+        // Pass 1: declaring classes for every method/field/constructor node in the union
         for (GraphNode node : union.graphNodes()) {
             if (snippets.size() >= maxSnippetsPerGroup) break;
             if (node.kind() != NodeKind.METHOD && node.kind() != NodeKind.FIELD
@@ -68,7 +70,7 @@ public class AdditionContextStrategy implements ContextStrategy {
                             EnrichmentSnippet.LineContext.ADD)));
         }
 
-        // Pass 2: outgoing edges from union nodes — method/field/variable declarations + parent classes
+        // Pass 2: outgoing edges from union nodes
         for (GraphNode node : union.graphNodes()) {
             if (snippets.size() >= maxSnippetsPerGroup) break;
 
@@ -97,6 +99,10 @@ public class AdditionContextStrategy implements ContextStrategy {
                             EnrichmentSnippet.SnippetType.METHOD_DECLARATION, target,
                             "Declaration of method '" + target.simpleName() + "' called in added code",
                             EnrichmentSnippet.LineContext.ADD));
+                    case INSTANTIATES, INSTANTIATES_ANONYMOUS -> snippets.add(EnrichmentSnippet.ofDeclaration(
+                            EnrichmentSnippet.SnippetType.METHOD_DECLARATION, target,
+                            "Constructor of '" + target.simpleName() + "' instantiated in added code",
+                            EnrichmentSnippet.LineContext.ADD));
                     case READS_FIELD, WRITES_FIELD -> snippets.add(EnrichmentSnippet.ofDeclaration(
                             EnrichmentSnippet.SnippetType.FIELD_DECLARATION, target,
                             "Declaration of field '" + target.simpleName() + "' accessed in added code",
@@ -110,6 +116,14 @@ public class AdditionContextStrategy implements ContextStrategy {
                             snippets.add(EnrichmentSnippet.ofDeclaration(
                                     EnrichmentSnippet.SnippetType.CLASS_DECLARATION, target,
                                     "Parent class '" + target.simpleName() + "' extended by changed class",
+                                    EnrichmentSnippet.LineContext.ADD));
+                        }
+                    }
+                    case IMPLEMENTS -> {
+                        if (target.kind() == NodeKind.INTERFACE) {
+                            snippets.add(EnrichmentSnippet.ofDeclaration(
+                                    EnrichmentSnippet.SnippetType.CLASS_DECLARATION, target,
+                                    "Interface '" + target.simpleName() + "' implemented by changed class",
                                     EnrichmentSnippet.LineContext.ADD));
                         }
                     }
