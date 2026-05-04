@@ -37,7 +37,7 @@ app:
       dir: ${app.workspace.dir}/graph-cache
   enrichment:
     surroundingLines: 3
-    maxSnippetsPerGroup: 10
+    maxSnippetsPerGroup: 20
     maxSnippetLines: 30
 
 graph:
