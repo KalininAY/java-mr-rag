@@ -1,7 +1,9 @@
 package com.example.mrrag.review.strategy.impl;
 
+import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.GraphEdge;
 import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.strategy.ContextStrategy;
@@ -16,6 +18,13 @@ import java.util.stream.Collectors;
  * Collects context for ADD lines in a {@link UnionLine}.
  *
  * <p>All emitted snippets carry {@link EnrichmentSnippet.LineContext#ADD}.
+ *
+ * <p>In addition to outgoing INVOKES/READS_FIELD/WRITES_FIELD edges, this strategy also:
+ * <ul>
+ *   <li>Adds a {@link EnrichmentSnippet.SnippetType#CLASS_DECLARATION} snippet for the
+ *       declaring class of every method/field node in the union (via incoming DECLARES edges).</li>
+ *   <li>Follows outgoing EXTENDS edges to surface parent class declarations.</li>
+ * </ul>
  */
 @Slf4j
 @Component
@@ -33,6 +42,33 @@ public class AdditionContextStrategy implements ContextStrategy {
         List<EnrichmentSnippet> snippets = new ArrayList<>();
         Set<String> seenDecl = new HashSet<>();
 
+        // Pass 1: declaring classes for every method/field node in the union
+        for (GraphNode node : union.graphNodes()) {
+            if (snippets.size() >= maxSnippetsPerGroup) break;
+            if (node.kind() != NodeKind.METHOD && node.kind() != NodeKind.FIELD
+                    && node.kind() != NodeKind.CONSTRUCTOR) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
+            if (!hasAdd) continue;
+
+            // Find declaring class via incoming DECLARES edge
+            sourceGraph.incoming(node.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.DECLARES)
+                    .map(e -> sourceGraph.nodes.get(e.caller()))
+                    .filter(Objects::nonNull)
+                    .filter(cls -> cls.kind() == NodeKind.CLASS
+                            || cls.kind() == NodeKind.INTERFACE
+                            || cls.kind() == NodeKind.ANNOTATION)
+                    .filter(cls -> seenDecl.add("CLASS:" + cls.id()))
+                    .findFirst()
+                    .ifPresent(cls -> snippets.add(EnrichmentSnippet.ofDeclaration(
+                            EnrichmentSnippet.SnippetType.CLASS_DECLARATION, cls,
+                            "Declaring class of changed method/field '" + node.simpleName() + "'",
+                            EnrichmentSnippet.LineContext.ADD)));
+        }
+
+        // Pass 2: outgoing edges from union nodes — method/field/variable declarations + parent classes
         for (GraphNode node : union.graphNodes()) {
             if (snippets.size() >= maxSnippetsPerGroup) break;
 
@@ -69,6 +105,14 @@ public class AdditionContextStrategy implements ContextStrategy {
                             EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION, target,
                             "Declaration of variable '" + target.simpleName() + "' used in added code",
                             EnrichmentSnippet.LineContext.ADD));
+                    case EXTENDS -> {
+                        if (target.kind() == NodeKind.CLASS || target.kind() == NodeKind.INTERFACE) {
+                            snippets.add(EnrichmentSnippet.ofDeclaration(
+                                    EnrichmentSnippet.SnippetType.CLASS_DECLARATION, target,
+                                    "Parent class '" + target.simpleName() + "' extended by changed class",
+                                    EnrichmentSnippet.LineContext.ADD));
+                        }
+                    }
                     default -> { }
                 }
             }

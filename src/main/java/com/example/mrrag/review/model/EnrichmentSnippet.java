@@ -79,6 +79,8 @@ public record EnrichmentSnippet(
         /** All usages of a local variable */
         VARIABLE_USAGES,
         /** Callee parameter names when arguments were changed */
-        ARGUMENT_CONTEXT
+        ARGUMENT_CONTEXT,
+        /** Declaration of a class/interface (header + fields, without method bodies) */
+        CLASS_DECLARATION
     }
 }
