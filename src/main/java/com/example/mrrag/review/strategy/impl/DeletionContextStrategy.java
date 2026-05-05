@@ -25,6 +25,10 @@ import java.util.*;
  * for the declaring class of each deleted method/field node so the LLM understands
  * the class context of the deletion.
  *
+ * <p>Snippet budget is applied <em>per GraphNode</em> (see {@code maxSnippetsPerNode}):
+ * each node in the union independently collects up to that many snippets so that
+ * all deleted nodes get context regardless of how large the union is.
+ *
  * <p>For {@code METHOD_CALLERS} / {@code FIELD_USAGES} snippets only the
  * call-site window (±{@code app.enrichment.callerWindowLines} lines) is
  * included — not the entire caller method body.
@@ -33,8 +37,12 @@ import java.util.*;
 @Component
 public class DeletionContextStrategy implements ContextStrategy {
 
-    @Value("${app.enrichment.maxSnippetsPerGroup:12}")
-    private int maxSnippetsPerGroup;
+    /**
+     * Maximum number of enrichment snippets collected per GraphNode.
+     * Each node in the union independently counts toward this limit.
+     */
+    @Value("${app.enrichment.maxSnippetsPerNode:3}")
+    private int maxSnippetsPerNode;
 
     @Value("${app.enrichment.maxCallersPerNode:5}")
     private int maxCallersPerNode;
@@ -51,16 +59,19 @@ public class DeletionContextStrategy implements ContextStrategy {
         List<EnrichmentSnippet> snippets = new ArrayList<>();
         Set<String> seenCaller = new HashSet<>();
         Set<String> seenClass = new HashSet<>();
+        // per-node snippet counter: nodeId -> count emitted for that node
+        Map<String, Integer> snippetsPerNode = new HashMap<>();
 
         // Pass 1: declaring classes for deleted method/field/constructor nodes
         for (GraphNode node : union.graphNodes()) {
-            if (snippets.size() >= maxSnippetsPerGroup) break;
             if (node.kind() != NodeKind.METHOD && node.kind() != NodeKind.FIELD
                     && node.kind() != NodeKind.CONSTRUCTOR) continue;
 
             List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
             boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
             if (!hasDel) continue;
+
+            if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) continue;
 
             GraphNode targetNode = targetGraph.nodes.get(node.id());
             if (targetNode == null) continue;
@@ -74,16 +85,17 @@ public class DeletionContextStrategy implements ContextStrategy {
                             || cls.kind() == NodeKind.ANNOTATION)
                     .filter(cls -> seenClass.add("CLASS:" + cls.id()))
                     .findFirst()
-                    .ifPresent(cls -> snippets.add(EnrichmentSnippet.ofDeclaration(
-                            EnrichmentSnippet.SnippetType.CLASS_DECLARATION, cls,
-                            "Declaring class of deleted method/field '" + node.simpleName() + "'",
-                            EnrichmentSnippet.LineContext.DELETE)));
+                    .ifPresent(cls -> {
+                        snippets.add(EnrichmentSnippet.ofDeclaration(
+                                EnrichmentSnippet.SnippetType.CLASS_DECLARATION, cls,
+                                "Declaring class of deleted method/field '" + node.simpleName() + "'",
+                                EnrichmentSnippet.LineContext.DELETE));
+                        snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                    });
         }
 
         // Pass 2: callers/readers of deleted nodes
         for (GraphNode node : union.graphNodes()) {
-            if (snippets.size() >= maxSnippetsPerGroup) break;
-
             List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
             boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
             if (!hasDel) continue;
@@ -96,17 +108,19 @@ public class DeletionContextStrategy implements ContextStrategy {
                     .toList();
             if (usageEdges.isEmpty()) continue;
 
+            EnrichmentSnippet.SnippetType snippetType = targetNode.kind() == NodeKind.FIELD
+                    ? EnrichmentSnippet.SnippetType.FIELD_USAGES
+                    : EnrichmentSnippet.SnippetType.METHOD_CALLERS;
+
+            int callerCount = 0;
             for (GraphEdge edge : usageEdges) {
-                if (snippets.size() >= maxSnippetsPerGroup) break;
+                if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) break;
+                if (callerCount >= maxCallersPerNode) break;
 
                 GraphNode caller = targetGraph.nodes.get(edge.caller());
                 if (caller == null || caller.kind() != NodeKind.METHOD) continue;
 
                 if (!seenCaller.add(caller.id())) continue;
-
-                EnrichmentSnippet.SnippetType snippetType = targetNode.kind() == NodeKind.FIELD
-                        ? EnrichmentSnippet.SnippetType.FIELD_USAGES
-                        : EnrichmentSnippet.SnippetType.METHOD_CALLERS;
 
                 String window   = CallerSnippetExtractor.extract(caller, edge.startLine(), callerWindowLines);
                 int    winStart = CallerSnippetExtractor.windowStartLine(caller, edge.startLine(), callerWindowLines);
@@ -120,10 +134,13 @@ public class DeletionContextStrategy implements ContextStrategy {
                         "'" + caller.simpleName() + "' calls deleted '" + targetNode.simpleName() + "'",
                         EnrichmentSnippet.LineContext.DELETE
                 ));
+                snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                callerCount++;
             }
         }
 
-        log.debug("DeletionContextStrategy: union={} snippets={}", union.id(), snippets.size());
+        log.debug("DeletionContextStrategy: union={} nodes={} snippets={}",
+                union.id(), union.graphNodes().size(), snippets.size());
         return snippets;
     }
 }
