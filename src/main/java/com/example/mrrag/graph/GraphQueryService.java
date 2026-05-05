@@ -43,12 +43,8 @@ public class GraphQueryService {
         // Слой 1: якорь — наименьший вмещающий метод/лямбда/конструктор
         graph.nodes.values().stream()
                 .filter(n -> filePath.equals(n.filePath())
-                        && line >= n.startLine() && line <= n.endLine()
-                        && (n.kind() == NodeKind.METHOD
-                            || n.kind() == NodeKind.LAMBDA
-                            || n.kind() == NodeKind.CONSTRUCTOR))
-                .min(Comparator.comparingInt(n -> n.sourceSnippet().length()))
-                .ifPresent(result::add);
+                        && line >= n.startLine() && line <= n.endLine())
+                .forEach(result::add);
 
         // Слой 2: callee рёбер, участвующих в данной строке
         graph.edgesFrom.values().stream()
@@ -58,15 +54,6 @@ public class GraphQueryService {
                 .map(e -> graph.nodes.get(e.callee()))
                 .filter(Objects::nonNull)
                 .forEach(result::add);
-
-        // Слой 3: fallback для структурных строк (скобки, аннотации класса и т.п.)
-        if (result.isEmpty()) {
-            graph.nodes.values().stream()
-                    .filter(n -> filePath.equals(n.filePath())
-                            && line >= n.startLine() && line <= n.endLine())
-                    .min(Comparator.comparingInt(n -> n.sourceSnippet().length()))
-                    .ifPresent(result::add);
-        }
 
         return List.copyOf(result);
     }
