@@ -19,6 +19,10 @@ import java.util.*;
  * follows <em>incoming</em> edges to surface callers and field-readers that are
  * affected by the change.
  *
+ * <p>Snippet budget is applied <em>per GraphNode</em> via {@code maxCallersPerNode}:
+ * each node in the union independently collects up to that many caller snippets
+ * so that all changed nodes get impact context regardless of union size.
+ *
  * <p>For {@code METHOD_CALLERS} / {@code FIELD_USAGES} snippets only the
  * call-site window (±{@code app.enrichment.callerWindowLines} lines) is
  * included — not the entire caller method body.
@@ -26,9 +30,6 @@ import java.util.*;
 @Slf4j
 @Component
 public class NodeImpactContextStrategy implements ContextStrategy {
-
-    @Value("${app.enrichment.maxSnippetsPerGroup:12}")
-    private int maxSnippetsPerGroup;
 
     @Value("${app.enrichment.maxCallersPerNode:5}")
     private int maxCallersPerNode;
@@ -46,7 +47,6 @@ public class NodeImpactContextStrategy implements ContextStrategy {
         Set<String> seenKey = new HashSet<>();
 
         for (GraphNode node : union.graphNodes()) {
-            if (snippets.size() >= maxSnippetsPerGroup) break;
             if (node.kind() != NodeKind.METHOD && node.kind() != NodeKind.FIELD) continue;
 
             List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
@@ -73,7 +73,8 @@ public class NodeImpactContextStrategy implements ContextStrategy {
             }
         }
 
-        log.debug("NodeImpactContextStrategy: union={} snippets={}", union.id(), snippets.size());
+        log.debug("NodeImpactContextStrategy: union={} nodes={} snippets={}",
+                union.id(), union.graphNodes().size(), snippets.size());
         return snippets;
     }
 
@@ -98,7 +99,6 @@ public class NodeImpactContextStrategy implements ContextStrategy {
 
         int count = 0;
         for (GraphEdge edge : incoming) {
-            if (snippets.size() >= maxSnippetsPerGroup) break;
             if (count >= maxCallersPerNode) break;
 
             String key = edge.caller() + "#" + lineContext;
