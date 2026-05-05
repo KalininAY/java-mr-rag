@@ -33,7 +33,7 @@ public class GraphQueryService {
                     GraphNode callee = graph.nodes.get(edge.callee());
                     GraphNode caller = graph.nodes.get(edge.caller());
                     if (callee != null) withoutBody.add(callee);
-                    if (callee != null) withoutBody.add(caller);
+                    if (caller != null) withoutBody.add(caller);
                 }
             }
         }
