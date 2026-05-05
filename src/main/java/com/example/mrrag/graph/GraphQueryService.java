@@ -13,49 +13,72 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class GraphQueryService {
 
+    private static final Set<EdgeKind> PARTICIPANT_EDGES = EnumSet.of(
+            EdgeKind.INVOKES,
+            EdgeKind.INSTANTIATES,
+            EdgeKind.INSTANTIATES_ANONYMOUS,
+            EdgeKind.REFERENCES_METHOD,
+            EdgeKind.READS_FIELD,
+            EdgeKind.WRITES_FIELD,
+            EdgeKind.READS_LOCAL_VAR,
+            EdgeKind.WRITES_LOCAL_VAR
+    );
+
+    /**
+     * Возвращает узлы графа, участвующие в указанной строке файла.
+     *
+     * <p>Стратегия по слоям:
+     * <ol>
+     *   <li><b>Якорь</b> — наименьший вмещающий METHOD/LAMBDA/CONSTRUCTOR
+     *       ({@code startLine <= line <= endLine}). Связывает строки одного метода.</li>
+     *   <li><b>Участники</b> — callee рёбер INVOKES/INSTANTIATES/READS_FIELD/WRITES_FIELD/
+     *       READS_LOCAL_VAR/WRITES_LOCAL_VAR/REFERENCES_METHOD, чей диапазон содержит строку.
+     *       Связывает строки через общую вызываемую сущность.</li>
+     *   <li><b>Fallback</b> — если ноды не найдены (структурная строка: скобки, аннотации класса),
+     *       добавляется наименьший вмещающий узел любого вида включая CLASS/INTERFACE.</li>
+     * </ol>
+     *
+     * <p>CLASS/INTERFACE не используются как якорь — слишком широкий охват.
+     * FIELD/VARIABLE возвращаются только как callee рёбер.
+     *
+     * @param filePath путь к файлу (repo-relative)
+     * @param line     1-based номер строки; при {@code <= 0} возвращает пустой список
+     * @param graph    граф проекта
+     * @return неизменяемый список узлов; никогда не {@code null}
+     */
     public List<GraphNode> getNodesWithLine(String filePath, int line, ProjectGraph graph) {
         if (line <= 0) return List.of();
 
         Set<GraphNode> result = new LinkedHashSet<>();
 
-        //все ноды объявления, которые содержат строку line по файлу
-        var partitioned = graph.nodes.values().stream()
-                .filter(n -> filePath.equals(n.filePath()) && line >= n.startLine() && line <= n.endLine())
-                .collect(Collectors.partitioningBy(n -> n.kind().isHasBody()));
-
-        var withoutBody = partitioned.get(false);
-        var withBody = partitioned.get(true);
-
-        //Все ноды, вызовы которых содержат line по файлу
-        for (List<GraphEdge> edges : graph.edgesFrom.values()) {
-            for (GraphEdge edge : edges) {
-                if (edge.startLine() <= line && edge.endLine() >= line && filePath.equals(edge.filePath())) {
-                    GraphNode callee = graph.nodes.get(edge.callee());
-                    GraphNode caller = graph.nodes.get(edge.caller());
-                    if (callee != null) withoutBody.add(callee);
-                    if (caller != null) withoutBody.add(caller);
-                }
-            }
-        }
-
-        // Если нет узлов без тела (переменных, полей, ...),
-        // то добавляем узел с самым коротким телом (метод, лямбда, класс, ...)
-        //сделана для структурных строк, исходя из предположения: структурные строки не имеют нод
-        if (withoutBody.isEmpty()) {
-            withBody.stream()
-                    .filter(Objects::nonNull)
-                    .min(Comparator.comparingInt(n -> n.sourceSnippet().length()))
-                    .ifPresent(result::add);
-        } else {
-            // Если есть узлы без тела, то добавляем все узлы без тела
-            result.addAll(withoutBody);
-        }
-
-        withBody.stream()
-                .filter(Objects::nonNull)
-                .filter(it-> it.kind() == NodeKind.METHOD || it.kind() == NodeKind.LAMBDA || it.kind() == NodeKind.CONSTRUCTOR)
+        // Слой 1: якорь — наименьший вмещающий метод/лямбда/конструктор
+        graph.nodes.values().stream()
+                .filter(n -> filePath.equals(n.filePath())
+                        && line >= n.startLine() && line <= n.endLine()
+                        && (n.kind() == NodeKind.METHOD
+                            || n.kind() == NodeKind.LAMBDA
+                            || n.kind() == NodeKind.CONSTRUCTOR))
                 .min(Comparator.comparingInt(n -> n.sourceSnippet().length()))
                 .ifPresent(result::add);
+
+        // Слой 2: callee рёбер, участвующих в данной строке
+        graph.edgesFrom.values().stream()
+                .flatMap(Collection::stream)
+                .filter(e -> filePath.equals(e.filePath())
+                        && e.startLine() <= line && e.endLine() >= line
+                        && PARTICIPANT_EDGES.contains(e.kind()))
+                .map(e -> graph.nodes.get(e.callee()))
+                .filter(Objects::nonNull)
+                .forEach(result::add);
+
+        // Слой 3: fallback для структурных строк (скобки, аннотации класса и т.п.)
+        if (result.isEmpty()) {
+            graph.nodes.values().stream()
+                    .filter(n -> filePath.equals(n.filePath())
+                            && line >= n.startLine() && line <= n.endLine())
+                    .min(Comparator.comparingInt(n -> n.sourceSnippet().length()))
+                    .ifPresent(result::add);
+        }
 
         return List.copyOf(result);
     }
