@@ -1,7 +1,6 @@
 package com.example.mrrag.review.union;
 
 import com.example.mrrag.graph.model.GraphNode;
-import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.review.model.ChangedLine;
 import com.example.mrrag.review.model.UnionLine;
 import org.springframework.stereotype.Component;
@@ -26,7 +25,6 @@ public class UnionService {
 
         for (int i = 0; i < n; i++) {
             for (GraphNode node : entries.get(i).getValue()) {
-                if (!shouldUnifyByNode(node)) continue;
                 Integer prev = nodeOwner.putIfAbsent(node.id(), i);
                 if (prev != null) {
                     dsu.union(i, prev);
@@ -48,29 +46,12 @@ public class UnionService {
         return result;
     }
 
-    /**
-     * Определяет, можно ли использовать ноду как ключ объединения строк в DSU.
-     *
-     * <p>VARIABLE исключены — локальные переменные лямбд имеют нестабильные ID
-     * (совпадают по имени в разных лямбдах одного метода), объединение внутри лямбды
-     * обеспечивается якорем-LAMBDA через слой 1 resolveNode.
-     */
-    private boolean shouldUnifyByNode(GraphNode node) {
-        return switch (node.kind()) {
-            case VARIABLE -> false;
-            default -> true;
-        };
-    }
-
     private static UnionLine mergeGroup(
             List<Integer> indices,
             List<Map.Entry<ChangedLine, Set<GraphNode>>> entries
     ) {
         Set<ChangedLine> changedLines = new LinkedHashSet<>();
         Set<GraphNode> graphNodes = new LinkedHashSet<>();
-        // GraphNode -> все ChangedLine, из которых нода была резолвлена.
-        // Одна нода может входить в несколько ChangedLine (например ADD и DELETE),
-        // поэтому собираем полный список через computeIfAbsent.
         Map<GraphNode, List<ChangedLine>> nodeOrigins = new LinkedHashMap<>();
 
         String mergedId = indices.stream()
