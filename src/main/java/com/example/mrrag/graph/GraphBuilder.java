@@ -136,7 +136,7 @@ public class GraphBuilder {
                     graph.nodes.computeIfAbsent(annId, k -> new GraphNode(
                             annId, NodeKind.ANNOTATION,
                             ann.getAnnotationType().getSimpleName(),
-                            null, 0, 0, null,
+                            "", 0, 0, null,
                             "@" + ann.getAnnotationType().getSimpleName(), null));
                     graph.addEdge(new GraphEdge(
                             id, EdgeKind.ANNOTATED_WITH, annId, file, lines[0], lines[1]));
@@ -279,7 +279,7 @@ public class GraphBuilder {
                     graph.nodes.computeIfAbsent(annId, k -> new GraphNode(
                             annId, NodeKind.ANNOTATION,
                             ann.getAnnotationType().getSimpleName(),
-                            null, 0, 0, null,
+                            "", 0, 0, null,
                             "@" + ann.getAnnotationType().getSimpleName(), null));
                     graph.addEdge(new GraphEdge(
                             id, EdgeKind.ANNOTATED_WITH, annId, file, ln[0], ln[1]));
