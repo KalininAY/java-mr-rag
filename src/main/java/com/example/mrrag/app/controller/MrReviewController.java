@@ -56,47 +56,4 @@ public class MrReviewController {
         return Mono.fromCallable(() -> reviewService.buildReviewContext(request))
                 .subscribeOn(Schedulers.boundedElastic());
     }
-
-    @Operation(
-            summary = "Контекст ревью в формате Markdown",
-            description = """
-                    Возвращает все группы изменений MR в виде Markdown-текста.
-                    Удобно для быстрой инспекции результата ревью в человекочитаемом формате
-                    без разбора JSON-структуры.
-                    """,
-            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
-                    required = true,
-                    content = @Content(
-                            mediaType = MediaType.APPLICATION_JSON_VALUE,
-                            schema = @Schema(implementation = ReviewRequest.class)
-                    )
-            ),
-            responses = {
-                    @ApiResponse(responseCode = "200", description = "Markdown-представление контекста ревью",
-                            content = @Content(mediaType = MediaType.TEXT_PLAIN_VALUE, schema = @Schema(type = "string"))),
-                    @ApiResponse(responseCode = "404", description = "Проект или MR не найден"),
-                    @ApiResponse(responseCode = "500", description = "Ошибка при обращении к GitLab или построении графа")
-            }
-    )
-    @GetMapping(value = "markdown",
-            consumes = MediaType.APPLICATION_JSON_VALUE,
-            produces = MediaType.TEXT_PLAIN_VALUE)
-    public Mono<String> reviewMarkdown(@RequestBody @Valid ReviewRequest request) {
-        return Mono.fromCallable(() -> renderContext(reviewService.buildReviewContext(request)))
-                .subscribeOn(Schedulers.boundedElastic());
-    }
-
-    private String renderContext(ReviewContext ctx) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("# MR ").append(ctx.mrIid())
-                .append(": ").append(ctx.mrTitle()).append("\n");
-        sb.append("`").append(ctx.sourceBranch()).append("` \u2192 `")
-                .append(ctx.targetBranch()).append("`\n\n");
-        sb.append("---\n\n");
-        for (GroupRepresentation group : ctx.representations()) {
-            sb.append(group.markdown());
-            sb.append("---\n\n");
-        }
-        return sb.toString();
-    }
 }
