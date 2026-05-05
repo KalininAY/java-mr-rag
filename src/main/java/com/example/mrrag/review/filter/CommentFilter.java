@@ -49,7 +49,7 @@ public class CommentFilter implements ContextFilter {
                 if (delNorm.equals(addNorm) && !delNorm.isBlank()) {
                     consumed[j] = true;
                     consumed[i] = true;
-                    out.add(del.asContext());
+                    out.add(del);
                     out.add(add.asContext());
                     paired = true;
                     log.trace("Mirror pair merged: '{}'", delNorm);
