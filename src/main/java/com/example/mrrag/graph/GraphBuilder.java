@@ -273,6 +273,15 @@ public class GraphBuilder {
                     file, ln[0], ln[1],
                     AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1]),
                     AstGraphUtils.declarationOf(sourceLines, file, v), null));
+            // Add DECLARES edge from owning executable to parameter
+            if (edgeConfig.isEnabled(EdgeKind.DECLARES) && v instanceof CtParameter<?>) {
+                CtExecutable<?> owner = v.getParent(CtExecutable.class);
+                if (owner instanceof CtTypeMember tm) {
+                    String ownerId = AstGraphUtils.typeMemberExecId(tm);
+                    if (ownerId != null)
+                        graph.addEdge(new GraphEdge(ownerId, EdgeKind.DECLARES, id, file, ln[0], ln[1]));
+                }
+            }
         }));
 
         if (edgeConfig.isEnabled(EdgeKind.ANNOTATION_ATTR)) {
