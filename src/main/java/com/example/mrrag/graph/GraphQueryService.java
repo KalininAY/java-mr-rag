@@ -13,16 +13,6 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class GraphQueryService {
 
-    private static final Set<EdgeKind> PARTICIPANT_EDGES = EnumSet.of(
-            EdgeKind.INVOKES,
-            EdgeKind.INSTANTIATES,
-            EdgeKind.INSTANTIATES_ANONYMOUS,
-            EdgeKind.REFERENCES_METHOD,
-            EdgeKind.READS_FIELD,
-            EdgeKind.WRITES_FIELD,
-            EdgeKind.READS_LOCAL_VAR,
-            EdgeKind.WRITES_LOCAL_VAR
-    );
 
     /**
      * Возвращает узлы графа, участвующие в указанной строке файла.
@@ -31,8 +21,7 @@ public class GraphQueryService {
      * <ol>
      *   <li><b>Якорь</b> — наименьший вмещающий METHOD/LAMBDA/CONSTRUCTOR
      *       ({@code startLine <= line <= endLine}). Связывает строки одного метода.</li>
-     *   <li><b>Участники</b> — callee рёбер INVOKES/INSTANTIATES/READS_FIELD/WRITES_FIELD/
-     *       READS_LOCAL_VAR/WRITES_LOCAL_VAR/REFERENCES_METHOD, чей диапазон содержит строку.
+     *   <li><b>Участники</b> — callee рёбер  диапазон содержит строку.
      *       Связывает строки через общую вызываемую сущность.</li>
      *   <li><b>Fallback</b> — если ноды не найдены (структурная строка: скобки, аннотации класса),
      *       добавляется наименьший вмещающий узел любого вида включая CLASS/INTERFACE.</li>
@@ -65,8 +54,7 @@ public class GraphQueryService {
         graph.edgesFrom.values().stream()
                 .flatMap(Collection::stream)
                 .filter(e -> filePath.equals(e.filePath())
-                        && e.startLine() <= line && e.endLine() >= line
-                        && PARTICIPANT_EDGES.contains(e.kind()))
+                        && e.startLine() <= line && e.endLine() >= line)
                 .map(e -> graph.nodes.get(e.callee()))
                 .filter(Objects::nonNull)
                 .forEach(result::add);
