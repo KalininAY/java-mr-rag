@@ -5,7 +5,12 @@ public enum EdgeKind {
     INVOKES, INSTANTIATES, INSTANTIATES_ANONYMOUS, REFERENCES_METHOD,
     READS_FIELD, WRITES_FIELD,
     READS_LOCAL_VAR, WRITES_LOCAL_VAR,
-    THROWS, ANNOTATED_WITH, REFERENCES_TYPE, OVERRIDES,
+    THROWS, ANNOTATED_WITH,
+    /** Annotation type → annotated element (inverse of ANNOTATED_WITH).
+     *  Semantic: @Annotation ANNOTATES Method/Class/Field
+     *  Allows finding all elements annotated with a given annotation via callee(). */
+    ANNOTATES,
+    REFERENCES_TYPE, OVERRIDES,
     HAS_TYPE_PARAM, HAS_BOUND, ANNOTATION_ATTR,
     /** Compilation unit → import node (one edge per import statement). */
     HAS_IMPORT,
