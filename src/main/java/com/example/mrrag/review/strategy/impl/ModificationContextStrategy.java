@@ -24,9 +24,6 @@ public class ModificationContextStrategy implements ContextStrategy {
     private final AdditionContextStrategy additionStrategy;
     private final DeletionContextStrategy deletionStrategy;
 
-    @Value("${app.enrichment.maxSnippetsPerGroup:12}")
-    private int maxSnippetsPerGroup;
-
     @Value("${app.enrichment.maxSnippetLines:30}")
     private int maxSnippetLines;
 
@@ -47,16 +44,10 @@ public class ModificationContextStrategy implements ContextStrategy {
 
         collectModifiedMethodBodies(union, sourceGraph, targetGraph, snippets);
 
-        if (snippets.size() < maxSnippetsPerGroup) {
-            additionStrategy.collectContext(union, sourceGraph, targetGraph).stream()
-                    .limit(maxSnippetsPerGroup - snippets.size())
-                    .forEach(snippets::add);
-        }
-        if (snippets.size() < maxSnippetsPerGroup) {
-            deletionStrategy.collectContext(union, sourceGraph, targetGraph).stream()
-                    .limit(maxSnippetsPerGroup - snippets.size())
-                    .forEach(snippets::add);
-        }
+        additionStrategy.collectContext(union, sourceGraph, targetGraph)
+                .forEach(snippets::add);
+        deletionStrategy.collectContext(union, sourceGraph, targetGraph)
+                .forEach(snippets::add);
 
         log.debug("ModificationContextStrategy: union={} snippets={}", union.id(), snippets.size());
         return filterAlreadyInDiff(union, snippets);
@@ -71,7 +62,6 @@ public class ModificationContextStrategy implements ContextStrategy {
         Set<String> seen = new LinkedHashSet<>();
 
         for (GraphNode node : union.graphNodes()) {
-            if (snippets.size() >= maxSnippetsPerGroup) break;
             if (node.kind() != NodeKind.METHOD) continue;
             if (!seen.add(node.id())) continue;
 
