@@ -132,19 +132,14 @@ public class GraphBuilder {
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
                 type.getAnnotations().forEach(ann -> {
                     String annId = ann.getAnnotationType().getQualifiedName();
-                    int[] lines = AstGraphUtils.declarationLines(type, sourceLines);
+                    int[] annLines = AstGraphUtils.lines(ann, sourceLines);
                     graph.nodes.computeIfAbsent(annId, k -> new GraphNode(
                             annId, NodeKind.ANNOTATION,
                             ann.getAnnotationType().getSimpleName(),
                             "", 0, 0, null,
                             "@" + ann.getAnnotationType().getSimpleName(), null));
                     graph.addEdge(new GraphEdge(
-                            id, EdgeKind.ANNOTATED_WITH, annId, file, lines[0], lines[1]));
-                    if (edgeConfig.isEnabled(EdgeKind.ANNOTATES)) {
-                        int[] declarationLines = AstGraphUtils.declarationLines(ann, sourceLines);
-                        graph.addEdge(new GraphEdge(
-                                annId, EdgeKind.ANNOTATES, id, file, declarationLines[0], declarationLines[1]));
-                    };
+                            id, EdgeKind.ANNOTATED_WITH, annId, file, annLines[0], annLines[1]));
                 });
         }));
 
@@ -228,17 +223,13 @@ public class GraphBuilder {
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
                 m.getAnnotations().forEach(ann -> {
                     String annId = ann.getAnnotationType().getQualifiedName();
-                    int[] declarationLines = AstGraphUtils.declarationLines(m, sourceLines);
+                    int[] annLines = AstGraphUtils.lines(ann, sourceLines);
                     graph.nodes.computeIfAbsent(annId, k -> new GraphNode(
                             annId, NodeKind.ANNOTATION,
                             ann.getAnnotationType().getSimpleName(),
                             "", 0, 0, null,
                             "@" + ann.getAnnotationType().getSimpleName(), null));
-                    graph.addEdge(new GraphEdge(id, EdgeKind.ANNOTATED_WITH, annId, file, declarationLines[0], declarationLines[1]));
-                    if (edgeConfig.isEnabled(EdgeKind.ANNOTATES)) {
-                        int[] lines = AstGraphUtils.lines(ann, sourceLines);
-                        graph.addEdge(new GraphEdge(annId, EdgeKind.ANNOTATES, id, file, lines[0], lines[1]));
-                    }
+                    graph.addEdge(new GraphEdge(id, EdgeKind.ANNOTATED_WITH, annId, file, annLines[0], annLines[1]));
                 });
         }));
 
@@ -276,18 +267,14 @@ public class GraphBuilder {
             if (edgeConfig.isEnabled(EdgeKind.ANNOTATED_WITH))
                 field.getAnnotations().forEach(ann -> {
                     String annId = ann.getAnnotationType().getQualifiedName();
+                    int[] annLines = AstGraphUtils.lines(ann, sourceLines);
                     graph.nodes.computeIfAbsent(annId, k -> new GraphNode(
                             annId, NodeKind.ANNOTATION,
                             ann.getAnnotationType().getSimpleName(),
                             "", 0, 0, null,
                             "@" + ann.getAnnotationType().getSimpleName(), null));
                     graph.addEdge(new GraphEdge(
-                            id, EdgeKind.ANNOTATED_WITH, annId, file, ln[0], ln[1]));
-                    if (edgeConfig.isEnabled(EdgeKind.ANNOTATES)) {
-                        int[] lines = AstGraphUtils.declarationLines(ann, sourceLines);
-                        graph.addEdge(new GraphEdge(
-                                annId, EdgeKind.ANNOTATES, id, file, lines[0], lines[1]));
-                    }
+                            id, EdgeKind.ANNOTATED_WITH, annId, file, annLines[0], annLines[1]));
                 });
         }));
 
@@ -301,7 +288,6 @@ public class GraphBuilder {
                     file, ln[0], ln[1],
                     AstGraphUtils.extractSource(sourceLines, file, ln[0], ln[1]),
                     AstGraphUtils.declarationOf(sourceLines, file, v), null));
-            // Add DECLARES edge from owning executable to parameter
             if (edgeConfig.isEnabled(EdgeKind.DECLARES) && v instanceof CtParameter<?>) {
                 CtExecutable<?> owner = v.getParent(CtExecutable.class);
                 if (owner instanceof CtTypeMember tm) {
@@ -455,6 +441,7 @@ public class GraphBuilder {
                         ta.getAccessedType().getQualifiedName(),
                         file, declarationLines[0], declarationLines[1]));
             }));
+
         if (edgeConfig.isEnabled(EdgeKind.HAS_IMPORT)) {
             passes.add(() -> model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
                 var pos = type.getPosition();
