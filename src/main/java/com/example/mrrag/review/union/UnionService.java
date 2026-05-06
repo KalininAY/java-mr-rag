@@ -45,7 +45,7 @@ public class UnionService {
             for (GraphNode node : entries.get(i).getValue()) {
                 // Skip container nodes — they span entire type declarations and
                 // would incorrectly merge unrelated lines inside the same class.
-                if (CONTAINER_KINDS.contains(node.kind()) && entries.get(i).getValue().size() > 1) continue;
+                if (CONTAINER_KINDS.contains(node.kind()) && entries.get(i).getValue().stream().anyMatch(it-> !CONTAINER_KINDS.contains(it.kind()))) continue;
 
                 Integer prev = nodeOwner.putIfAbsent(node.id(), i);
                 if (prev != null) {
