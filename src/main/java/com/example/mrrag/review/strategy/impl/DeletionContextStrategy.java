@@ -2,7 +2,7 @@ package com.example.mrrag.review.strategy.impl;
 
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.GraphEdge;
-import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrgg.graph.model.GraphNode;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
@@ -17,33 +17,27 @@ import java.util.*;
 /**
  * Collects context for DELETE lines in a {@link UnionLine}.
  *
- * <p>For each deleted node finds its callers/readers in {@code targetGraph}
- * and emits one {@link EnrichmentSnippet} per unique caller with
- * {@link EnrichmentSnippet.LineContext#DELETE}.
+ * <p>Strategy passes:
+ * <ul>
+ *   <li><b>Pass 0</b>: For CLASS/INTERFACE/ANNOTATION nodes that are themselves in the union
+ *       (container-only deletion), emits a {@link EnrichmentSnippet.SnippetType#CLASS_BODY}
+ *       snippet with the full class body from {@code targetGraph}.</li>
+ *   <li><b>Pass 1</b>: Adds a {@link EnrichmentSnippet.SnippetType#CLASS_DECLARATION} snippet
+ *       for the declaring class of each deleted method/field node.</li>
+ *   <li><b>Pass 2</b>: For each deleted node finds its callers/readers in {@code targetGraph}
+ *       and emits caller-window snippets.</li>
+ *   <li><b>Pass 3</b>: For ANNOTATION nodes follows incoming ANNOTATED_WITH edges to surface
+ *       elements that the annotation decorated before deletion.</li>
+ * </ul>
  *
- * <p>Also adds a {@link EnrichmentSnippet.SnippetType#CLASS_DECLARATION} snippet
- * for the declaring class of each deleted method/field node so the LLM understands
- * the class context of the deletion.
- *
- * <p>For ANNOTATION nodes follows incoming ANNOTATED_WITH edges in {@code targetGraph}
- * to surface the method/field/class that the annotation decorated before deletion.
- *
- * <p>Snippet budget is applied <em>per GraphNode</em> (see {@code maxSnippetsPerNode}):
- * each node in the union independently collects up to that many snippets so that
- * all deleted nodes get context regardless of how large the union is.
- *
- * <p>For {@code METHOD_CALLERS} / {@code FIELD_USAGES} snippets only the
- * call-site window (±{@code app.enrichment.callerWindowLines} lines) is
- * included — not the entire caller method body.
+ * <p>Snippet budget is applied <em>per GraphNode</em> (see {@code maxSnippetsPerNode}).
+ * For {@code METHOD_CALLERS}/{@code FIELD_USAGES} snippets only the call-site window
+ * (±{@code app.enrichment.callerWindowLines} lines) is included.
  */
 @Slf4j
 @Component
 public class DeletionContextStrategy implements ContextStrategy {
 
-    /**
-     * Maximum number of enrichment snippets collected per GraphNode.
-     * Each node in the union independently counts toward this limit.
-     */
     @Value("${app.enrichment.maxSnippetsPerNode:3}")
     private int maxSnippetsPerNode;
 
@@ -62,8 +56,28 @@ public class DeletionContextStrategy implements ContextStrategy {
         List<EnrichmentSnippet> snippets = new ArrayList<>();
         Set<String> seenCaller = new HashSet<>();
         Set<String> seenClass = new HashSet<>();
-        // per-node snippet counter: nodeId -> count emitted for that node
         Map<String, Integer> snippetsPerNode = new HashMap<>();
+
+        // Pass 0: CLASS/INTERFACE/ANNOTATION nodes that are themselves in the union—emit full body
+        for (GraphNode node : union.graphNodes()) {
+            if (node.kind() != NodeKind.CLASS && node.kind() != NodeKind.INTERFACE
+                    && node.kind() != NodeKind.ANNOTATION) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
+            if (!hasDel) continue;
+
+            GraphNode resolved = targetGraph.nodes.get(node.id());
+            if (resolved == null) continue;
+            if (!seenClass.add("BODY:" + resolved.id())) continue;
+
+            snippets.add(EnrichmentSnippet.ofBody(
+                    EnrichmentSnippet.SnippetType.CLASS_BODY, resolved,
+                    "Full body of deleted " + resolved.kind().name().toLowerCase()
+                            + " '" + resolved.simpleName() + "'",
+                    EnrichmentSnippet.LineContext.DELETE));
+            snippetsPerNode.merge(node.id(), 1, Integer::sum);
+        }
 
         // Pass 1: declaring classes for deleted method/field/constructor nodes
         for (GraphNode node : union.graphNodes()) {

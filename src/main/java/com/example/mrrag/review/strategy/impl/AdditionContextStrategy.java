@@ -23,16 +23,17 @@ import java.util.stream.Collectors;
  * each node in the union independently collects up to that many snippets so that
  * all changed nodes get context regardless of how large the union is.
  *
- * <p>In addition to outgoing INVOKES/READS_FIELD/WRITES_FIELD edges, this strategy also:
+ * <p>Strategy passes:
  * <ul>
- *   <li>Adds a {@link EnrichmentSnippet.SnippetType#CLASS_DECLARATION} snippet for the
- *       declaring class of every method/field node in the union (via incoming DECLARES edges).</li>
- *   <li>Follows outgoing EXTENDS edges to surface parent class declarations.</li>
- *   <li>Follows outgoing IMPLEMENTS edges to surface implemented interface declarations.</li>
- *   <li>Follows outgoing INSTANTIATES / INSTANTIATES_ANONYMOUS edges to surface constructor
- *       declarations.</li>
- *   <li>For ANNOTATION nodes follows incoming ANNOTATED_WITH edges to surface the
- *       method/field/class that the annotation decorates.</li>
+ *   <li><b>Pass 0</b>: For CLASS/INTERFACE/ANNOTATION nodes that are themselves in the union
+ *       (container-only change), emits a {@link EnrichmentSnippet.SnippetType#CLASS_BODY}
+ *       snippet with the full class body.</li>
+ *   <li><b>Pass 1</b>: Adds a {@link EnrichmentSnippet.SnippetType#CLASS_DECLARATION} snippet
+ *       for the declaring class of every method/field node in the union (via DECLARES edges).</li>
+ *   <li><b>Pass 2</b>: Follows outgoing INVOKES/READS_FIELD/WRITES_FIELD/EXTENDS/IMPLEMENTS/
+ *       INSTANTIATES edges to surface declarations used by added code.</li>
+ *   <li><b>Pass 3</b>: For ANNOTATION nodes follows incoming ANNOTATED_WITH edges to surface
+ *       the method/field/class that the annotation decorates.</li>
  * </ul>
  */
 @Slf4j
@@ -57,6 +58,27 @@ public class AdditionContextStrategy implements ContextStrategy {
         Set<String> seenDecl = new HashSet<>();
         // per-node snippet counter: nodeId -> count emitted for that node
         Map<String, Integer> snippetsPerNode = new HashMap<>();
+
+        // Pass 0: CLASS/INTERFACE/ANNOTATION nodes that are themselves in the union—emit full body
+        for (GraphNode node : union.graphNodes()) {
+            if (node.kind() != NodeKind.CLASS && node.kind() != NodeKind.INTERFACE
+                    && node.kind() != NodeKind.ANNOTATION) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
+            if (!hasAdd) continue;
+
+            GraphNode resolved = sourceGraph.nodes.get(node.id());
+            if (resolved == null) continue;
+            if (!seenDecl.add("BODY:" + resolved.id())) continue;
+
+            snippets.add(EnrichmentSnippet.ofBody(
+                    EnrichmentSnippet.SnippetType.CLASS_BODY, resolved,
+                    "Full body of added " + resolved.kind().name().toLowerCase()
+                            + " '" + resolved.simpleName() + "'",
+                    EnrichmentSnippet.LineContext.ADD));
+            snippetsPerNode.merge(node.id(), 1, Integer::sum);
+        }
 
         // Pass 1: declaring classes for every method/field/constructor node in the union
         for (GraphNode node : union.graphNodes()) {

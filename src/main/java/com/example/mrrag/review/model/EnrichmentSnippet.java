@@ -63,6 +63,23 @@ public record EnrichmentSnippet(
         return ofDeclaration(type, node, explanation, LineContext.ADD);
     }
 
+    /**
+     * Full-body factory — uses {@code node.sourceSnippet()} with explicit {@link LineContext}.
+     */
+    public static EnrichmentSnippet ofBody(SnippetType type, GraphNode node,
+                                            String explanation, LineContext lineContext) {
+        return new EnrichmentSnippet(
+                type,
+                node.filePath(),
+                node.startLine(),
+                node.endLine(),
+                node.simpleName(),
+                node.sourceSnippet(),
+                explanation,
+                lineContext
+        );
+    }
+
     public enum SnippetType {
         /** Full declaration of a method (signature + javadoc) */
         METHOD_DECLARATION,
@@ -74,13 +91,15 @@ public record EnrichmentSnippet(
         FIELD_DECLARATION,
         /** All access sites of a field (reads + writes) */
         FIELD_USAGES,
-        /** Declaration line of a local variable */
+        /** Declaration of a local variable */
         VARIABLE_DECLARATION,
         /** All usages of a local variable */
         VARIABLE_USAGES,
         /** Callee parameter names when arguments were changed */
         ARGUMENT_CONTEXT,
         /** Declaration of a class/interface (header + fields, without method bodies) */
-        CLASS_DECLARATION
+        CLASS_DECLARATION,
+        /** Full body of a class/interface/annotation (all members included) */
+        CLASS_BODY
     }
 }
