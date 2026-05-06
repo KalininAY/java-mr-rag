@@ -28,6 +28,8 @@ import java.util.*;
  *       and emits caller-window snippets.</li>
  *   <li><b>Pass 3</b>: For ANNOTATION nodes follows incoming ANNOTATED_WITH edges to surface
  *       elements that the annotation decorated before deletion.</li>
+ *   <li><b>Pass 4</b>: For METHOD nodes surfaces sibling overloads (same simpleName, different id)
+ *       and the interface/abstract method overridden via OVERRIDES edge.</li>
  * </ul>
  *
  * <p>Snippet budget is applied <em>per GraphNode</em> (see {@code maxSnippetsPerNode}).
@@ -183,6 +185,60 @@ public class DeletionContextStrategy implements ContextStrategy {
                         snippets.add(EnrichmentSnippet.ofDeclaration(
                                 type, owner,
                                 "Element annotated with '@" + node.simpleName() + "'",
+                                EnrichmentSnippet.LineContext.DELETE));
+                        snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                    });
+        }
+
+        // Pass 4: for METHOD nodes — sibling overloads and overridden interface/abstract method
+        for (GraphNode node : union.graphNodes()) {
+            if (node.kind() != NodeKind.METHOD) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
+            if (!hasDel) continue;
+
+            GraphNode targetNode = targetGraph.nodes.get(node.id());
+            if (targetNode == null) continue;
+
+            // 4a: sibling overloads — same simpleName, different id, declared in same class
+            targetGraph.incoming(targetNode.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.DECLARES)
+                    .map(e -> targetGraph.nodes.get(e.caller()))
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .ifPresent(declaringClass -> {
+                        targetGraph.outgoing(declaringClass.id()).stream()
+                                .filter(e -> e.kind() == EdgeKind.DECLARES)
+                                .map(e -> targetGraph.nodes.get(e.callee()))
+                                .filter(Objects::nonNull)
+                                .filter(sibling -> sibling.kind() == NodeKind.METHOD)
+                                .filter(sibling -> !sibling.id().equals(targetNode.id()))
+                                .filter(sibling -> sibling.simpleName().equals(targetNode.simpleName()))
+                                .filter(sibling -> seenClass.add("OVERLOAD:" + sibling.id()))
+                                .forEach(sibling -> {
+                                    if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) return;
+                                    snippets.add(EnrichmentSnippet.ofDeclaration(
+                                            EnrichmentSnippet.SnippetType.METHOD_DECLARATION, sibling,
+                                            "Sibling overload of '" + targetNode.simpleName() + "'",
+                                            EnrichmentSnippet.LineContext.DELETE));
+                                    snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                                });
+                    });
+
+            if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) continue;
+
+            // 4b: interface/abstract method overridden by this method
+            targetGraph.outgoing(targetNode.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.OVERRIDES)
+                    .map(e -> targetGraph.nodes.get(e.callee()))
+                    .filter(Objects::nonNull)
+                    .filter(iface -> seenClass.add("OVERRIDES:" + iface.id()))
+                    .findFirst()
+                    .ifPresent(iface -> {
+                        snippets.add(EnrichmentSnippet.ofDeclaration(
+                                EnrichmentSnippet.SnippetType.METHOD_DECLARATION, iface,
+                                "Interface/abstract method overridden by '" + targetNode.simpleName() + "'",
                                 EnrichmentSnippet.LineContext.DELETE));
                         snippetsPerNode.merge(node.id(), 1, Integer::sum);
                     });

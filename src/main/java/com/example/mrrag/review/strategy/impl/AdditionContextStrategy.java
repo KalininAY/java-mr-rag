@@ -34,6 +34,8 @@ import java.util.stream.Collectors;
  *       INSTANTIATES edges to surface declarations used by added code.</li>
  *   <li><b>Pass 3</b>: For ANNOTATION nodes follows incoming ANNOTATED_WITH edges to surface
  *       the method/field/class that the annotation decorates.</li>
+ *   <li><b>Pass 4</b>: For METHOD nodes surfaces sibling overloads (same simpleName, different id)
+ *       and the interface/abstract method overridden via OVERRIDES edge.</li>
  * </ul>
  */
 @Slf4j
@@ -200,6 +202,57 @@ public class AdditionContextStrategy implements ContextStrategy {
                         snippets.add(EnrichmentSnippet.ofDeclaration(
                                 type, owner,
                                 "Element annotated with '@" + node.simpleName() + "'",
+                                EnrichmentSnippet.LineContext.ADD));
+                        snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                    });
+        }
+
+        // Pass 4: for METHOD nodes — sibling overloads and overridden interface/abstract method
+        for (GraphNode node : union.graphNodes()) {
+            if (node.kind() != NodeKind.METHOD) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
+            if (!hasAdd) continue;
+
+            // 4a: sibling overloads — same simpleName, different id, declared in same class
+            sourceGraph.incoming(node.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.DECLARES)
+                    .map(e -> sourceGraph.nodes.get(e.caller()))
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .ifPresent(declaringClass -> {
+                        sourceGraph.outgoing(declaringClass.id()).stream()
+                                .filter(e -> e.kind() == EdgeKind.DECLARES)
+                                .map(e -> sourceGraph.nodes.get(e.callee()))
+                                .filter(Objects::nonNull)
+                                .filter(sibling -> sibling.kind() == NodeKind.METHOD)
+                                .filter(sibling -> !sibling.id().equals(node.id()))
+                                .filter(sibling -> sibling.simpleName().equals(node.simpleName()))
+                                .filter(sibling -> seenDecl.add("OVERLOAD:" + sibling.id()))
+                                .forEach(sibling -> {
+                                    if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) return;
+                                    snippets.add(EnrichmentSnippet.ofDeclaration(
+                                            EnrichmentSnippet.SnippetType.METHOD_DECLARATION, sibling,
+                                            "Sibling overload of '" + node.simpleName() + "'",
+                                            EnrichmentSnippet.LineContext.ADD));
+                                    snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                                });
+                    });
+
+            if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) continue;
+
+            // 4b: interface/abstract method overridden by this method
+            sourceGraph.outgoing(node.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.OVERRIDES)
+                    .map(e -> sourceGraph.nodes.get(e.callee()))
+                    .filter(Objects::nonNull)
+                    .filter(iface -> seenDecl.add("OVERRIDES:" + iface.id()))
+                    .findFirst()
+                    .ifPresent(iface -> {
+                        snippets.add(EnrichmentSnippet.ofDeclaration(
+                                EnrichmentSnippet.SnippetType.METHOD_DECLARATION, iface,
+                                "Interface/abstract method overridden by '" + node.simpleName() + "'",
                                 EnrichmentSnippet.LineContext.ADD));
                         snippetsPerNode.merge(node.id(), 1, Integer::sum);
                     });
