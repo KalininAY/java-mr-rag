@@ -31,6 +31,8 @@ import java.util.stream.Collectors;
  *   <li>Follows outgoing IMPLEMENTS edges to surface implemented interface declarations.</li>
  *   <li>Follows outgoing INSTANTIATES / INSTANTIATES_ANONYMOUS edges to surface constructor
  *       declarations.</li>
+ *   <li>For ANNOTATION nodes follows incoming ANNOTATED_WITH edges to surface the
+ *       method/field/class that the annotation decorates.</li>
  * </ul>
  */
 @Slf4j
@@ -150,6 +152,35 @@ public class AdditionContextStrategy implements ContextStrategy {
                     snippetsPerNode.merge(node.id(), 1, Integer::sum);
                 }
             }
+        }
+
+        // Pass 3: for ANNOTATION nodes — find elements annotated with this annotation
+        for (GraphNode node : union.graphNodes()) {
+            if (node.kind() != NodeKind.ANNOTATION) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
+            if (!hasAdd) continue;
+
+            sourceGraph.incoming(node.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.ANNOTATED_WITH)
+                    .map(e -> sourceGraph.nodes.get(e.caller()))
+                    .filter(Objects::nonNull)
+                    .filter(owner -> seenDecl.add("ANNOTATED:" + owner.id()))
+                    .limit(maxSnippetsPerNode)
+                    .forEach(owner -> {
+                        if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) return;
+                        EnrichmentSnippet.SnippetType type = switch (owner.kind()) {
+                            case CLASS, INTERFACE -> EnrichmentSnippet.SnippetType.CLASS_DECLARATION;
+                            case FIELD -> EnrichmentSnippet.SnippetType.FIELD_DECLARATION;
+                            default -> EnrichmentSnippet.SnippetType.METHOD_DECLARATION;
+                        };
+                        snippets.add(EnrichmentSnippet.ofDeclaration(
+                                type, owner,
+                                "Element annotated with '@" + node.simpleName() + "'",
+                                EnrichmentSnippet.LineContext.ADD));
+                        snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                    });
         }
 
         log.debug("AdditionContextStrategy: union={} nodes={} snippets={}",

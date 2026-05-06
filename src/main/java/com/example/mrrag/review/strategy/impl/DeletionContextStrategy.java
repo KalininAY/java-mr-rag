@@ -25,6 +25,9 @@ import java.util.*;
  * for the declaring class of each deleted method/field node so the LLM understands
  * the class context of the deletion.
  *
+ * <p>For ANNOTATION nodes follows incoming ANNOTATED_WITH edges in {@code targetGraph}
+ * to surface the method/field/class that the annotation decorated before deletion.
+ *
  * <p>Snippet budget is applied <em>per GraphNode</em> (see {@code maxSnippetsPerNode}):
  * each node in the union independently collects up to that many snippets so that
  * all deleted nodes get context regardless of how large the union is.
@@ -137,6 +140,38 @@ public class DeletionContextStrategy implements ContextStrategy {
                 snippetsPerNode.merge(node.id(), 1, Integer::sum);
                 callerCount++;
             }
+        }
+
+        // Pass 3: for ANNOTATION nodes — find elements that were annotated with this annotation
+        for (GraphNode node : union.graphNodes()) {
+            if (node.kind() != NodeKind.ANNOTATION) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
+            if (!hasDel) continue;
+
+            GraphNode targetNode = targetGraph.nodes.get(node.id());
+            if (targetNode == null) continue;
+
+            targetGraph.incoming(targetNode.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.ANNOTATED_WITH)
+                    .map(e -> targetGraph.nodes.get(e.caller()))
+                    .filter(Objects::nonNull)
+                    .filter(owner -> seenClass.add("ANNOTATED:" + owner.id()))
+                    .limit(maxSnippetsPerNode)
+                    .forEach(owner -> {
+                        if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) return;
+                        EnrichmentSnippet.SnippetType type = switch (owner.kind()) {
+                            case CLASS, INTERFACE -> EnrichmentSnippet.SnippetType.CLASS_DECLARATION;
+                            case FIELD -> EnrichmentSnippet.SnippetType.FIELD_DECLARATION;
+                            default -> EnrichmentSnippet.SnippetType.METHOD_DECLARATION;
+                        };
+                        snippets.add(EnrichmentSnippet.ofDeclaration(
+                                type, owner,
+                                "Element annotated with '@" + node.simpleName() + "'",
+                                EnrichmentSnippet.LineContext.DELETE));
+                        snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                    });
         }
 
         log.debug("DeletionContextStrategy: union={} nodes={} snippets={}",
