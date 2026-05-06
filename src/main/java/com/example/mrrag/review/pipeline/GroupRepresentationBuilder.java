@@ -4,7 +4,6 @@ import com.example.mrrag.graph.markdown.MarkdownRenderUtils;
 import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -20,15 +19,11 @@ import java.util.stream.Collectors;
  *   <li><b>Enclosing context</b> section — METHOD_BODY snippets.</li>
  *   <li><b>Context snippets</b> section — all other enrichment snippets,
  *       each labelled with {@code [ADD]} or {@code [DELETE]} from
- *       {@link EnrichmentSnippet#lineContext()}.
- *       All snippets are capped at {@code app.enrichment.maxSnippetLines} lines (default 20).</li>
+ *       {@link EnrichmentSnippet#lineContext()}.</li>
  * </ol>
  */
 @Component
 public class GroupRepresentationBuilder {
-
-    @Value("${app.enrichment.maxSnippetLines:20}")
-    private int maxSnippetLines;
 
     public GroupRepresentation build(
             UnionLine union,
@@ -156,31 +151,20 @@ public class GroupRepresentationBuilder {
     }
 
     /**
-     * Renders a fenced code block for the snippet, capping at {@link #maxSnippetLines} lines.
-     * If the snippet was truncated, appends a {@code // ... N more lines} comment.
+     * Renders a full fenced code block for the snippet without any line limit.
      *
-     * @param indent prefix for each line (e.g. {@code "  "} for list items, {@code ""} for top-level)
+     * @param indent prefix for each line (e.g. {@code "  "} for list items)
      */
     private void renderSnippetBlock(StringBuilder sb, EnrichmentSnippet s, String indent) {
         String src = s.sourceSnippet();
         if (src == null || src.isBlank()) return;
 
-        String[] allLines = src.split("\n", -1);
-        boolean truncated = allLines.length > maxSnippetLines;
-        String[] visibleLines = truncated
-                ? Arrays.copyOf(allLines, maxSnippetLines)
-                : allLines;
-
-        int endLine = s.startLine() + visibleLines.length - 1;
+        String[] lines = src.split("\n", -1);
+        int endLine = s.startLine() + lines.length - 1;
 
         sb.append(indent).append("```\n");
-        for (String line : MarkdownRenderUtils.numberedSnippetLines(
-                visibleLines, s.startLine(), endLine, true)) {
+        for (String line : MarkdownRenderUtils.numberedSnippetLines(lines, s.startLine(), endLine, true)) {
             sb.append(indent).append(line).append('\n');
-        }
-        if (truncated) {
-            sb.append(indent).append("// ... ").append(allLines.length - maxSnippetLines)
-                    .append(" more line(s)\n");
         }
         sb.append(indent).append("```\n");
     }
