@@ -18,10 +18,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
 
-import jakarta.ws.rs.core.Response;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -48,6 +51,7 @@ public class GitLabGateway implements CodeRepositoryGateway {
     private String workspaceDir;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final HttpClient HTTP = HttpClient.newHttpClient();
 
     private final ConcurrentMap<String, Git> openHandles = new ConcurrentHashMap<>();
 
@@ -128,47 +132,65 @@ public class GitLabGateway implements CodeRepositoryGateway {
 
     /**
      * Получает diffs MR.
-     * gitlab4j-api 6.x не имеет перегрузки getMergeRequestChanges с access_raw_diffs,
-     * поэтому параметр передаётся через прямой HTTP GET.
-     * access_raw_diffs=true заставляет GitLab читать diff напрямую из Git,
+     * Параметр access_raw_diffs=true заставляет GitLab читать diff напрямую из Git,
      * минуя кэш, который обрезает большие файлы.
+     * Используем java.net.http.HttpClient, так как gitlab4j не предоставляет
+     * публичного доступа к своему HTTP-клиенту.
      */
     @Override
     public List<Diff> getMrDiffs(String namespace, String repo,
                                  long mrIid, String token) {
 
         MergeRequest mr = getMergeRequest(namespace, repo, mrIid, token);
+        String effectiveToken = (token != null) ? token : defaultToken;
 
-        List<Diff> changes = gitLabApi(token, api -> {
-            try {
-                String projectPath = encode(namespace + "/" + repo);
-                Response response = api.getGitLabHttpClient()
-                        .get(api, "/projects/" + projectPath + "/merge_requests/" + mrIid
-                                + "/changes?access_raw_diffs=true");
-                String body = response.readEntity(String.class);
-                Map<String, Object> map = MAPPER.readValue(body, new TypeReference<>() {});
-                Object changesNode = map.get("changes");
-                String changesJson = MAPPER.writeValueAsString(changesNode);
-                return MAPPER.readValue(changesJson, new TypeReference<List<Diff>>() {});
-            } catch (Exception e) {
-                log.warn("access_raw_diffs request failed, falling back to standard API: {}", e.getMessage());
-                try {
-                    return api.getMergeRequestApi()
-                            .getMergeRequestChanges(namespace + "/" + repo, mrIid)
-                            .getChanges();
-                } catch (GitLabApiException ex) {
-                    throw new CodeRepositoryException(
-                            "Failed to get diffs for MR '%d' in '%s/%s'"
-                                    .formatted(mrIid, namespace, repo), ex);
-                }
-            }
-        });
+        List<Diff> changes = fetchChangesWithRawDiffs(namespace, repo, mrIid, effectiveToken);
 
         List<Diff> result = new ArrayList<>(changes.size());
         for (Diff diff : changes) {
             result.add(enrichEmptyDiff(diff, namespace, repo, mr.getSourceBranch(), mr.getTargetBranch(), token));
         }
         return result;
+    }
+
+    /**
+     * Запрашивает /changes?access_raw_diffs=true через java.net.http.HttpClient.
+     * При ошибке — fallback на стандартный API.
+     */
+    private List<Diff> fetchChangesWithRawDiffs(String namespace, String repo,
+                                                long mrIid, String token) {
+        String projectPath = encode(namespace + "/" + repo);
+        String url = defaultUrl + "/api/v4/projects/" + projectPath
+                + "/merge_requests/" + mrIid + "/changes?access_raw_diffs=true";
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("PRIVATE-TOKEN", token)
+                    .GET()
+                    .build();
+            HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                log.warn("access_raw_diffs returned HTTP {}, falling back", response.statusCode());
+                return fallbackChanges(namespace, repo, mrIid);
+            }
+            Map<String, Object> map = MAPPER.readValue(response.body(), new TypeReference<>() {});
+            String changesJson = MAPPER.writeValueAsString(map.get("changes"));
+            return MAPPER.readValue(changesJson, new TypeReference<List<Diff>>() {});
+        } catch (Exception e) {
+            log.warn("access_raw_diffs request failed ({}), falling back to standard API", e.getMessage());
+            return fallbackChanges(namespace, repo, mrIid);
+        }
+    }
+
+    private List<Diff> fallbackChanges(String namespace, String repo, long mrIid) {
+        try {
+            MergeRequest mr = gitLabApi.getMergeRequestApi()
+                    .getMergeRequestChanges(namespace + "/" + repo, mrIid);
+            return mr.getChanges();
+        } catch (GitLabApiException e) {
+            throw new CodeRepositoryException(
+                    "Failed to get diffs for MR '%d' in '%s/%s'".formatted(mrIid, namespace, repo), e);
+        }
     }
 
     /**
