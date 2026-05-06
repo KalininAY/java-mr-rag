@@ -33,7 +33,8 @@ import java.util.stream.Collectors;
  *   <li><b>Pass 2</b>: Follows outgoing INVOKES/READS_FIELD/WRITES_FIELD/EXTENDS/IMPLEMENTS/
  *       INSTANTIATES edges to surface declarations used by added code.</li>
  *   <li><b>Pass 3</b>: For ANNOTATION nodes follows incoming ANNOTATED_WITH edges to surface
- *       the method/field/class that the annotation decorates.</li>
+ *       the method/field/class that the annotation decorates on the exact changed line
+ *       (matched by edge.startLine and caller.filePath).</li>
  *   <li><b>Pass 4</b>: For METHOD nodes surfaces sibling overloads (same simpleName, different id)
  *       and the interface/abstract method overridden via OVERRIDES edge.</li>
  * </ul>
@@ -178,7 +179,10 @@ public class AdditionContextStrategy implements ContextStrategy {
             }
         }
 
-        // Pass 3: for ANNOTATION nodes — find elements annotated with this annotation
+        // Pass 3: for ANNOTATION nodes — find the specific element annotated on the changed line.
+        // We match ANNOTATED_WITH edges by edge.startLine() == changed line number AND
+        // caller.filePath() == changed line filePath to avoid surfacing all usages of
+        // a widely-used annotation (e.g. @Execution, @Test) across the file.
         for (GraphNode node : union.graphNodes()) {
             if (node.kind() != NodeKind.ANNOTATION) continue;
 
@@ -186,8 +190,21 @@ public class AdditionContextStrategy implements ContextStrategy {
             boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
             if (!hasAdd) continue;
 
+            // Collect (filePath, lineNumber) pairs for ADD origins of this annotation node
+            Set<String> addLineKeys = origins.stream()
+                    .filter(l -> l.type() == ChangedLine.LineType.ADD)
+                    .map(l -> l.filePath() + ":" + (l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber()))
+                    .collect(Collectors.toSet());
+
             sourceGraph.incoming(node.id()).stream()
                     .filter(e -> e.kind() == EdgeKind.ANNOTATED_WITH)
+                    .filter(e -> {
+                        GraphNode caller = sourceGraph.nodes.get(e.caller());
+                        if (caller == null) return false;
+                        // edge.startLine() is the line where @Annotation appears on the caller
+                        String key = caller.filePath() + ":" + e.startLine();
+                        return addLineKeys.contains(key);
+                    })
                     .map(e -> sourceGraph.nodes.get(e.caller()))
                     .filter(Objects::nonNull)
                     .filter(owner -> seenDecl.add("ANNOTATED:" + owner.id()))

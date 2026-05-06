@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Collects context for DELETE lines in a {@link UnionLine}.
@@ -27,10 +28,10 @@ import java.util.*;
  *   <li><b>Pass 2</b>: For each deleted METHOD/FIELD/CONSTRUCTOR node finds its callers/readers
  *       in {@code targetGraph} and emits caller-window snippets.
  *       CLASS/INTERFACE/ANNOTATION nodes are intentionally skipped — their incoming edges
- *       represent structural containment (REFERENCES_TYPE, INSTANTIATES from own members)
- *       rather than meaningful external callers.</li>
+ *       represent structural containment rather than meaningful external callers.</li>
  *   <li><b>Pass 3</b>: For ANNOTATION nodes follows incoming ANNOTATED_WITH edges to surface
- *       elements that the annotation decorated before deletion.</li>
+ *       the element annotated on the exact changed line
+ *       (matched by edge.startLine and caller.filePath).</li>
  *   <li><b>Pass 4</b>: For METHOD nodes surfaces sibling overloads (same simpleName, different id)
  *       and the interface/abstract method overridden via OVERRIDES edge.</li>
  * </ul>
@@ -167,7 +168,10 @@ public class DeletionContextStrategy implements ContextStrategy {
             }
         }
 
-        // Pass 3: for ANNOTATION nodes — find elements that were annotated with this annotation
+        // Pass 3: for ANNOTATION nodes — find the specific element annotated on the changed line.
+        // We match ANNOTATED_WITH edges by edge.startLine() == changed line number AND
+        // caller.filePath() == changed line filePath to avoid surfacing all usages of
+        // a widely-used annotation (e.g. @Execution, @Test) across the file.
         for (GraphNode node : union.graphNodes()) {
             if (node.kind() != NodeKind.ANNOTATION) continue;
 
@@ -178,8 +182,20 @@ public class DeletionContextStrategy implements ContextStrategy {
             GraphNode targetNode = targetGraph.nodes.get(node.id());
             if (targetNode == null) continue;
 
+            // Collect (filePath, lineNumber) pairs for DELETE origins of this annotation node
+            Set<String> delLineKeys = origins.stream()
+                    .filter(l -> l.type() == ChangedLine.LineType.DELETE)
+                    .map(l -> l.filePath() + ":" + (l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber()))
+                    .collect(Collectors.toSet());
+
             targetGraph.incoming(targetNode.id()).stream()
                     .filter(e -> e.kind() == EdgeKind.ANNOTATED_WITH)
+                    .filter(e -> {
+                        GraphNode caller = targetGraph.nodes.get(e.caller());
+                        if (caller == null) return false;
+                        String key = caller.filePath() + ":" + e.startLine();
+                        return delLineKeys.contains(key);
+                    })
                     .map(e -> targetGraph.nodes.get(e.caller()))
                     .filter(Objects::nonNull)
                     .filter(owner -> seenClass.add("ANNOTATED:" + owner.id()))
