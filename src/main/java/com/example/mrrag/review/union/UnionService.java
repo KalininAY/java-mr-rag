@@ -43,9 +43,7 @@ public class UnionService {
 
         for (int i = 0; i < n; i++) {
             for (GraphNode node : entries.get(i).getValue()) {
-                // Skip container nodes — they span entire type declarations and
-                // would incorrectly merge unrelated lines inside the same class.
-                if (CONTAINER_KINDS.contains(node.kind()) && entries.get(i).getValue().stream().anyMatch(it-> !CONTAINER_KINDS.contains(it.kind()))) continue;
+                if (CONTAINER_KINDS.contains(node.kind()) && entries.get(i).getValue().stream().anyMatch(it -> !CONTAINER_KINDS.contains(it.kind()))) continue;
 
                 Integer prev = nodeOwner.putIfAbsent(node.id(), i);
                 if (prev != null) {
@@ -76,12 +74,6 @@ public class UnionService {
         Set<GraphNode> graphNodes = new LinkedHashSet<>();
         Map<GraphNode, List<ChangedLine>> nodeOrigins = new LinkedHashMap<>();
 
-        String mergedId = indices.stream()
-                .map(i -> entries.get(i).getKey().filePath()
-                        + ":" + entries.get(i).getKey().lineNumber())
-                .sorted()
-                .collect(Collectors.joining("|"));
-
         for (int i : indices) {
             ChangedLine cl = entries.get(i).getKey();
             changedLines.add(cl);
@@ -91,6 +83,43 @@ public class UnionService {
             }
         }
 
-        return new UnionLine(mergedId, changedLines, graphNodes, nodeOrigins);
+        String id = buildId(changedLines);
+        return new UnionLine(id, changedLines, graphNodes, nodeOrigins);
+    }
+
+    /**
+     * Builds a short human-readable id for a union group.
+     *
+     * <p>Format: {@code fileName:from} or {@code fileName:from-to} where
+     * {@code from}/{@code to} are the min/max effective line numbers across
+     * all changed lines in the group. The effective line number is
+     * {@code lineNumber} when positive (ADD/CONTEXT), otherwise
+     * {@code oldLineNumber} (DELETE).
+     *
+     * <p>Example: {@code UserService.java:54-55}, {@code Bar.java:120}
+     */
+    static String buildId(Collection<ChangedLine> lines) {
+        // group by file name (last path segment)
+        Map<String, IntSummaryStatistics> statsByFile = new LinkedHashMap<>();
+        for (ChangedLine cl : lines) {
+            String fileName = fileName(cl.filePath());
+            int effective = cl.lineNumber() > 0 ? cl.lineNumber() : cl.oldLineNumber();
+            statsByFile.computeIfAbsent(fileName, k -> new IntSummaryStatistics());
+            statsByFile.get(fileName).accept(effective);
+        }
+
+        return statsByFile.entrySet().stream()
+                .map(e -> {
+                    String file = e.getKey();
+                    int min = (int) e.getValue().getMin();
+                    int max = (int) e.getValue().getMax();
+                    return min == max ? file + ":" + min : file + ":" + min + "-" + max;
+                })
+                .collect(Collectors.joining("|"));
+    }
+
+    private static String fileName(String filePath) {
+        int slash = filePath.lastIndexOf('/');
+        return slash >= 0 ? filePath.substring(slash + 1) : filePath;
     }
 }
