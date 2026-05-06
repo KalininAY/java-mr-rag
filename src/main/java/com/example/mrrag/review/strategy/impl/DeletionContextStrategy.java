@@ -2,7 +2,7 @@ package com.example.mrrag.review.strategy.impl;
 
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.GraphEdge;
-import com.example.mrgg.graph.model.GraphNode;
+import com.example.mrrag.graph.model.GraphNode;
 import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
