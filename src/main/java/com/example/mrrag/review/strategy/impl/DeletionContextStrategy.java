@@ -24,8 +24,11 @@ import java.util.*;
  *       snippet with the full class body from {@code targetGraph}.</li>
  *   <li><b>Pass 1</b>: Adds a {@link EnrichmentSnippet.SnippetType#CLASS_DECLARATION} snippet
  *       for the declaring class of each deleted method/field node.</li>
- *   <li><b>Pass 2</b>: For each deleted node finds its callers/readers in {@code targetGraph}
- *       and emits caller-window snippets.</li>
+ *   <li><b>Pass 2</b>: For each deleted METHOD/FIELD/CONSTRUCTOR node finds its callers/readers
+ *       in {@code targetGraph} and emits caller-window snippets.
+ *       CLASS/INTERFACE/ANNOTATION nodes are intentionally skipped — their incoming edges
+ *       represent structural containment (REFERENCES_TYPE, INSTANTIATES from own members)
+ *       rather than meaningful external callers.</li>
  *   <li><b>Pass 3</b>: For ANNOTATION nodes follows incoming ANNOTATED_WITH edges to surface
  *       elements that the annotation decorated before deletion.</li>
  *   <li><b>Pass 4</b>: For METHOD nodes surfaces sibling overloads (same simpleName, different id)
@@ -113,8 +116,14 @@ public class DeletionContextStrategy implements ContextStrategy {
                     });
         }
 
-        // Pass 2: callers/readers of deleted nodes
+        // Pass 2: callers/readers of deleted METHOD/FIELD/CONSTRUCTOR nodes.
+        // CLASS/INTERFACE/ANNOTATION nodes are skipped — their incoming edges
+        // are structural (REFERENCES_TYPE, INSTANTIATES from own members) and
+        // do not represent meaningful external callers.
         for (GraphNode node : union.graphNodes()) {
+            if (node.kind() == NodeKind.CLASS || node.kind() == NodeKind.INTERFACE
+                    || node.kind() == NodeKind.ANNOTATION) continue;
+
             List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
             boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
             if (!hasDel) continue;
