@@ -121,9 +121,10 @@ public class GitLabGateway implements CodeRepositoryGateway {
     }
 
     /**
-     * Получает diffs MR. Если GitLab вернул пустой diff для нового
-     * ({@code newFile=true}) или удалённого ({@code deletedFile=true}) файла,
-     * дополняет diff синтетически через {@link #getFileContent}.
+     * Получает diffs MR с параметром access_raw_diffs=true, чтобы GitLab
+     * читал данные напрямую из Git-объектов, минуя кэш (который обрезает
+     * большие diff-ы). Если diff всё равно пустой (новый/удалённый файл),
+     * дополняет его синтетически через {@link #getFileContent}.
      */
     @Override
     public List<Diff> getMrDiffs(String namespace, String repo,
@@ -131,8 +132,11 @@ public class GitLabGateway implements CodeRepositoryGateway {
 
         MergeRequest mr = gitLabApi(token, api -> {
             try {
+                // access_raw_diffs=true — обходит лимит кэшированных diff-ов GitLab
                 return api.getMergeRequestApi()
-                        .getMergeRequestChanges(namespace + "/" + repo, mrIid);
+                        .getMergeRequestChanges(namespace + "/" + repo, mrIid,
+                                false,  // unidiff
+                                true);  // access_raw_diffs
             } catch (GitLabApiException e) {
                 throw new CodeRepositoryException(
                         "Failed to get diffs for MR '%d' in '%s/%s'"
