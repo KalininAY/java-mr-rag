@@ -1,5 +1,7 @@
 package com.example.mrrag.app.repo;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
@@ -16,6 +18,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
 
+import jakarta.ws.rs.core.Response;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -23,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -42,6 +46,8 @@ public class GitLabGateway implements CodeRepositoryGateway {
 
     @Value("${app.workspace.dir:/tmp/mr-rag-workspace}")
     private String workspaceDir;
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final ConcurrentMap<String, Git> openHandles = new ConcurrentHashMap<>();
 
@@ -121,31 +127,45 @@ public class GitLabGateway implements CodeRepositoryGateway {
     }
 
     /**
-     * Получает diffs MR с параметром access_raw_diffs=true, чтобы GitLab
-     * читал данные напрямую из Git-объектов, минуя кэш (который обрезает
-     * большие diff-ы). Если diff всё равно пустой (новый/удалённый файл),
-     * дополняет его синтетически через {@link #getFileContent}.
+     * Получает diffs MR.
+     * gitlab4j-api 6.x не имеет перегрузки getMergeRequestChanges с access_raw_diffs,
+     * поэтому параметр передаётся через прямой HTTP GET.
+     * access_raw_diffs=true заставляет GitLab читать diff напрямую из Git,
+     * минуя кэш, который обрезает большие файлы.
      */
     @Override
     public List<Diff> getMrDiffs(String namespace, String repo,
                                  long mrIid, String token) {
 
-        MergeRequest mr = gitLabApi(token, api -> {
+        MergeRequest mr = getMergeRequest(namespace, repo, mrIid, token);
+
+        List<Diff> changes = gitLabApi(token, api -> {
             try {
-                // access_raw_diffs=true — обходит лимит кэшированных diff-ов GitLab
-                return api.getMergeRequestApi()
-                        .getMergeRequestChanges(namespace + "/" + repo, mrIid,
-                                false,  // unidiff
-                                true);  // access_raw_diffs
-            } catch (GitLabApiException e) {
-                throw new CodeRepositoryException(
-                        "Failed to get diffs for MR '%d' in '%s/%s'"
-                                .formatted(mrIid, namespace, repo), e);
+                String projectPath = encode(namespace + "/" + repo);
+                Response response = api.getGitLabHttpClient()
+                        .get(api, "/projects/" + projectPath + "/merge_requests/" + mrIid
+                                + "/changes?access_raw_diffs=true");
+                String body = response.readEntity(String.class);
+                Map<String, Object> map = MAPPER.readValue(body, new TypeReference<>() {});
+                Object changesNode = map.get("changes");
+                String changesJson = MAPPER.writeValueAsString(changesNode);
+                return MAPPER.readValue(changesJson, new TypeReference<List<Diff>>() {});
+            } catch (Exception e) {
+                log.warn("access_raw_diffs request failed, falling back to standard API: {}", e.getMessage());
+                try {
+                    return api.getMergeRequestApi()
+                            .getMergeRequestChanges(namespace + "/" + repo, mrIid)
+                            .getChanges();
+                } catch (GitLabApiException ex) {
+                    throw new CodeRepositoryException(
+                            "Failed to get diffs for MR '%d' in '%s/%s'"
+                                    .formatted(mrIid, namespace, repo), ex);
+                }
             }
         });
 
-        List<Diff> result = new ArrayList<>(mr.getChanges().size());
-        for (Diff diff : mr.getChanges()) {
+        List<Diff> result = new ArrayList<>(changes.size());
+        for (Diff diff : changes) {
             result.add(enrichEmptyDiff(diff, namespace, repo, mr.getSourceBranch(), mr.getTargetBranch(), token));
         }
         return result;
@@ -286,6 +306,11 @@ public class GitLabGateway implements CodeRepositoryGateway {
     // ------------------------------------------------------------------
     // Internal helpers
     // ------------------------------------------------------------------
+
+    /** URL-кодирует namespace/repo для использования в пути API (заменяет / на %2F). */
+    private static String encode(String projectPath) {
+        return projectPath.replace("/", "%2F");
+    }
 
     private <T> T gitLabApi(String token, GitLabApiAction<T> action) {
         GitLabApi api = (token == null || token.equals(defaultToken))
