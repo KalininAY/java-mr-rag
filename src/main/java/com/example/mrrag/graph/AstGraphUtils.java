@@ -271,6 +271,13 @@ public final class AstGraphUtils {
     /**
      * Best-effort inference of the qualified type name of a call-site argument.
      * Returns {@code null} when the type cannot be determined.
+     * <p>
+     * Handles:
+     * <ul>
+     *   <li>Spoon-resolved types (most cases with classpath)</li>
+     *   <li>String/numeric/boolean literals</li>
+     *   <li>String concatenation via {@code +} operator (recursively)</li>
+     * </ul>
      */
     private static String inferArgType(CtExpression<?> arg) {
         // 1. Spoon already knows the type
@@ -284,20 +291,29 @@ public final class AstGraphUtils {
         }
 
         // 2. String literal
-        try {
-            if (arg instanceof CtLiteral<?> lit && lit.getValue() instanceof String) {
+        if (arg instanceof CtLiteral<?> lit && lit.getValue() instanceof String) {
+            return "java.lang.String";
+        }
+
+        // 3. Numeric / boolean literals
+        if (arg instanceof CtLiteral<?> lit) {
+            Object v = lit.getValue();
+            if (v instanceof Integer) return "int";
+            if (v instanceof Long)    return "long";
+            if (v instanceof Double)  return "double";
+            if (v instanceof Float)   return "float";
+            if (v instanceof Boolean) return "boolean";
+        }
+
+        // 4. String concatenation: "..." + "..." + ...
+        //    If either operand resolves to String, the whole expression is a String.
+        if (arg instanceof CtBinaryOperator<?> bin
+                && bin.getKind() == BinaryOperatorKind.PLUS) {
+            String left  = inferArgType(bin.getLeftHandOperand());
+            String right = inferArgType(bin.getRightHandOperand());
+            if ("java.lang.String".equals(left) || "java.lang.String".equals(right)) {
                 return "java.lang.String";
             }
-            // 3. Numeric / boolean literals
-            if (arg instanceof CtLiteral<?> lit) {
-                Object v = lit.getValue();
-                if (v instanceof Integer) return "int";
-                if (v instanceof Long)    return "long";
-                if (v instanceof Double)  return "double";
-                if (v instanceof Float)   return "float";
-                if (v instanceof Boolean) return "boolean";
-            }
-        } catch (Exception ignored) {
         }
 
         return null;
