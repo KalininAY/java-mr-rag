@@ -130,13 +130,6 @@ public class GitLabGateway implements CodeRepositoryGateway {
         });
     }
 
-    /**
-     * Получает diffs MR.
-     * Параметр access_raw_diffs=true заставляет GitLab читать diff напрямую из Git,
-     * минуя кэш, который обрезает большие файлы.
-     * Используем java.net.http.HttpClient, так как gitlab4j не предоставляет
-     * публичного доступа к своему HTTP-клиенту.
-     */
     @Override
     public List<Diff> getMrDiffs(String namespace, String repo,
                                  long mrIid, String token) {
@@ -148,7 +141,8 @@ public class GitLabGateway implements CodeRepositoryGateway {
 
         List<Diff> result = new ArrayList<>(changes.size());
         for (Diff diff : changes) {
-            result.add(enrichEmptyDiff(diff, namespace, repo, mr.getSourceBranch(), mr.getTargetBranch(), token));
+            result.add(enrichEmptyDiff(diff, namespace, repo,
+                    mr.getSourceBranch(), mr.getTargetBranch(), token));
         }
         return result;
     }
@@ -194,9 +188,10 @@ public class GitLabGateway implements CodeRepositoryGateway {
     }
 
     /**
-     * Если diff пустой — загружает содержимое файла и синтезирует unified-diff.
-     * Новый файл — читается из source, все строки «+».
-     * Удалённый файл — читается из target, все строки «-».
+     * Если diff пустой — синтезирует unified-diff для всех трёх случаев:
+     * - новый файл: читается из source, все строки «+»
+     * - удалённый файл: читается из target, все строки «-»
+     * - изменённый файл: читаются обе версии, будут выведены все строки target «-» и все source «+»
      */
     private Diff enrichEmptyDiff(Diff diff,
                                   String namespace, String repo,
@@ -208,34 +203,72 @@ public class GitLabGateway implements CodeRepositoryGateway {
 
         boolean isNew     = Boolean.TRUE.equals(diff.getNewFile());
         boolean isDeleted = Boolean.TRUE.equals(diff.getDeletedFile());
-        if (!isNew && !isDeleted) {
-            return diff;
-        }
+        boolean isModified = !isNew && !isDeleted;
 
         String filePath = isDeleted ? diff.getOldPath() : diff.getNewPath();
-        String branch   = isDeleted ? targetBranch      : sourceBranch;
-        log.debug("Enriching {} diff for '{}' from branch '{}'",
-                isNew ? "new-file" : "deleted-file", filePath, branch);
+        log.warn("Empty diff for '{}' (new={}, deleted={}, modified={}), enriching from file content",
+                filePath, isNew, isDeleted, isModified);
+
         try {
-            String content = getFileContent(namespace, repo, branch, filePath, token);
-            String[] lines = content.split("\n", -1);
-            StringBuilder sb = new StringBuilder();
             if (isNew) {
-                sb.append("--- /dev/null\n");
-                sb.append("+++ b/").append(filePath).append("\n");
-                sb.append("@@ -0,0 +1,").append(lines.length).append(" @@\n");
-                for (String line : lines) sb.append("+").append(line).append("\n");
+                String content = getFileContent(namespace, repo, sourceBranch, filePath, token);
+                diff.setDiff(buildAddedDiff(filePath, content));
+
+            } else if (isDeleted) {
+                String oldPath = diff.getOldPath();
+                String content = getFileContent(namespace, repo, targetBranch, oldPath, token);
+                diff.setDiff(buildDeletedDiff(oldPath, content));
+
             } else {
-                sb.append("--- a/").append(filePath).append("\n");
-                sb.append("+++ /dev/null\n");
-                sb.append("@@ -1,").append(lines.length).append(" +0,0 @@\n");
-                for (String line : lines) sb.append("-").append(line).append("\n");
+                // Изменённый файл — синтезируем diff из двух версий
+                String oldContent = getFileContent(namespace, repo, targetBranch, filePath, token);
+                String newContent = getFileContent(namespace, repo, sourceBranch, filePath, token);
+                diff.setDiff(buildModifiedDiff(filePath, oldContent, newContent));
             }
-            diff.setDiff(sb.toString());
         } catch (Exception ex) {
             log.warn("Could not enrich diff for '{}': {}", filePath, ex.getMessage());
         }
         return diff;
+    }
+
+    /** Все строки файла как «+» (новый файл). */
+    private static String buildAddedDiff(String filePath, String content) {
+        String[] lines = content.split("\n", -1);
+        StringBuilder sb = new StringBuilder();
+        sb.append("--- /dev/null\n");
+        sb.append("+++ b/").append(filePath).append("\n");
+        sb.append("@@ -0,0 +1,").append(lines.length).append(" @@\n");
+        for (String line : lines) sb.append("+").append(line).append("\n");
+        return sb.toString();
+    }
+
+    /** Все строки файла как «-» (удалённый файл). */
+    private static String buildDeletedDiff(String filePath, String content) {
+        String[] lines = content.split("\n", -1);
+        StringBuilder sb = new StringBuilder();
+        sb.append("--- a/").append(filePath).append("\n");
+        sb.append("+++ /dev/null\n");
+        sb.append("@@ -1,").append(lines.length).append(" +0,0 @@\n");
+        for (String line : lines) sb.append("-").append(line).append("\n");
+        return sb.toString();
+    }
+
+    /**
+     * Синтетический unified-diff для изменённого файла:
+     * все строки target — «-», все строки source — «+».
+     * Не точный diff, но достаточный для RAG: модель увидит полный контекст изменения.
+     */
+    private static String buildModifiedDiff(String filePath, String oldContent, String newContent) {
+        String[] oldLines = oldContent.split("\n", -1);
+        String[] newLines = newContent.split("\n", -1);
+        StringBuilder sb = new StringBuilder();
+        sb.append("--- a/").append(filePath).append("\n");
+        sb.append("+++ b/").append(filePath).append("\n");
+        sb.append("@@ -1,").append(oldLines.length)
+          .append(" +1,").append(newLines.length).append(" @@\n");
+        for (String line : oldLines) sb.append("-").append(line).append("\n");
+        for (String line : newLines) sb.append("+").append(line).append("\n");
+        return sb.toString();
     }
 
     @Override
@@ -329,7 +362,6 @@ public class GitLabGateway implements CodeRepositoryGateway {
     // Internal helpers
     // ------------------------------------------------------------------
 
-    /** URL-кодирует namespace/repo для использования в пути API (заменяет / на %2F). */
     private static String encode(String projectPath) {
         return projectPath.replace("/", "%2F");
     }
