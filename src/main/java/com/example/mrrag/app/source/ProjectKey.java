@@ -6,7 +6,7 @@ import com.example.mrrag.graph.cache.GraphCache;
 /**
  * Immutable identity key for a specific branch of a GitLab project.
  *
- * <p>Used as the cache key in {@link com.example.mrrag.graph.cache.RepositoryCacheService}
+ * <p>Used as the cache key in {@link com.example.mrrag.graph.cache}
  * and {@link GraphCache}.
  *
  * @param namespace GitLab namespace (group or user)

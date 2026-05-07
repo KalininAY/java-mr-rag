@@ -1,12 +1,8 @@
 package com.example.mrrag.app.controller;
 
 import com.example.mrrag.app.controller.requestDTO.RemoteProjectRequest;
-import com.example.mrrag.app.source.GitLabRemoteSourceProvider;
 import com.example.mrrag.app.source.ProjectKey;
-import com.example.mrrag.app.source.ProjectSourceProvider;
-import com.example.mrrag.app.repo.CodeRepositoryGateway;
 import com.example.mrrag.graph.GraphBuildStats;
-import com.example.mrrag.graph.GraphBuilder;
 import com.example.mrrag.graph.cache.CachedManagementService;
 import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.NodeKind;
@@ -38,32 +34,7 @@ import java.util.stream.Collectors;
         description = "Построение AST-графа через GitLab API")
 public class GraphApiController {
 
-    private final GraphBuilder            graphService;
-    private final CodeRepositoryGateway   gatewayRepo;
     private final CachedManagementService cachedService;
-
-    @Operation(
-            summary = "Построить граф по revision (без клонирования)",
-            description = """
-                    Загружает исходные файлы через GitLab Repository Files API и строит AST-граф.
-                    Клонирование не выполняется, кэш не используется.
-                    """,
-            responses = {
-                    @ApiResponse(responseCode = "200",
-                            content = @Content(schema = @Schema(implementation = GraphBuildStats.class))),
-                    @ApiResponse(responseCode = "500", description = "Ошибка при обращении к GitLab API")
-            }
-    )
-    @PostMapping(value = "/remote",
-            consumes = MediaType.APPLICATION_JSON_VALUE,
-            produces = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<GraphBuildStats> remote(@RequestBody @Valid RemoteProjectRequest request) {
-        return Mono.fromCallable(() -> {
-            ProjectSourceProvider provider = new GitLabRemoteSourceProvider(gatewayRepo, request);
-            ProjectGraph graph = graphService.buildGraph(provider);
-            return toStats(request, "(virtual — no clone)", graph);
-        }).subscribeOn(Schedulers.boundedElastic());
-    }
 
     @Operation(
             summary = "Построить граф с кэшированием (клон один раз, инкрементальное обновление)",
