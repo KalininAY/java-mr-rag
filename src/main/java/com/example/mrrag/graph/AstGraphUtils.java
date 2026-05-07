@@ -2,7 +2,6 @@ package com.example.mrrag.graph;
 
 import com.example.mrrag.graph.model.ProjectGraph;
 import spoon.reflect.code.*;
-import spoon.reflect.cu.CtCompilationUnit;
 import spoon.reflect.cu.SourcePosition;
 import spoon.reflect.cu.position.BodyHolderSourcePosition;
 import spoon.reflect.cu.position.CompoundSourcePosition;
@@ -355,14 +354,13 @@ public final class AstGraphUtils {
     private static String refineOwnerUsingImports(String q, CtElement ctx) {
         if (ctx == null || q == null || q.isBlank()) return null;
 
-        CtCompilationUnit cu = null;
+        SourcePosition pos = null;
         try {
-            SourcePosition pos = ctx.getPosition();
-            if (pos != null && pos.isValidPosition()) {
-                cu = pos.getCompilationUnit();
-            }
+            pos = ctx.getPosition();
         } catch (Exception ignored) {}
-        if (cu == null) return null;
+        if (pos == null || !pos.isValidPosition() || pos.getCompilationUnit() == null) return null;
+
+        CtCompilationUnit cu = pos.getCompilationUnit();
 
         String simple = q.contains(".") ? q.substring(q.lastIndexOf('.') + 1) : q;
 
