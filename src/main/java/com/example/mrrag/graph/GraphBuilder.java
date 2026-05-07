@@ -41,7 +41,7 @@ public class GraphBuilder {
 
         log.info("Provider supplied {} .java files", sources.size());
 
-        int nThreads = Math.max(1, Runtime.getRuntime().availableProcessors());
+        int nThreads = 1;
         List<List<ProjectSource>> batches = SourceBatchPartitioner.partition(sources, nThreads);
 
         log.info("GraphBuilder: {} files -> {} import-aware batches (threads={})",
