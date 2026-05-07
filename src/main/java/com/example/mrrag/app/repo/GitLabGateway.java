@@ -2,6 +2,9 @@ package com.example.mrrag.app.repo;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.difflib.DiffUtils;
+import com.github.difflib.UnifiedDiffUtils;
+import com.github.difflib.patch.Patch;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
@@ -28,6 +31,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -188,10 +192,10 @@ public class GitLabGateway implements CodeRepositoryGateway {
     }
 
     /**
-     * Если diff пустой — синтезирует unified-diff для всех трёх случаев:
-     * - новый файл: читается из source, все строки «+»
-     * - удалённый файл: читается из target, все строки «-»
-     * - изменённый файл: читаются обе версии, будут выведены все строки target «-» и все source «+»
+     * Если diff пустой — синтезирует его из содержимого файлов:
+     * - новый файл: все строки «+»
+     * - удалённый файл: все строки «-»
+     * - изменённый файл: точный LCS-based unified diff через java-diff-utils
      */
     private Diff enrichEmptyDiff(Diff diff,
                                   String namespace, String repo,
@@ -203,11 +207,10 @@ public class GitLabGateway implements CodeRepositoryGateway {
 
         boolean isNew     = Boolean.TRUE.equals(diff.getNewFile());
         boolean isDeleted = Boolean.TRUE.equals(diff.getDeletedFile());
-        boolean isModified = !isNew && !isDeleted;
+        String filePath   = isDeleted ? diff.getOldPath() : diff.getNewPath();
 
-        String filePath = isDeleted ? diff.getOldPath() : diff.getNewPath();
-        log.warn("Empty diff for '{}' (new={}, deleted={}, modified={}), enriching from file content",
-                filePath, isNew, isDeleted, isModified);
+        log.warn("Empty diff for '{}' (new={}, deleted={}), enriching from file content",
+                filePath, isNew, isDeleted);
 
         try {
             if (isNew) {
@@ -215,12 +218,11 @@ public class GitLabGateway implements CodeRepositoryGateway {
                 diff.setDiff(buildAddedDiff(filePath, content));
 
             } else if (isDeleted) {
-                String oldPath = diff.getOldPath();
-                String content = getFileContent(namespace, repo, targetBranch, oldPath, token);
-                diff.setDiff(buildDeletedDiff(oldPath, content));
+                String content = getFileContent(namespace, repo, targetBranch, diff.getOldPath(), token);
+                diff.setDiff(buildDeletedDiff(diff.getOldPath(), content));
 
             } else {
-                // Изменённый файл — синтезируем diff из двух версий
+                // Изменённый файл — точный LCS diff
                 String oldContent = getFileContent(namespace, repo, targetBranch, filePath, token);
                 String newContent = getFileContent(namespace, repo, sourceBranch, filePath, token);
                 diff.setDiff(buildModifiedDiff(filePath, oldContent, newContent));
@@ -254,21 +256,21 @@ public class GitLabGateway implements CodeRepositoryGateway {
     }
 
     /**
-     * Синтетический unified-diff для изменённого файла:
-     * все строки target — «-», все строки source — «+».
-     * Не точный diff, но достаточный для RAG: модель увидит полный контекст изменения.
+     * Точный LCS-based unified diff через java-diff-utils.
+     * Контекст 3 строки — как у стандартного git diff.
      */
     private static String buildModifiedDiff(String filePath, String oldContent, String newContent) {
-        String[] oldLines = oldContent.split("\n", -1);
-        String[] newLines = newContent.split("\n", -1);
-        StringBuilder sb = new StringBuilder();
-        sb.append("--- a/").append(filePath).append("\n");
-        sb.append("+++ b/").append(filePath).append("\n");
-        sb.append("@@ -1,").append(oldLines.length)
-          .append(" +1,").append(newLines.length).append(" @@\n");
-        for (String line : oldLines) sb.append("-").append(line).append("\n");
-        for (String line : newLines) sb.append("+").append(line).append("\n");
-        return sb.toString();
+        List<String> oldLines = Arrays.asList(oldContent.split("\n", -1));
+        List<String> newLines = Arrays.asList(newContent.split("\n", -1));
+        Patch<String> patch = DiffUtils.diff(oldLines, newLines);
+        List<String> unifiedDiff = UnifiedDiffUtils.generateUnifiedDiff(
+                "a/" + filePath,
+                "b/" + filePath,
+                oldLines,
+                patch,
+                3  // context lines
+        );
+        return String.join("\n", unifiedDiff) + "\n";
     }
 
     @Override

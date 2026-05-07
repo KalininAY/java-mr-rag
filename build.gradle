@@ -42,6 +42,9 @@ dependencies {
     // JGit for local repo operations
     implementation 'org.eclipse.jgit:org.eclipse.jgit:7.1.0.202411261347-r'
 
+    // Unified diff generation for large/truncated files
+    implementation 'io.github.java-diff-utils:java-diff-utils:4.12'
+
     // Utilities
     implementation 'org.apache.commons:commons-lang3:3.17.0'
     implementation 'commons-io:commons-io:2.18.0'
