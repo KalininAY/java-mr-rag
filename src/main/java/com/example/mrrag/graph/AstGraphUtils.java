@@ -225,10 +225,13 @@ public final class AstGraphUtils {
      * {@link CtExecutableReference#getSignature()}. Otherwise tries to infer
      * parameter types from the actual call-site arguments (works in
      * no-classpath mode for literals and variables whose types are known).
+     * <p>
+     * Uses comma without space as separator to match Spoon's own
+     * {@link CtExecutableReference#getSignature()} format.
      *
      * @param ref     the executable reference (may have empty parameter list)
      * @param useSite the call-site element ({@link CtInvocation} or {@link CtConstructorCall})
-     * @return a signature string such as {@code "foo(java.lang.String, int)"}
+     * @return a signature string such as {@code "foo(java.lang.String,int)"}
      */
     public static String buildSignature(CtExecutableReference<?> ref, CtElement useSite) {
         // If Spoon already resolved parameters — trust it
@@ -261,7 +264,8 @@ public final class AstGraphUtils {
             paramTypes.add(typeName);
         }
 
-        return ref.getSimpleName() + "(" + String.join(", ", paramTypes) + ")";
+        // No space after comma — matches Spoon's getSignature() format
+        return ref.getSimpleName() + "(" + String.join(",", paramTypes) + ")";
     }
 
     /**
@@ -465,13 +469,12 @@ public final class AstGraphUtils {
                     : el instanceof CtTypeMember m ? m.getDeclaringType()
                     : el.getParent(CtType.class);
             if (owner != null) {
-                // Поднимаемся до top-level типа (у inner/anonymous классов декларирующий тип != null)
                 CtType<?> topLevel = owner;
                 while (topLevel.getDeclaringType() != null) {
                     topLevel = topLevel.getDeclaringType();
                 }
 
-                String qualifiedName = topLevel.getQualifiedName(); // без $, только top-level
+                String qualifiedName = topLevel.getQualifiedName();
                 String suffix = qualifiedName.replace('.', '/') + ".java";
 
                 String found = repoPaths.stream()
@@ -520,16 +523,6 @@ public final class AstGraphUtils {
     /**
      * Returns line range [{@code startLine}, {@code endLine}] (1-based, inclusive)
      * for the *declaration* part of an element (signature/header without the method body).
-     * <p>
-     * Strategy (in priority order):
-     * <ol>
-     *   <li>{@link BodyHolderSourcePosition} — uses {@code declarationStart} .. {@code bodyStart-1}</li>
-     *   <li>{@link CompoundSourcePosition}   — uses {@code declarationStart} .. {@code declarationEnd}</li>
-     * </ol>
-     *
-     * @param el          the element whose declaration lines are needed
-     * @param sourceLines repo-relative path -> source lines map (used for offset->line conversion)
-     * @return int[2]: [startLine, endLine], or [-1, -1] when lines cannot be resolved
      */
     public static int[] declarationLines(CtElement el, Map<String, String[]> sourceLines) {
         if (el == null) return new int[]{-1, -1};
@@ -581,10 +574,6 @@ public final class AstGraphUtils {
 
     /**
      * Best-effort line range for an element.
-     * First uses Spoon position line numbers; if they are unavailable or invalid,
-     * falls back to source offset -> line conversion using sourceLines.
-     * <p>
-     * Returns {-1, -1} when neither direct position nor source-backed fallback works.
      */
     public static int[] lines(CtElement el, Map<String, String[]> sourceLines) {
         if (el == null) return new int[]{-1, -1};
@@ -692,14 +681,6 @@ public final class AstGraphUtils {
     /**
      * Парсит строку импорта из исходников когда Spoon не может разрезолвить
      * ссылку ({@link spoon.reflect.declaration.CtImport#getReference()} == null).
-     * Это происходит в no-classpath режиме для внешних зависимостей.
-     * <p>
-     * Возвращает {@code null}, если строку не удалось извлечь или она не является импортом.
-     *
-     * @param sourceLines карта путь -> строки файла
-     * @param filePath    граф-относительный путь к файлу
-     * @param lineNumber  1-based номер строки (из {@code imp.getPosition().getLine()})
-     * @return полное имя из импорта (например {@code "java.util.List"}), либо {@code null}
      */
     public static String parseImportRefFromSource(Map<String, String[]> sourceLines, String filePath, int lineNumber) {
         if (lineNumber < 1 || filePath == null || filePath.isBlank()) return null;
@@ -719,13 +700,6 @@ public final class AstGraphUtils {
 
     /**
      * Определяет является ли импорт статическим по исходной строке.
-     * Используется как fallback когда {@link spoon.reflect.declaration.CtImport#getImportKind()}
-     * ненадёжен из-за неразрезолвленной ссылки.
-     *
-     * @param sourceLines карта путь -> строки файла
-     * @param filePath    граф-относительный путь к файлу
-     * @param lineNumber  1-based номер строки
-     * @return {@code true} если строка содержит {@code import static}
      */
     public static boolean isStaticImportBySource(Map<String, String[]> sourceLines, String filePath, int lineNumber) {
         if (lineNumber < 1 || filePath == null || filePath.isBlank()) return false;
