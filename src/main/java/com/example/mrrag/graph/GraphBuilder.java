@@ -365,8 +365,10 @@ public class GraphBuilder {
                 if (callerId == null) return;
                 String file = AstGraphUtils.graphFilePath(cc, projectRoot, repoPaths);
                 int[] declarationLines = AstGraphUtils.declarationLines(cc, sourceLines);
-                String typeId = cc.getExecutable().getDeclaringType() != null
-                        ? cc.getExecutable().getDeclaringType().getQualifiedName() : "?";
+                // Use cc.getType() via inferOwnerFromConstructorCall — always populated from
+                // 'new T(...)' syntax even in no-classpath mode, unlike getExecutable().getDeclaringType()
+                String typeId = AstGraphUtils.inferOwnerFromConstructorCall(cc);
+                if (typeId == null) typeId = "?";
                 EdgeKind ek = (cc instanceof CtNewClass) ? EdgeKind.INSTANTIATES_ANONYMOUS : EdgeKind.INSTANTIATES;
                 if (edgeConfig.isEnabled(ek))
                     graph.addEdge(new GraphEdge(callerId, ek, typeId, file, declarationLines[0], declarationLines[1]));
@@ -422,9 +424,10 @@ public class GraphBuilder {
                 if (execId == null) return;
                 String file = AstGraphUtils.graphFilePath(thr, projectRoot, repoPaths);
                 CtExpression<?> thrown = thr.getThrownExpression();
-                String typeId = (thrown instanceof CtConstructorCall<?> cc
-                        && cc.getExecutable().getDeclaringType() != null)
-                        ? cc.getExecutable().getDeclaringType().getQualifiedName() : "?";
+                // Use cc.getType() via inferOwnerFromConstructorCall — works in no-classpath mode
+                String typeId = (thrown instanceof CtConstructorCall<?> cc)
+                        ? AstGraphUtils.inferOwnerFromConstructorCall(cc) : null;
+                if (typeId == null) typeId = "?";
                 int[] declarationLines = AstGraphUtils.declarationLines(thr, sourceLines);
                 graph.addEdge(new GraphEdge(execId, EdgeKind.THROWS, typeId,
                         file, declarationLines[0], declarationLines[1]));
