@@ -15,6 +15,7 @@ import spoon.reflect.CtModel;
 import spoon.reflect.code.*;
 import spoon.reflect.declaration.*;
 import spoon.reflect.visitor.filter.TypeFilter;
+import spoon.support.compiler.FileSystemFile;
 import spoon.support.compiler.VirtualFile;
 
 import java.nio.file.Path;
@@ -86,7 +87,7 @@ public class GraphBuilder {
         environment.setIgnoreDuplicateDeclarations(true);
 
         sources.stream()
-                .map(it-> new VirtualFile(it.content(), it.path()))
+                .map(it -> new FileSystemFile(classpathRoot.resolve(it.path()).toFile()))
                 .forEach(launcher::addInputResource);
 
         CtModel model;
