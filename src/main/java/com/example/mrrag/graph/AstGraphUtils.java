@@ -209,7 +209,7 @@ public final class AstGraphUtils {
         if (ref == null) return "unresolved";
         try {
             String owner = qualifiedExecutableOwner(ref, useSite);
-            String sig = ref.getSignature();
+            String sig = buildSignature(ref, useSite);
             if (ref.isConstructor()) {
                 return constructorExecutableId(owner, sig);
             }
@@ -217,6 +217,86 @@ public final class AstGraphUtils {
         } catch (Exception e) {
             return "unresolved:" + ref.getSimpleName();
         }
+    }
+
+    /**
+     * Builds a method/constructor signature string.
+     * If Spoon already resolved parameters on the reference, delegates to
+     * {@link CtExecutableReference#getSignature()}. Otherwise tries to infer
+     * parameter types from the actual call-site arguments (works in
+     * no-classpath mode for literals and variables whose types are known).
+     *
+     * @param ref     the executable reference (may have empty parameter list)
+     * @param useSite the call-site element ({@link CtInvocation} or {@link CtConstructorCall})
+     * @return a signature string such as {@code "foo(java.lang.String, int)"}
+     */
+    public static String buildSignature(CtExecutableReference<?> ref, CtElement useSite) {
+        // If Spoon already resolved parameters — trust it
+        try {
+            if (ref.getParameters() != null && !ref.getParameters().isEmpty()) {
+                return ref.getSignature();
+            }
+        } catch (Exception ignored) {
+        }
+
+        // Collect call-site arguments
+        List<CtExpression<?>> args = null;
+        if (useSite instanceof CtInvocation<?> inv) {
+            args = inv.getArguments();
+        } else if (useSite instanceof CtConstructorCall<?> cc) {
+            args = cc.getArguments();
+        }
+
+        if (args == null || args.isEmpty()) {
+            return ref.getSignature();
+        }
+
+        List<String> paramTypes = new ArrayList<>();
+        for (CtExpression<?> arg : args) {
+            String typeName = inferArgType(arg);
+            if (typeName == null) {
+                // Cannot infer at least one type — fall back to Spoon signature
+                return ref.getSignature();
+            }
+            paramTypes.add(typeName);
+        }
+
+        return ref.getSimpleName() + "(" + String.join(", ", paramTypes) + ")";
+    }
+
+    /**
+     * Best-effort inference of the qualified type name of a call-site argument.
+     * Returns {@code null} when the type cannot be determined.
+     */
+    private static String inferArgType(CtExpression<?> arg) {
+        // 1. Spoon already knows the type
+        try {
+            CtTypeReference<?> t = arg.getType();
+            if (t != null) {
+                String q = t.getQualifiedName();
+                if (isUsableQualifiedName(q) && !"?".equals(q)) return q;
+            }
+        } catch (Exception ignored) {
+        }
+
+        // 2. String literal
+        try {
+            if (arg instanceof CtLiteral<?> lit && lit.getValue() instanceof String) {
+                return "java.lang.String";
+            }
+            // 3. Numeric / boolean literals
+            if (arg instanceof CtLiteral<?> lit) {
+                Object v = lit.getValue();
+                if (v instanceof Integer) return "int";
+                if (v instanceof Long)    return "long";
+                if (v instanceof Double)  return "double";
+                if (v instanceof Float)   return "float";
+                if (v instanceof Boolean) return "boolean";
+            }
+        } catch (Exception ignored) {
+        }
+
+        return null;
     }
 
     public static String execRefIdForChainedInvocation(CtInvocation<?> inv) {
@@ -289,6 +369,33 @@ public final class AstGraphUtils {
 
     public static String inferOwnerFromInvocation(CtInvocation<?> inv) {
         CtExpression<?> target = inv.getTarget();
+
+        // null (implicit this), explicit this, or Interface.super calls
+        if (target == null || target instanceof CtThisAccess || target instanceof CtSuperAccess) {
+
+            // For Interface.super — try the type of the super-access first
+            if (target instanceof CtSuperAccess<?> sa) {
+                try {
+                    CtTypeReference<?> dt = sa.getType();
+                    if (dt != null) {
+                        String q = dt.getQualifiedName();
+                        if (isUsableQualifiedName(q)) return q;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+
+            // Fallback — enclosing declaring type (works for both this and super)
+            try {
+                CtType<?> enclosing = inv.getParent(CtType.class);
+                if (enclosing != null) {
+                    String q = enclosing.getQualifiedName();
+                    if (isUsableQualifiedName(q)) return q;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
         if (target instanceof CtTypeAccess<?> ta) {
             try {
                 if (ta.getAccessedType() != null) {
