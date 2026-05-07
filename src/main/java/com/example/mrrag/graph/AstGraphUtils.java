@@ -2,6 +2,7 @@ package com.example.mrrag.graph;
 
 import com.example.mrrag.graph.model.ProjectGraph;
 import spoon.reflect.code.*;
+import spoon.reflect.cu.CtCompilationUnit;
 import spoon.reflect.cu.SourcePosition;
 import spoon.reflect.cu.position.BodyHolderSourcePosition;
 import spoon.reflect.cu.position.CompoundSourcePosition;
@@ -351,10 +352,46 @@ public final class AstGraphUtils {
     // Owner inference
     // ------------------------------------------------------------------
 
+    private static String refineOwnerUsingImports(String q, CtElement ctx) {
+        if (ctx == null || q == null || q.isBlank()) return null;
+
+        CtCompilationUnit cu = null;
+        try {
+            SourcePosition pos = ctx.getPosition();
+            if (pos != null && pos.isValidPosition()) {
+                cu = pos.getCompilationUnit();
+            }
+        } catch (Exception ignored) {}
+        if (cu == null) return null;
+
+        String simple = q.contains(".") ? q.substring(q.lastIndexOf('.') + 1) : q;
+
+        String candidate = null;
+        try {
+            for (CtImport imp : cu.getImports()) {
+                var ref = imp.getReference();
+                if (ref == null) continue;
+                String fqn = ref.toString();
+                if (fqn.endsWith("." + simple)) {
+                    if (candidate == null) {
+                        candidate = fqn;
+                    } else if (!candidate.equals(fqn)) {
+                        return null; // ambiguous
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        if (candidate == null || candidate.equals(q)) return null;
+        return candidate;
+    }
+
     public static String qualifiedExecutableOwner(CtExecutableReference<?> ref, CtElement useSite) {
         try {
             if (ref.getDeclaringType() != null) {
                 String q = ref.getDeclaringType().getQualifiedName();
+                String fixed = refineOwnerUsingImports(q, useSite);
+                if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
         } catch (Exception ignored) {
@@ -363,6 +400,8 @@ public final class AstGraphUtils {
             CtExecutable<?> decl = ref.getDeclaration();
             if (decl instanceof CtTypeMember tm && tm.getDeclaringType() != null) {
                 String q = tm.getDeclaringType().getQualifiedName();
+                String fixed = refineOwnerUsingImports(q, decl);
+                if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
         } catch (Exception ignored) {
@@ -399,6 +438,8 @@ public final class AstGraphUtils {
                     CtTypeReference<?> dt = sa.getType();
                     if (dt != null) {
                         String q = dt.getQualifiedName();
+                        String fixed = refineOwnerUsingImports(q, inv);
+                        if (fixed != null) q = fixed;
                         if (isUsableQualifiedName(q)) return q;
                     }
                 } catch (Exception ignored) {
@@ -420,6 +461,8 @@ public final class AstGraphUtils {
             try {
                 if (ta.getAccessedType() != null) {
                     String q = ta.getAccessedType().getQualifiedName();
+                    String fixed = refineOwnerUsingImports(q, inv);
+                    if (fixed != null) q = fixed;
                     if (isUsableQualifiedName(q)) return q;
                 }
             } catch (Exception ignored) {
@@ -430,6 +473,8 @@ public final class AstGraphUtils {
                 CtTypeReference<?> t = target.getType();
                 if (t != null) {
                     String q = t.getQualifiedName();
+                    String fixed = refineOwnerUsingImports(q, inv);
+                    if (fixed != null) q = fixed;
                     if (isUsableQualifiedName(q)) return q;
                 }
             } catch (Exception ignored) {
@@ -442,6 +487,8 @@ public final class AstGraphUtils {
         try {
             if (cc.getType() != null) {
                 String q = cc.getType().getQualifiedName();
+                String fixed = refineOwnerUsingImports(q, cc);
+                if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
         } catch (Exception ignored) {
@@ -455,12 +502,16 @@ public final class AstGraphUtils {
             CtExpression<?> target = ere.getTarget();
             if (target instanceof CtTypeAccess<?> ta && ta.getAccessedType() != null) {
                 String q = ta.getAccessedType().getQualifiedName();
+                String fixed = refineOwnerUsingImports(q, ere);
+                if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
             if (target != null) {
                 CtTypeReference<?> t = target.getType();
                 if (t != null) {
                     String q = t.getQualifiedName();
+                    String fixed = refineOwnerUsingImports(q, ere);
+                    if (fixed != null) q = fixed;
                     if (isUsableQualifiedName(q)) return q;
                 }
             }
