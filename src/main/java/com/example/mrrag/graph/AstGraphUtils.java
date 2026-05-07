@@ -360,7 +360,7 @@ public final class AstGraphUtils {
         } catch (Exception ignored) {}
         if (pos == null || !pos.isValidPosition() || pos.getCompilationUnit() == null) return null;
 
-        CtCompilationUnit cu = pos.getCompilationUnit();
+        var cu = pos.getCompilationUnit();
 
         String simple = q.contains(".") ? q.substring(q.lastIndexOf('.') + 1) : q;
 
@@ -384,11 +384,56 @@ public final class AstGraphUtils {
         return candidate;
     }
 
+    private static String refineOwnerUsingWildcardImports(String q, CtElement ctx) {
+        if (ctx == null || q == null || q.isBlank()) return null;
+
+        SourcePosition pos = null;
+        try {
+            pos = ctx.getPosition();
+        } catch (Exception ignored) {}
+        if (pos == null || !pos.isValidPosition() || pos.getCompilationUnit() == null) return null;
+
+        var cu = pos.getCompilationUnit();
+
+        CtType<?> cuType = ctx.getParent(CtType.class);
+        String cuPkg = (cuType != null && cuType.getPackage() != null)
+                ? cuType.getPackage().getQualifiedName()
+                : "";
+
+        String ownerPkg = q.contains(".") ? q.substring(0, q.lastIndexOf('.')) : "";
+        String simple   = q.contains(".") ? q.substring(q.lastIndexOf('.') + 1) : q;
+
+        // Has sense only if Spoon attached owner to the same package as CU
+        if (!Objects.equals(ownerPkg, cuPkg)) return null;
+
+        var factory = ctx.getFactory();
+        boolean hasLocalType = factory.Type().get(cuPkg.isEmpty() ? simple : cuPkg + "." + simple) != null;
+
+        List<String> candidates = new ArrayList<>();
+        try {
+            for (CtImport imp : cu.getImports()) {
+                String s = String.valueOf(imp.getReference());
+                if (s == null || !s.endsWith(".*")) continue;
+                String pkg = s.substring(0, s.length() - 2);
+                CtType<?> t = factory.Type().get(pkg + "." + simple);
+                if (t != null) {
+                    candidates.add(t.getQualifiedName());
+                }
+            }
+        } catch (Exception ignored) {}
+
+        if (candidates.size() == 1 && !hasLocalType) {
+            return candidates.get(0);
+        }
+        return null;
+    }
+
     public static String qualifiedExecutableOwner(CtExecutableReference<?> ref, CtElement useSite) {
         try {
             if (ref.getDeclaringType() != null) {
                 String q = ref.getDeclaringType().getQualifiedName();
                 String fixed = refineOwnerUsingImports(q, useSite);
+                if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, useSite);
                 if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
@@ -399,6 +444,7 @@ public final class AstGraphUtils {
             if (decl instanceof CtTypeMember tm && tm.getDeclaringType() != null) {
                 String q = tm.getDeclaringType().getQualifiedName();
                 String fixed = refineOwnerUsingImports(q, decl);
+                if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, decl);
                 if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
@@ -437,6 +483,7 @@ public final class AstGraphUtils {
                     if (dt != null) {
                         String q = dt.getQualifiedName();
                         String fixed = refineOwnerUsingImports(q, inv);
+                        if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, inv);
                         if (fixed != null) q = fixed;
                         if (isUsableQualifiedName(q)) return q;
                     }
@@ -460,6 +507,7 @@ public final class AstGraphUtils {
                 if (ta.getAccessedType() != null) {
                     String q = ta.getAccessedType().getQualifiedName();
                     String fixed = refineOwnerUsingImports(q, inv);
+                    if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, inv);
                     if (fixed != null) q = fixed;
                     if (isUsableQualifiedName(q)) return q;
                 }
@@ -472,6 +520,7 @@ public final class AstGraphUtils {
                 if (t != null) {
                     String q = t.getQualifiedName();
                     String fixed = refineOwnerUsingImports(q, inv);
+                    if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, inv);
                     if (fixed != null) q = fixed;
                     if (isUsableQualifiedName(q)) return q;
                 }
@@ -486,6 +535,7 @@ public final class AstGraphUtils {
             if (cc.getType() != null) {
                 String q = cc.getType().getQualifiedName();
                 String fixed = refineOwnerUsingImports(q, cc);
+                if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, cc);
                 if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
@@ -501,6 +551,7 @@ public final class AstGraphUtils {
             if (target instanceof CtTypeAccess<?> ta && ta.getAccessedType() != null) {
                 String q = ta.getAccessedType().getQualifiedName();
                 String fixed = refineOwnerUsingImports(q, ere);
+                if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, ere);
                 if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
@@ -509,6 +560,7 @@ public final class AstGraphUtils {
                 if (t != null) {
                     String q = t.getQualifiedName();
                     String fixed = refineOwnerUsingImports(q, ere);
+                    if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, ere);
                     if (fixed != null) q = fixed;
                     if (isUsableQualifiedName(q)) return q;
                 }
