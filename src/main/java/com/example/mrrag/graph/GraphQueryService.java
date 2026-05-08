@@ -23,6 +23,10 @@ public class GraphQueryService {
      *       ({@code startLine <= line <= endLine}). Связывает строки одного метода.</li>
      *   <li><b>Участники</b> — callee рёбер  диапазон содержит строку.
      *       Связывает строки через общую вызываемую сущность.</li>
+     *   <li><b>Javadoc-проброс</b> — если найденная нода имеет kind==JAVADOC,
+     *       она заменяется владельцем через входящее ребро HAS_JAVADOC.
+     *       Это позволяет корректно привязать изменённую строку javadoc-комментария
+     *       к методу/классу/полю, которому он принадлежит.</li>
      *   <li><b>Fallback</b> — если ноды не найдены (структурная строка: скобки, аннотации класса),
      *       добавляется наименьший вмещающий узел любого вида включая CLASS/INTERFACE.</li>
      * </ol>
@@ -54,6 +58,22 @@ public class GraphQueryService {
                 .map(e -> graph.nodes.get(e.callee()))
                 .filter(Objects::nonNull)
                 .forEach(result::add);
+
+        // Слой 3: JAVADOC-проброс — заменяем JAVADOC-ноды их владельцами
+        // Если строка попала в диапазон JAVADOC-ноды, нас интересует не сам javadoc,
+        // а метод/класс/поле, которому он принадлежит (входящее ребро HAS_JAVADOC).
+        Set<GraphNode> javadocNodes = result.stream()
+                .filter(n -> n.kind() == NodeKind.JAVADOC)
+                .collect(Collectors.toSet());
+        if (!javadocNodes.isEmpty()) {
+            result.removeAll(javadocNodes);
+            for (GraphNode jdoc : javadocNodes) {
+                graph.incoming(jdoc.id(), EdgeKind.HAS_JAVADOC).stream()
+                        .map(e -> graph.nodes.get(e.caller()))
+                        .filter(Objects::nonNull)
+                        .forEach(result::add);
+            }
+        }
 
         return List.copyOf(result);
     }
