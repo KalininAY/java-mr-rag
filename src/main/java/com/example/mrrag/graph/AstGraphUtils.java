@@ -691,6 +691,11 @@ public final class AstGraphUtils {
 
     /**
      * Best-effort line range for an element.
+     * <p>
+     * For {@link BodyHolderSourcePosition} elements (classes, methods, constructors),
+     * {@code startLine} is taken from {@code declarationStart} so that annotations
+     * above the element are included in the range. This ensures that a changed
+     * annotation line is correctly matched to its owning class or method node.
      */
     public static int[] lines(CtElement el, Map<String, String[]> sourceLines) {
         if (el == null) return new int[]{-1, -1};
@@ -698,6 +703,25 @@ public final class AstGraphUtils {
         try {
             SourcePosition p = el.getPosition();
             if (p == null) return new int[]{-1, -1};
+
+            // For BodyHolder elements (class, method, constructor) use declarationStart
+            // so that annotations above the element are included in [startLine, endLine].
+            if (p instanceof BodyHolderSourcePosition bodyPos) {
+                String filePath = graphFilePath(el, null, sourceLines.keySet());
+                String[] fileLines = findLines(sourceLines, filePath);
+                if (fileLines != null && fileLines.length > 0) {
+                    String full = String.join("\n", fileLines);
+                    int declStart = bodyPos.getDeclarationStart();
+                    int sourceEnd = p.getSourceEnd();
+                    if (declStart >= 0 && sourceEnd >= declStart) {
+                        int startLine = lineNumberAtOffset(full, declStart);
+                        int endLine   = lineNumberAtOffset(full, sourceEnd);
+                        if (startLine > 0 && endLine >= startLine) {
+                            return new int[]{startLine, endLine};
+                        }
+                    }
+                }
+            }
 
             int startLine = p.isValidPosition() ? p.getLine() : -1;
             int endLine = p.isValidPosition() ? p.getEndLine() : -1;
