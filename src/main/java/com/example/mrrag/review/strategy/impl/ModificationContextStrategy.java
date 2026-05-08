@@ -50,7 +50,7 @@ public class ModificationContextStrategy implements ContextStrategy {
                 .forEach(snippets::add);
 
         log.debug("ModificationContextStrategy: union={} snippets={}", union.id(), snippets.size());
-        return filterAlreadyInDiff(union, snippets);
+        return snippets;
     }
 
     private void collectModifiedMethodBodies(

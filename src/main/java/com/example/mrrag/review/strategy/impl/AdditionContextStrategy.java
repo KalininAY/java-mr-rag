@@ -287,6 +287,6 @@ public class AdditionContextStrategy implements ContextStrategy {
 
         log.debug("AdditionContextStrategy: union={} nodes={} snippets={}",
                 union.id(), union.graphNodes().size(), snippets.size());
-        return filterAlreadyInDiff(union, snippets);
+        return snippets;
     }
 }
