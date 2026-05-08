@@ -59,21 +59,15 @@ public class GraphQueryService {
                 .filter(Objects::nonNull)
                 .forEach(result::add);
 
-        // Слой 3: JAVADOC-проброс — заменяем JAVADOC-ноды их владельцами
-        // Если строка попала в диапазон JAVADOC-ноды, нас интересует не сам javadoc,
-        // а метод/класс/поле, которому он принадлежит (входящее ребро HAS_JAVADOC).
-        Set<GraphNode> javadocNodes = result.stream()
+        // Слой 3: Javadoc-пробрось — для каждой JAVADOC-ноды добавляем её владельца.
+        // Сама JAVADOC-нода остаётся в результате — она несёт sourceSnippet с текстом комментария.
+        new ArrayList<>(result).stream()
                 .filter(n -> n.kind() == NodeKind.JAVADOC)
-                .collect(Collectors.toSet());
-        if (!javadocNodes.isEmpty()) {
-            result.removeAll(javadocNodes);
-            for (GraphNode jdoc : javadocNodes) {
-                graph.incoming(jdoc.id(), EdgeKind.HAS_JAVADOC).stream()
-                        .map(e -> graph.nodes.get(e.caller()))
-                        .filter(Objects::nonNull)
-                        .forEach(result::add);
-            }
-        }
+                .forEach(jdoc ->
+                        graph.incoming(jdoc.id(), EdgeKind.HAS_JAVADOC).stream()
+                                .map(e -> graph.nodes.get(e.caller()))
+                                .filter(Objects::nonNull)
+                                .forEach(result::add));
 
         return List.copyOf(result);
     }
