@@ -25,9 +25,10 @@ import java.util.stream.Collectors;
  *
  * <p>Strategy passes:
  * <ul>
- *   <li><b>Pass 0</b>: For CLASS/INTERFACE/ANNOTATION nodes that are themselves in the union
- *       (container-only change), emits a {@link EnrichmentSnippet.SnippetType#CLASS_BODY}
- *       snippet with the full class body.</li>
+ *   <li><b>Pass 0</b>: For CLASS/INTERFACE/ANNOTATION nodes that are themselves in the union,
+ *       emits a {@link EnrichmentSnippet.SnippetType#CLASS_BODY} snippet with the full class body
+ *       <em>only when the union contains no member nodes</em> (METHOD/FIELD/CONSTRUCTOR).
+ *       When member nodes are present, their individual snippets provide sufficient context.</li>
  *   <li><b>Pass 1</b>: Adds a {@link EnrichmentSnippet.SnippetType#CLASS_DECLARATION} snippet
  *       for the declaring class of every method/field node in the union (via DECLARES edges).</li>
  *   <li><b>Pass 2</b>: Follows outgoing INVOKES/READS_FIELD/WRITES_FIELD/EXTENDS/IMPLEMENTS/
@@ -62,25 +63,34 @@ public class AdditionContextStrategy implements ContextStrategy {
         // per-node snippet counter: nodeId -> count emitted for that node
         Map<String, Integer> snippetsPerNode = new HashMap<>();
 
-        // Pass 0: CLASS/INTERFACE/ANNOTATION nodes that are themselves in the union—emit full body
-        for (GraphNode node : union.graphNodes()) {
-            if (node.kind() != NodeKind.CLASS && node.kind() != NodeKind.INTERFACE
-                    && node.kind() != NodeKind.ANNOTATION) continue;
+        // Pass 0: CLASS/INTERFACE/ANNOTATION nodes — emit full body ONLY when
+        // the union contains no member nodes (method/field/constructor).
+        // When member nodes are present their individual snippets provide sufficient context.
+        boolean hasMemberNodes = union.graphNodes().stream().anyMatch(n ->
+                n.kind() == NodeKind.METHOD
+                || n.kind() == NodeKind.FIELD
+                || n.kind() == NodeKind.CONSTRUCTOR);
 
-            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
-            boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
-            if (!hasAdd) continue;
+        if (!hasMemberNodes) {
+            for (GraphNode node : union.graphNodes()) {
+                if (node.kind() != NodeKind.CLASS && node.kind() != NodeKind.INTERFACE
+                        && node.kind() != NodeKind.ANNOTATION) continue;
 
-            GraphNode resolved = sourceGraph.nodes.get(node.id());
-            if (resolved == null) continue;
-            if (!seenDecl.add("BODY:" + resolved.id())) continue;
+                List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+                boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
+                if (!hasAdd) continue;
 
-            snippets.add(EnrichmentSnippet.ofBody(
-                    EnrichmentSnippet.SnippetType.CLASS_BODY, resolved,
-                    "Full body of added " + resolved.kind().name().toLowerCase()
-                            + " '" + resolved.simpleName() + "'",
-                    EnrichmentSnippet.LineContext.ADD));
-            snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                GraphNode resolved = sourceGraph.nodes.get(node.id());
+                if (resolved == null) continue;
+                if (!seenDecl.add("BODY:" + resolved.id())) continue;
+
+                snippets.add(EnrichmentSnippet.ofBody(
+                        EnrichmentSnippet.SnippetType.CLASS_BODY, resolved,
+                        "Full body of added " + resolved.kind().name().toLowerCase()
+                                + " '" + resolved.simpleName() + "'",
+                        EnrichmentSnippet.LineContext.ADD));
+                snippetsPerNode.merge(node.id(), 1, Integer::sum);
+            }
         }
 
         // Pass 1: declaring classes for every method/field/constructor node in the union

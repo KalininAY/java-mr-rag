@@ -20,9 +20,11 @@ import java.util.stream.Collectors;
  *
  * <p>Strategy passes:
  * <ul>
- *   <li><b>Pass 0</b>: For CLASS/INTERFACE/ANNOTATION nodes that are themselves in the union
- *       (container-only deletion), emits a {@link EnrichmentSnippet.SnippetType#CLASS_BODY}
- *       snippet with the full class body from {@code targetGraph}.</li>
+ *   <li><b>Pass 0</b>: For CLASS/INTERFACE/ANNOTATION nodes that are themselves in the union,
+ *       emits a {@link EnrichmentSnippet.SnippetType#CLASS_BODY} snippet with the full class body
+ *       from {@code targetGraph} <em>only when the union contains no member nodes</em>
+ *       (METHOD/FIELD/CONSTRUCTOR). When member nodes are present their individual snippets
+ *       provide sufficient context.</li>
  *   <li><b>Pass 1</b>: Adds a {@link EnrichmentSnippet.SnippetType#CLASS_DECLARATION} snippet
  *       for the declaring class of each deleted method/field node.</li>
  *   <li><b>Pass 2</b>: For each deleted METHOD/FIELD/CONSTRUCTOR node finds its callers/readers
@@ -64,25 +66,34 @@ public class DeletionContextStrategy implements ContextStrategy {
         Set<String> seenClass = new HashSet<>();
         Map<String, Integer> snippetsPerNode = new HashMap<>();
 
-        // Pass 0: CLASS/INTERFACE/ANNOTATION nodes that are themselves in the union—emit full body
-        for (GraphNode node : union.graphNodes()) {
-            if (node.kind() != NodeKind.CLASS && node.kind() != NodeKind.INTERFACE
-                    && node.kind() != NodeKind.ANNOTATION) continue;
+        // Pass 0: CLASS/INTERFACE/ANNOTATION nodes — emit full body ONLY when
+        // the union contains no member nodes (method/field/constructor).
+        // When member nodes are present their individual snippets provide sufficient context.
+        boolean hasMemberNodes = union.graphNodes().stream().anyMatch(n ->
+                n.kind() == NodeKind.METHOD
+                || n.kind() == NodeKind.FIELD
+                || n.kind() == NodeKind.CONSTRUCTOR);
 
-            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
-            boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
-            if (!hasDel) continue;
+        if (!hasMemberNodes) {
+            for (GraphNode node : union.graphNodes()) {
+                if (node.kind() != NodeKind.CLASS && node.kind() != NodeKind.INTERFACE
+                        && node.kind() != NodeKind.ANNOTATION) continue;
 
-            GraphNode resolved = targetGraph.nodes.get(node.id());
-            if (resolved == null) continue;
-            if (!seenClass.add("BODY:" + resolved.id())) continue;
+                List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+                boolean hasDel = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.DELETE);
+                if (!hasDel) continue;
 
-            snippets.add(EnrichmentSnippet.ofBody(
-                    EnrichmentSnippet.SnippetType.CLASS_BODY, resolved,
-                    "Full body of deleted " + resolved.kind().name().toLowerCase()
-                            + " '" + resolved.simpleName() + "'",
-                    EnrichmentSnippet.LineContext.DELETE));
-            snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                GraphNode resolved = targetGraph.nodes.get(node.id());
+                if (resolved == null) continue;
+                if (!seenClass.add("BODY:" + resolved.id())) continue;
+
+                snippets.add(EnrichmentSnippet.ofBody(
+                        EnrichmentSnippet.SnippetType.CLASS_BODY, resolved,
+                        "Full body of deleted " + resolved.kind().name().toLowerCase()
+                                + " '" + resolved.simpleName() + "'",
+                        EnrichmentSnippet.LineContext.DELETE));
+                snippetsPerNode.merge(node.id(), 1, Integer::sum);
+            }
         }
 
         // Pass 1: declaring classes for deleted method/field/constructor nodes
