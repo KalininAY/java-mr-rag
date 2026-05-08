@@ -20,8 +20,6 @@ public class ProjectGraph {
     public final Map<String, List<GraphNode>>  bySimpleName = new ConcurrentHashMap<>();
     public final Map<String, List<GraphNode>>  byLine       = new ConcurrentHashMap<>();
     public final Map<String, List<GraphNode>>  byFile       = new ConcurrentHashMap<>();
-    /** Deduplicated set of nodes indexed by source file path. */
-    public final Map<String, Set<GraphNode>>   byFilePath   = new ConcurrentHashMap<>();
 
     public Set<String> allFilePaths() {
         return byFile.keySet();
@@ -32,7 +30,6 @@ public class ProjectGraph {
         bySimpleName.computeIfAbsent(n.simpleName(),             k -> new CopyOnWriteArrayList<>()).add(n);
         byLine      .computeIfAbsent(n.filePath() + "#" + n.startLine(), k -> new CopyOnWriteArrayList<>()).add(n);
         byFile      .computeIfAbsent(n.filePath(),                k -> new CopyOnWriteArrayList<>()).add(n);
-        byFilePath  .computeIfAbsent(n.filePath(),                k -> ConcurrentHashMap.newKeySet()).add(n);
     }
 
     public void addEdge(GraphEdge e) {
