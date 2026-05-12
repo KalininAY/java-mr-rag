@@ -119,7 +119,11 @@ public class GroupRepresentationBuilder {
             for (EnrichmentSnippet s : methodBodies) {
                 sb.append("`").append(s.symbolName()).append("`")
                         .append(" @ `").append(s.filePath())
-                        .append(":").append(s.startLine()).append("`\n\n");
+                        .append(":").append(s.startLine()).append("`");
+                if (s.nodeId() != null) {
+                    sb.append(" · nodeId: `").append(s.nodeId()).append("`");
+                }
+                sb.append("\n\n");
                 String src = s.sourceSnippet();
                 if (src != null && !src.isBlank()) {
                     sb.append("```\n");
@@ -133,10 +137,16 @@ public class GroupRepresentationBuilder {
         if (!otherSnippets.isEmpty()) {
             sb.append("**Context snippets (").append(otherSnippets.size()).append("):**\n\n");
             for (EnrichmentSnippet s : otherSnippets) {
-                sb.append("- **").append(s.type()).append("** `")
+                sb.append("- **").append(s.type()).append("** [")
+                        .append(s.lineContext() != null ? s.lineContext() : "")
+                        .append("] `")
                         .append(s.symbolName()).append("` @ `")
                         .append(s.filePath()).append(":")
-                        .append(s.startLine()).append("`  \n");
+                        .append(s.startLine()).append("`");
+                if (s.nodeId() != null) {
+                    sb.append(" · nodeId: `").append(s.nodeId()).append("`");
+                }
+                sb.append("  \n");
                 sb.append("  _").append(s.explanation()).append("_\n");
                 String src = s.sourceSnippet();
                 if (src != null && !src.isBlank()) {
@@ -192,7 +202,9 @@ public class GroupRepresentationBuilder {
         sb.append("**Method signature:**\n\n");
         sb.append("`").append(simpleMethodName(methodNode.id())).append("`")
                 .append(" @ `").append(methodNode.filePath())
-                .append(":").append(methodNode.startLine()).append("`\n\n");
+                .append(":").append(methodNode.startLine()).append("`");
+        sb.append(" · nodeId: `").append(methodNode.id()).append("`");
+        sb.append("\n\n");
 
         String src = methodNode.sourceSnippet();
         if (src != null && !src.isBlank()) {
