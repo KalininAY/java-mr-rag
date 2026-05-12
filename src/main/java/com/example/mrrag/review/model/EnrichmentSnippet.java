@@ -7,9 +7,14 @@ import com.example.mrrag.graph.model.GraphNode;
  *
  * <p>{@link #lineContext()} indicates whether this snippet was collected for an ADD line,
  * a DELETE line, or both — so the LLM knows which side of the diff it relates to.
+ *
+ * <p>{@link #nodeId()} is the {@link GraphNode#id()} of the source node — use it to query
+ * {@code GET /api/graph/node?nodeId=...} or {@code GET /api/graph/edges?nodeId=...}.
+ * May be {@code null} for synthetic snippets not backed by a graph node.
  */
 public record EnrichmentSnippet(
         SnippetType type,
+        String nodeId,
         String filePath,
         int startLine,
         int endLine,
@@ -28,17 +33,32 @@ public record EnrichmentSnippet(
         BOTH
     }
 
-    /** Backward-compat 7-arg constructor — defaults {@code lineContext} to {@link LineContext#BOTH}. */
+    // ------------------------------------------------------------------
+    // Backward-compatible constructors (nodeId = null)
+    // ------------------------------------------------------------------
+
+    /** Backward-compat 7-arg constructor — defaults {@code lineContext} to {@link LineContext#BOTH}, nodeId to null. */
     public EnrichmentSnippet(SnippetType type, String filePath, int startLine, int endLine,
                              String symbolName, String sourceSnippet, String explanation) {
-        this(type, filePath, startLine, endLine, symbolName, sourceSnippet, explanation, LineContext.BOTH);
+        this(type, null, filePath, startLine, endLine, symbolName, sourceSnippet, explanation, LineContext.BOTH);
     }
 
-    /** Full-body convenience constructor — uses {@code node.sourceSnippet()}, LineContext.BOTH. */
+    /** Backward-compat 8-arg constructor (type, filePath, ..., lineContext) — nodeId = null. */
+    public EnrichmentSnippet(SnippetType type, String filePath, int startLine, int endLine,
+                             String symbolName, String sourceSnippet, String explanation,
+                             LineContext lineContext) {
+        this(type, null, filePath, startLine, endLine, symbolName, sourceSnippet, explanation, lineContext);
+    }
+
+    /** Full-body convenience constructor from {@link GraphNode} — uses {@code node.sourceSnippet()}, LineContext.BOTH. */
     public EnrichmentSnippet(SnippetType type, GraphNode node, String explanation) {
-        this(type, node.filePath(), node.startLine(), node.endLine(),
+        this(type, node.id(), node.filePath(), node.startLine(), node.endLine(),
                 node.simpleName(), node.sourceSnippet(), explanation, LineContext.BOTH);
     }
+
+    // ------------------------------------------------------------------
+    // Static factory methods
+    // ------------------------------------------------------------------
 
     /**
      * Declaration-only factory — uses {@code node.declarationSnippet()} instead of the full body.
@@ -48,6 +68,7 @@ public record EnrichmentSnippet(
                                                    String explanation, LineContext lineContext) {
         return new EnrichmentSnippet(
                 type,
+                node.id(),
                 node.filePath(),
                 node.startLine(),
                 node.startLine(),
@@ -70,6 +91,7 @@ public record EnrichmentSnippet(
                                             String explanation, LineContext lineContext) {
         return new EnrichmentSnippet(
                 type,
+                node.id(),
                 node.filePath(),
                 node.startLine(),
                 node.endLine(),
