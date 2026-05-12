@@ -19,7 +19,9 @@ import java.util.stream.Collectors;
  *   <li><b>Enclosing context</b> section — METHOD_BODY snippets.</li>
  *   <li><b>Context snippets</b> section — all other enrichment snippets,
  *       each labelled with {@code [ADD]} or {@code [DELETE]} from
- *       {@link EnrichmentSnippet#lineContext()}.</li>
+ *       {@link EnrichmentSnippet#lineContext()}, and with a {@code nodeId}
+ *       link for use with {@code GET /api/graph/node} and
+ *       {@code GET /api/graph/edges}.</li>
  * </ol>
  */
 @Component
@@ -124,9 +126,7 @@ public class GroupRepresentationBuilder {
         if (!methodBodies.isEmpty()) {
             sb.append("**Enclosing context (").append(methodBodies.size()).append("):**\n\n");
             for (EnrichmentSnippet s : methodBodies) {
-                sb.append("`").append(s.symbolName()).append("`")
-                        .append(" @ `").append(s.filePath())
-                        .append(":").append(s.startLine()).append("`\n\n");
+                renderSnippetHeader(sb, s);
                 renderSnippetBlock(sb, s, "  ");
             }
         }
@@ -140,7 +140,11 @@ public class GroupRepresentationBuilder {
                         .append(ctxLabel)
                         .append("`").append(s.symbolName()).append("` @ `")
                         .append(s.filePath()).append(":")
-                        .append(s.startLine()).append("`  \n");
+                        .append(s.startLine()).append("`");
+                if (s.nodeId() != null) {
+                    sb.append(" · nodeId: `").append(s.nodeId()).append("`");
+                }
+                sb.append("  \n");
                 sb.append("  _").append(s.explanation()).append("_\n");
                 renderSnippetBlock(sb, s, "  ");
                 sb.append('\n');
@@ -148,6 +152,23 @@ public class GroupRepresentationBuilder {
         }
 
         return sb.toString();
+    }
+
+    /**
+     * Renders the header line for a METHOD_BODY snippet, including nodeId if available.
+     *
+     * <pre>
+     * `symbolName` @ `file:line`  · nodeId: `com.example.Foo#bar()`
+     * </pre>
+     */
+    private void renderSnippetHeader(StringBuilder sb, EnrichmentSnippet s) {
+        sb.append("`").append(s.symbolName()).append("`")
+                .append(" @ `").append(s.filePath())
+                .append(":").append(s.startLine()).append("`");
+        if (s.nodeId() != null) {
+            sb.append(" \u00b7 nodeId: `").append(s.nodeId()).append("`");
+        }
+        sb.append("\n\n");
     }
 
     /**
