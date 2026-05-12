@@ -75,13 +75,12 @@ public class ModificationContextStrategy implements ContextStrategy {
      * finds the smallest enclosing METHOD node for each line, and adds a
      * {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet per unique method.
      *
-     * <p>Using the smallest enclosing method (min span) avoids accidentally
-     * picking an outer class or lambda wrapper when nested methods exist.
+     * <p>Uses the {@link EnrichmentSnippet#EnrichmentSnippet(EnrichmentSnippet.SnippetType, com.example.mrrag.graph.model.GraphNode, String)}
+     * constructor so that {@code nodeId} is taken directly from the existing graph node.
      */
     private void collectContainingMethods(
             ChangeGroup group, ProjectGraph graph, List<EnrichmentSnippet> snippets) {
 
-        // Track already-added method node IDs to avoid duplicates
         Set<String> seenMethodIds = new LinkedHashSet<>();
 
         List<ChangedLine> changedLines = group.changedLines().stream()
@@ -97,21 +96,15 @@ public class ModificationContextStrategy implements ContextStrategy {
 
             graph.nodesAtLine(file, line).stream()
                     .filter(n -> n.kind() == NodeKind.METHOD)
-                    // smallest span = most specific enclosing method
                     .min(Comparator.comparingInt(n -> n.endLine() - n.startLine()))
                     .ifPresent(method -> {
                         if (snippets.size() >= maxSnippetsPerGroup) return;
-                        if (!seenMethodIds.add(method.id())) return; // already added
+                        if (!seenMethodIds.add(method.id())) return;
 
-                        int end = Math.min(method.endLine(),
-                                method.startLine() + maxSnippetLines - 1);
+                        // nodeId = method.id() — берём id напрямую из ноды графа
                         snippets.add(new EnrichmentSnippet(
                                 EnrichmentSnippet.SnippetType.METHOD_BODY,
-                                method.filePath(),
-                                method.startLine(),
-                                end,
-                                method.simpleName(),
-                                method.sourceSnippet(),
+                                method,
                                 "Body of enclosing method '" + method.simpleName() + "'"
                         ));
                     });
