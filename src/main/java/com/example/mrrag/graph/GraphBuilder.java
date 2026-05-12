@@ -79,7 +79,7 @@ public class GraphBuilder {
 
         Launcher launcher = new Launcher();
         Environment environment = launcher.getEnvironment();
-        environment.setNoClasspath(true);
+        environment.setNoClasspath(false);
         environment.setCommentEnabled(true);
         environment.setAutoImports(false);
         environment.setIgnoreSyntaxErrors(true);
@@ -355,9 +355,8 @@ public class GraphBuilder {
                 if (callerId == null) return;
                 String file = AstGraphUtils.graphFilePath(inv, projectRoot, repoPaths);
                 int[] declarationLines = AstGraphUtils.declarationLines(inv, sourceLines);
-                graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES,
-                        AstGraphUtils.execRefIdForChainedInvocation(inv),
-                        file, declarationLines[0], declarationLines[1]));
+                String calleeId = AstGraphUtils.execRefIdForChainedInvocation(inv);
+                graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES, calleeId, file, declarationLines[0], declarationLines[1]));
             }));
 
         if (edgeConfig.isEnabled(EdgeKind.INSTANTIATES) || edgeConfig.isEnabled(EdgeKind.INSTANTIATES_ANONYMOUS))

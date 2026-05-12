@@ -36,24 +36,19 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/graph")
 @RequiredArgsConstructor
 @Tag(name = "Граф (GitLab API)",
-        description = "Построение AST-графа через GitLab API")
+        description = "Построение AST-графа")
 public class GraphApiController {
 
     private static final String MARKDOWN_UTF8 = "text/markdown;charset=UTF-8";
 
     private final CachedManagementService cachedService;
 
-    // ──────────────────────────────────────────────────────────────────
-    // Build
-    // ──────────────────────────────────────────────────────────────────
-
     @Operation(
             summary = "Построить граф с кэшированием (клон один раз, инкрементальное обновление)",
             description = """
-                    При первом запросе клонирует ветку и строит полный AST-граф.
+                    Клонирует ветку и строит полный AST-граф.
                     Повторный запрос с тем же namespace/repo/branch: если SHA не изменился —
-                    возвращает граф из памяти; если появились новые коммиты — перестраивает
-                    только изменённые файлы.
+                    возвращает граф из памяти.
                     """,
             responses = {
                     @ApiResponse(responseCode = "200",
@@ -61,21 +56,16 @@ public class GraphApiController {
                     @ApiResponse(responseCode = "500", description = "Ошибка клонирования или построения графа")
             }
     )
-    @PostMapping(value = "/local",
+    @PostMapping(value = "/build",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<GraphBuildStats> local(@RequestBody @Valid RemoteProjectRequest request) {
+    public Mono<GraphBuildStats> buildGraph(@RequestBody @Valid RemoteProjectRequest request) {
         return Mono.fromCallable(() -> {
             ProjectKey key = ProjectKey.from(request);
             ProjectGraph graph = cachedService.getOrBuildGraph(key, request.token());
-            return toStats(request, "(cached clone)", graph);
+            return toStats(request, graph);
         }).subscribeOn(Schedulers.boundedElastic());
     }
-
-    // ──────────────────────────────────────────────────────────────────
-    // GET /api/graph/node?nodeId=…
-    // Возвращает ноду в виде Markdown
-    // ──────────────────────────────────────────────────────────────────
 
     @Operation(
             summary = "Получить ноду графа в Markdown",
@@ -94,35 +84,24 @@ public class GraphApiController {
             @RequestParam String namespace,
             @RequestParam String repo,
             @RequestParam String branch,
-            @RequestParam String token,
-            @RequestParam String nodeId
-    ) {
+            @RequestParam String nodeId) {
         return Mono.fromCallable(() -> {
             ProjectKey key = new ProjectKey(namespace, repo, branch);
-            ProjectGraph graph = cachedService.getOrBuildGraph(key, token);
+            ProjectGraph graph = cachedService.getOrBuildGraph(key, null);
             GraphNode node = graph.nodes.get(nodeId);
-            if (node == null) {
-                return ResponseEntity.<String>notFound().build();
-            }
+            if (node == null)
+                return ResponseEntity.notFound().build();
             return ResponseEntity.ok(GraphMarkdownRenderer.renderNode(node));
-        }).subscribeOn(Schedulers.boundedElastic());
+        });
     }
-
-    // ──────────────────────────────────────────────────────────────────
-    // GET /api/graph/edges?nodeId=…&dir=FROM|TO[&kind=CALLS]
-    // Возвращает рёбра ноды в виде Markdown
-    // ──────────────────────────────────────────────────────────────────
 
     @Operation(
             summary = "Получить рёбра ноды в Markdown",
             description = """
-                    Возвращает таблицу рёбер в формате GitHub-Flavored Markdown.
+                    Возвращает таблицу рёбер в формате Markdown.
                     
-                    **dir=FROM** (по умолчанию) — исходящие рёбра (edgesFrom): вызовы, которые делает нода.
-                    **dir=TO** — входящие рёбра (edgesTo): кто ссылается на данную ноду.
-                    
-                    Необязательный параметр **kind** фильтрует по типу ребра
-                    (CALLS, DECLARES, USES_TYPE, HAS_JAVADOC и т.д.).
+                    **from=true** (по умолчанию) — исходящие рёбра (edgesFrom): вызовы, которые делает нода.
+                    **from=false** — входящие рёбра (edgesTo): кто ссылается на данную ноду.
                     """,
             responses = {
                     @ApiResponse(responseCode = "200", description = "Markdown-таблица рёбер"),
@@ -136,8 +115,7 @@ public class GraphApiController {
             @RequestParam String branch,
             @RequestParam String token,
             @RequestParam String nodeId,
-            @RequestParam(defaultValue = "FROM") String dir,
-            @RequestParam(required = false)       String kind
+            @RequestParam Boolean from
     ) {
         return Mono.fromCallable(() -> {
             ProjectKey key = new ProjectKey(namespace, repo, branch);
@@ -147,28 +125,20 @@ public class GraphApiController {
                 return ResponseEntity.<String>notFound().build();
             }
 
-            List<GraphEdge> edges = "TO".equalsIgnoreCase(dir)
-                    ? graph.incoming(nodeId)
-                    : graph.outgoing(nodeId);
+            List<GraphEdge> edges = from
+                    ? graph.outgoing(nodeId)
+                    : graph.incoming(nodeId);
 
-            EdgeKind kindFilter = null;
-            if (kind != null && !kind.isBlank()) {
-                kindFilter = EdgeKind.valueOf(kind.toUpperCase());
-                final EdgeKind fk = kindFilter;
-                edges = edges.stream().filter(e -> e.kind() == fk).toList();
-            }
-
-            String md = GraphMarkdownRenderer.renderEdges(nodeId, edges, dir, kindFilter);
+            String md = GraphMarkdownRenderer.renderEdges(nodeId, edges, from);
             return ResponseEntity.ok(md);
-        }).subscribeOn(Schedulers.boundedElastic());
+        });
     }
 
     // ──────────────────────────────────────────────────────────────────
     // Internal helpers
     // ──────────────────────────────────────────────────────────────────
 
-    private GraphBuildStats toStats(RemoteProjectRequest request, String workspaceDir,
-                                    ProjectGraph graph) {
+    private GraphBuildStats toStats(RemoteProjectRequest request, ProjectGraph graph) {
         Map<NodeKind, Long> nodesByKind = Arrays.stream(NodeKind.values())
                 .collect(Collectors.toMap(k -> k,
                         k -> graph.nodes.values().stream()
@@ -180,9 +150,7 @@ public class GraphApiController {
                                 .filter(e -> e.kind() == k).count()));
         return new GraphBuildStats(
                 request.namespace(), request.repo(), request.branch(),
-                workspaceDir,
-                0, 0,
-                graph.nodes.size(), 0,
+                graph.nodes.size(), edgesByKind.size(),
                 nodesByKind, edgesByKind,
                 graph.byFile.size());
     }

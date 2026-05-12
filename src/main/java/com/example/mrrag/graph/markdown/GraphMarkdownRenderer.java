@@ -68,14 +68,10 @@ public final class GraphMarkdownRenderer {
      *
      * @param nodeId    id of the anchor node (used in the section heading)
      * @param edges     pre-filtered list of edges to render
-     * @param direction "FROM" (outgoing) or "TO" (incoming)
-     * @param kindFilter optional {@link EdgeKind} that was used to filter; {@code null} = no filter
+     * @param fromDirection "FROM" (outgoing) or "TO" (incoming)
      */
-    public static String renderEdges(String nodeId,
-                                     List<GraphEdge> edges,
-                                     String direction,
-                                     EdgeKind kindFilter) {
-        boolean incoming = "TO".equalsIgnoreCase(direction);
+    public static String renderEdges(String nodeId, List<GraphEdge> edges, boolean fromDirection) {
+        boolean incoming = !fromDirection;
         String label = incoming
                 ? "Edges TO `" + nodeId + "` (incoming)"
                 : "Edges FROM `" + nodeId + "` (outgoing)";
@@ -83,9 +79,6 @@ public final class GraphMarkdownRenderer {
         StringBuilder md = new StringBuilder();
         md.append("## ").append(label).append("\n\n");
 
-        if (kindFilter != null) {
-            md.append("_Filter: kind = `").append(kindFilter).append("`_\n\n");
-        }
 
         if (edges.isEmpty()) {
             md.append("_No edges._\n");
