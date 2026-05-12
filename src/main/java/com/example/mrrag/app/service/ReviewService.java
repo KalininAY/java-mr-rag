@@ -76,6 +76,6 @@ public class ReviewService {
                 request.namespace(), request.repo(), request.mrIid(),
                 mr.getSourceBranch(), mr.getTargetBranch(),
                 mr.getTitle(), mr.getDescription(),
-                representations);
+                representations.stream().map(GroupRepresentation::markdown).toList());
     }
 }
