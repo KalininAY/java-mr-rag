@@ -113,13 +113,12 @@ public class GraphApiController {
             @RequestParam String namespace,
             @RequestParam String repo,
             @RequestParam String branch,
-            @RequestParam String token,
             @RequestParam String nodeId,
             @RequestParam Boolean from
     ) {
         return Mono.fromCallable(() -> {
             ProjectKey key = new ProjectKey(namespace, repo, branch);
-            ProjectGraph graph = cachedService.getOrBuildGraph(key, token);
+            ProjectGraph graph = cachedService.getOrBuildGraph(key, null);
 
             if (!graph.nodes.containsKey(nodeId)) {
                 return ResponseEntity.<String>notFound().build();
