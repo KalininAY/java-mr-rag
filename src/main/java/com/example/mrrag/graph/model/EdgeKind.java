@@ -12,9 +12,6 @@ public enum EdgeKind {
     ANNOTATED_WITH,
     REFERENCES_TYPE, OVERRIDES,
     HAS_TYPE_PARAM, HAS_BOUND, ANNOTATION_ATTR,
-    /** Compilation unit → import node (one edge per import statement). */
-    HAS_IMPORT,
-    IMPORTS,
     /** Type or member → its Javadoc node. */
     HAS_JAVADOC
 }
