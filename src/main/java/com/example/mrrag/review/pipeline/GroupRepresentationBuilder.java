@@ -136,15 +136,18 @@ public class GroupRepresentationBuilder {
             sb.append("**Context snippets (").append(otherSnippets.size()).append("):**\n\n");
             for (EnrichmentSnippet s : otherSnippets) {
                 String ctxLabel = lineContextLabel(s.lineContext());
+                // First line: - **TYPE** [ADD/DELETE] `name` @ `file:line`
                 sb.append("- **").append(s.type()).append("** ")
                         .append(ctxLabel)
                         .append("`").append(s.symbolName()).append("` @ `")
                         .append(s.filePath()).append(":")
                         .append(s.startLine()).append("`");
-                if (s.nodeId() != null) {
-                    sb.append(" · nodeId: `").append(s.nodeId()).append("`");
-                }
                 sb.append("  \n");
+                // Second line (optional): · <kind> nodeId: `...`
+                if (s.nodeId() != null) {
+                    String kindLabel = nodeIdKindLabel(s.type());
+                    sb.append("  · ").append(kindLabel).append(" nodeId: `").append(s.nodeId()).append("`  \n");
+                }
                 sb.append("  _").append(s.explanation()).append("_\n");
                 renderSnippetBlock(sb, s, "  ");
                 sb.append('\n');
