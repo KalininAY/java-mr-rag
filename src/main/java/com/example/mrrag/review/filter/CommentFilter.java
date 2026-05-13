@@ -15,7 +15,15 @@ public class CommentFilter implements ContextFilter {
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
         for (ChangedLine l : lines) byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
         Set<ChangedLine> result = new LinkedHashSet<>();
-        for (List<ChangedLine> fileLines : byFile.values()) result.addAll(mergeMirrorInFile(fileLines));
+        for (List<ChangedLine> fileLines : byFile.values()) {
+            // Sort by effective line number: ADD lines use lineNumber, DELETE lines use oldLineNumber.
+            // This ensures that a DELETE(oldLine=78) and ADD(line=78) end up adjacent in the list
+            // so the mirror-pair window [i, i+4) can find them.
+            List<ChangedLine> sortFileLines = fileLines.stream()
+                    .sorted(Comparator.comparingInt(l -> l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber()))
+                    .toList();
+            result.addAll(mergeMirrorInFile(sortFileLines));
+        }
         return result;
     }
 
@@ -41,7 +49,7 @@ public class CommentFilter implements ContextFilter {
                 if (delNorm.equals(addNorm) && !delNorm.isBlank()) {
                     consumed[j] = true;
                     consumed[i] = true;
-                    out.add(del.asContext());
+                    out.add(del);
                     out.add(add.asContext());
                     paired = true;
                     log.trace("Mirror pair merged: '{}'", delNorm);

@@ -10,17 +10,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-/**
- * Parses GitLab Diff objects (unified diff format) into structured ChangedLine lists.
- *
- * <p>Only ADD and DELETE lines are emitted. CONTEXT lines are used internally
- * to track line-number offsets but are <b>not</b> included in the result —
- * keeping the downstream model free of presentation concerns.
- *
- * <p>If context lines are ever needed (e.g. for proximity grouping), the
- * {@link ChangeGrouper} should re-read them from the raw diff rather than
- * relying on this parser to pass them through.
- */
 @Slf4j
 @Component
 public class DiffParser {

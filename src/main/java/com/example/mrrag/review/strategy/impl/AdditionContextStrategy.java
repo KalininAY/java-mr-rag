@@ -1,8 +1,9 @@
 package com.example.mrrag.review.strategy.impl;
 
-import com.example.mrrag.graph.AstGraphUtils;
+import com.example.mrrag.graph.model.EdgeKind;
 import com.example.mrrag.graph.model.GraphEdge;
 import com.example.mrrag.graph.model.GraphNode;
+import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import com.example.mrrag.review.strategy.ContextStrategy;
@@ -11,82 +12,354 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
- * Strategy for {@link ChangeType#ADDITION}.
+ * Collects context for ADD lines in a {@link UnionLine}.
  *
- * <p>Focuses on newly called declarations — follows outgoing edges from
- * ADD lines to collect method/field/variable declarations that provide
- * context about what the new code is calling.
+ * <p>All emitted snippets carry {@link EnrichmentSnippet.LineContext#ADD}.
+ *
+ * <p>Snippet budget is applied <em>per GraphNode per group</em> so that
+ * passes with different importance levels do not compete for the same slots:
+ * <ul>
+ *   <li><b>Structural</b> ({@code maxStructuralSnippetsPerNode}, default 1):
+ *       Pass 0 (CLASS_BODY) and Pass 1 (CLASS_DECLARATION).</li>
+ *   <li><b>Dependency</b> ({@code maxDependencySnippetsPerNode}, default 3):
+ *       Pass 2 — outgoing INVOKES / READS_FIELD / WRITES_FIELD / EXTENDS /
+ *       IMPLEMENTS / INSTANTIATES edges.</li>
+ *   <li><b>Relational</b> ({@code maxRelationalSnippetsPerNode}, default 2):
+ *       Pass 3 (ANNOTATED_WITH) and Pass 4 (overloads + OVERRIDES).</li>
+ *   <li><b>Behavioral</b> ({@code maxBehavioralSnippetsPerNode}, default 1):
+ *       Pass 5 — METHOD_BODY when the signature line is among the ADD lines.</li>
+ * </ul>
+ *
+ * <p>Strategy passes:
+ * <ul>
+ *   <li><b>Pass 0</b>: For CLASS/INTERFACE/ANNOTATION nodes that are themselves in the union,
+ *       emits a {@link EnrichmentSnippet.SnippetType#CLASS_BODY} snippet with the full class body
+ *       <em>only when the union contains no member nodes</em> (METHOD/FIELD/CONSTRUCTOR).
+ *       When member nodes are present, their individual snippets provide sufficient context.</li>
+ *   <li><b>Pass 1</b>: Adds a {@link EnrichmentSnippet.SnippetType#CLASS_DECLARATION} snippet
+ *       for the declaring class of every method/field node in the union (via DECLARES edges).</li>
+ *   <li><b>Pass 2</b>: Follows outgoing INVOKES/READS_FIELD/WRITES_FIELD/EXTENDS/IMPLEMENTS/
+ *       INSTANTIATES edges to surface declarations used by added code.</li>
+ *   <li><b>Pass 3</b>: For ANNOTATION nodes follows incoming ANNOTATED_WITH edges to surface
+ *       the method/field/class that the annotation decorates on the exact changed line
+ *       (matched by edge.startLine and caller.filePath).</li>
+ *   <li><b>Pass 4</b>: For METHOD nodes surfaces sibling overloads (same simpleName, different id)
+ *       and the interface/abstract method overridden via OVERRIDES edge.</li>
+ *   <li><b>Pass 5</b>: For METHOD/CONSTRUCTOR nodes whose signature line is among the changed
+ *       ADD lines (changed line &le; node.startLine + 2), emits a
+ *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet of the node itself so that
+ *       the full method body appears in the "Enclosing context" section.</li>
+ * </ul>
  */
 @Slf4j
 @Component
 public class AdditionContextStrategy implements ContextStrategy {
 
-    @Value("${app.enrichment.maxSnippetsPerGroup:12}")
-    private int maxSnippetsPerGroup;
+    /**
+     * Max structural snippets per node (Pass 0: CLASS_BODY, Pass 1: CLASS_DECLARATION).
+     * Kept at 1 by default — one declaring-class declaration per changed member is sufficient.
+     */
+    @Value("${app.enrichment.maxStructuralSnippetsPerNode:1}")
+    private int maxStructuralSnippetsPerNode;
 
-    @Value("${app.enrichment.maxSnippetLines:30}")
-    private int maxSnippetLines;
+    /**
+     * Max dependency snippets per node (Pass 2: INVOKES, READS_FIELD, WRITES_FIELD, …).
+     * Higher default because a method may legitimately call several external APIs.
+     */
+    @Value("${app.enrichment.maxDependencySnippetsPerNode:3}")
+    private int maxDependencySnippetsPerNode;
 
-    @Override
-    public boolean supports(ChangeType changeType) {
-        return changeType == ChangeType.ADDITION;
+    /**
+     * Max relational snippets per node (Pass 3: annotations, Pass 4: overloads + OVERRIDES).
+     * Kept low — overloads + one interface method is normally sufficient.
+     */
+    @Value("${app.enrichment.maxRelationalSnippetsPerNode:2}")
+    private int maxRelationalSnippetsPerNode;
+
+    /**
+     * Max behavioral snippets per node (Pass 5: METHOD_BODY on signature change).
+     * Almost always 1 — a node has exactly one body.
+     */
+    @Value("${app.enrichment.maxBehavioralSnippetsPerNode:1}")
+    private int maxBehavioralSnippetsPerNode;
+
+    @Value("${app.enrichment.maxCallersPerNode:5}")
+    private int maxCallersPerNode;
+
+    @Value("${app.enrichment.callerWindowLines:5}")
+    private int callerWindowLines;
+
+    // -------------------------------------------------------------------------
+    // Per-group counter helpers
+    // -------------------------------------------------------------------------
+
+    private enum SnippetGroup { STRUCTURAL, DEPENDENCY, RELATIONAL, BEHAVIORAL }
+
+    /** Returns true and increments the counter if the node is still under its group limit. */
+    private boolean tryAccept(Map<String, Map<SnippetGroup, Integer>> counters,
+                               String nodeId, SnippetGroup group, int limit) {
+        Map<SnippetGroup, Integer> nodeCounters =
+                counters.computeIfAbsent(nodeId, k -> new EnumMap<>(SnippetGroup.class));
+        int current = nodeCounters.getOrDefault(group, 0);
+        if (current >= limit) return false;
+        nodeCounters.put(group, current + 1);
+        return true;
     }
 
+    // -------------------------------------------------------------------------
+
     @Override
-    public List<EnrichmentSnippet> collectContext(ChangeGroup group, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+    public List<EnrichmentSnippet> collectContext(
+            UnionLine union, ProjectGraph sourceGraph, ProjectGraph targetGraph) {
+
+        if (union.graphNodes().isEmpty()) return List.of();
+
         List<EnrichmentSnippet> snippets = new ArrayList<>();
         Set<String> seenDecl = new HashSet<>();
+        // per-node, per-group snippet counters
+        Map<String, Map<SnippetGroup, Integer>> counters = new HashMap<>();
 
-        List<ChangedLine> addLines = group.changedLines().stream()
-                .filter(l -> l.type() == ChangedLine.LineType.ADD)
-                .toList();
+        // Pass 0: CLASS/INTERFACE/ANNOTATION nodes — emit full body ONLY when
+        // the union contains no member nodes (method/field/constructor).
+        boolean hasMemberNodes = union.graphNodes().stream().anyMatch(n ->
+                n.kind() == NodeKind.METHOD
+                || n.kind() == NodeKind.FIELD
+                || n.kind() == NodeKind.CONSTRUCTOR);
 
-        for (ChangedLine cl : addLines) {
-            if (snippets.size() >= maxSnippetsPerGroup) break;
+        if (!hasMemberNodes) {
+            for (GraphNode node : union.graphNodes()) {
+                if (node.kind() != NodeKind.CLASS && node.kind() != NodeKind.INTERFACE
+                        && node.kind() != NodeKind.ANNOTATION) continue;
 
-            String file = AstGraphUtils.normalizeFilePath(cl.filePath(), sourceGraph);
-            int line = cl.lineNumber() > 0 ? cl.lineNumber() : cl.oldLineNumber();
-            if (line <= 0) continue;
+                List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+                boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
+                if (!hasAdd) continue;
 
-            List<GraphNode> enclosing = sourceGraph.nodesAtLine(file, line);
-            for (GraphNode enc : enclosing) {
-                if (snippets.size() >= maxSnippetsPerGroup) break;
-                for (GraphEdge edge : sourceGraph.outgoing(enc.id())) {
-                    if (snippets.size() >= maxSnippetsPerGroup) break;
-                    if (!file.equals(edge.filePath()) || edge.startLine() != line) continue;
+                GraphNode resolved = sourceGraph.nodes.get(node.id());
+                if (resolved == null) continue;
+                if (!seenDecl.add("BODY:" + resolved.id())) continue;
+                if (!tryAccept(counters, node.id(), SnippetGroup.STRUCTURAL, maxStructuralSnippetsPerNode)) continue;
 
-                    String targetId = edge.callee();
-                    if (seenDecl.contains(targetId)) continue;
-                    seenDecl.add(targetId);
+                snippets.add(EnrichmentSnippet.ofBody(
+                        EnrichmentSnippet.SnippetType.CLASS_BODY, resolved,
+                        "Full body of added " + resolved.kind().name().toLowerCase()
+                                + " '" + resolved.simpleName() + "'",
+                        EnrichmentSnippet.LineContext.ADD));
+            }
+        }
 
-                    GraphNode target = sourceGraph.nodes.get(targetId);
-                    if (target == null) continue;
+        // Pass 1: declaring classes for every method/field/constructor node in the union
+        for (GraphNode node : union.graphNodes()) {
+            if (node.kind() != NodeKind.METHOD && node.kind() != NodeKind.FIELD
+                    && node.kind() != NodeKind.CONSTRUCTOR) continue;
 
-                    switch (edge.kind()) {
-                        case INVOKES -> snippets.add(new EnrichmentSnippet(
-                                EnrichmentSnippet.SnippetType.METHOD_DECLARATION,
-                                target,
-                                "Declaration of method '" + target.simpleName() + "' called in added code"));
-                        case READS_FIELD, WRITES_FIELD -> snippets.add(
-                                EnrichmentSnippet.ofDeclaration(
-                                        EnrichmentSnippet.SnippetType.FIELD_DECLARATION,
-                                        target,
-                                        "Declaration of field '" + target.simpleName() + "' accessed in added code"));
-                        case READS_LOCAL_VAR, WRITES_LOCAL_VAR -> snippets.add(
-                                EnrichmentSnippet.ofDeclaration(
-                                        EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION,
-                                        target,
-                                        "Declaration of variable '" + target.simpleName() + "' used in added code"));
-                        default -> {
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
+            if (!hasAdd) continue;
+
+            if (!tryAccept(counters, node.id(), SnippetGroup.STRUCTURAL, maxStructuralSnippetsPerNode)) continue;
+
+            sourceGraph.incoming(node.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.DECLARES)
+                    .map(e -> sourceGraph.nodes.get(e.caller()))
+                    .filter(Objects::nonNull)
+                    .filter(cls -> cls.kind() == NodeKind.CLASS
+                            || cls.kind() == NodeKind.INTERFACE
+                            || cls.kind() == NodeKind.ANNOTATION)
+                    .filter(cls -> seenDecl.add("CLASS:" + cls.id()))
+                    .findFirst()
+                    .ifPresent(cls -> {
+                        snippets.add(EnrichmentSnippet.ofDeclaration(
+                                EnrichmentSnippet.SnippetType.CLASS_DECLARATION, cls,
+                                "Declaring class of changed method/field '" + node.simpleName() + "'",
+                                EnrichmentSnippet.LineContext.ADD));
+                        // counter was already incremented by tryAccept above
+                    });
+        }
+
+        // Pass 2: outgoing edges from union nodes (dependency group)
+        for (GraphNode node : union.graphNodes()) {
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
+            if (!hasAdd) continue;
+
+            Set<Integer> addLines = origins.stream()
+                    .filter(l -> l.type() == ChangedLine.LineType.ADD)
+                    .map(l -> l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber())
+                    .collect(Collectors.toSet());
+
+            for (GraphEdge edge : sourceGraph.outgoing(node.id())) {
+                if (!tryAccept(counters, node.id(), SnippetGroup.DEPENDENCY, maxDependencySnippetsPerNode)) break;
+
+                if (edge.startLine() > 0 && !addLines.contains(edge.startLine())) continue;
+
+                String targetId = edge.callee();
+                if (!seenDecl.add(targetId)) continue;
+
+                GraphNode target = sourceGraph.nodes.get(targetId);
+                if (target == null) continue;
+
+                EnrichmentSnippet snippet = switch (edge.kind()) {
+                    case INVOKES -> EnrichmentSnippet.ofDeclaration(
+                            EnrichmentSnippet.SnippetType.METHOD_DECLARATION, target,
+                            "Declaration of method '" + target.simpleName() + "' called in added code",
+                            EnrichmentSnippet.LineContext.ADD);
+                    case INSTANTIATES, INSTANTIATES_ANONYMOUS -> EnrichmentSnippet.ofDeclaration(
+                            EnrichmentSnippet.SnippetType.METHOD_DECLARATION, target,
+                            "Constructor of '" + target.simpleName() + "' instantiated in added code",
+                            EnrichmentSnippet.LineContext.ADD);
+                    case READS_FIELD, WRITES_FIELD -> EnrichmentSnippet.ofDeclaration(
+                            EnrichmentSnippet.SnippetType.FIELD_DECLARATION, target,
+                            "Declaration of field '" + target.simpleName() + "' accessed in added code",
+                            EnrichmentSnippet.LineContext.ADD);
+                    case READS_LOCAL_VAR, WRITES_LOCAL_VAR -> EnrichmentSnippet.ofDeclaration(
+                            EnrichmentSnippet.SnippetType.VARIABLE_DECLARATION, target,
+                            "Declaration of variable '" + target.simpleName() + "' used in added code",
+                            EnrichmentSnippet.LineContext.ADD);
+                    case EXTENDS -> {
+                        if (target.kind() == NodeKind.CLASS || target.kind() == NodeKind.INTERFACE) {
+                            yield EnrichmentSnippet.ofDeclaration(
+                                    EnrichmentSnippet.SnippetType.CLASS_DECLARATION, target,
+                                    "Parent class '" + target.simpleName() + "' extended by changed class",
+                                    EnrichmentSnippet.LineContext.ADD);
                         }
+                        yield null;
                     }
+                    case IMPLEMENTS -> {
+                        if (target.kind() == NodeKind.INTERFACE) {
+                            yield EnrichmentSnippet.ofDeclaration(
+                                    EnrichmentSnippet.SnippetType.CLASS_DECLARATION, target,
+                                    "Interface '" + target.simpleName() + "' implemented by changed class",
+                                    EnrichmentSnippet.LineContext.ADD);
+                        }
+                        yield null;
+                    }
+                    default -> null;
+                };
+
+                if (snippet != null) {
+                    snippets.add(snippet);
+                } else {
+                    // slot was claimed by tryAccept but no snippet produced — give it back
+                    counters.get(node.id()).merge(SnippetGroup.DEPENDENCY, -1, Integer::sum);
                 }
             }
         }
 
-        log.debug("AdditionContextStrategy: group={} snippets={}", group.id(), snippets.size());
-        return filterAlreadyInDiff(group, snippets);
+        // Pass 3: ANNOTATION nodes — find the specific element annotated on the changed line
+        for (GraphNode node : union.graphNodes()) {
+            if (node.kind() != NodeKind.ANNOTATION) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
+            if (!hasAdd) continue;
+
+            Set<String> addLineKeys = origins.stream()
+                    .filter(l -> l.type() == ChangedLine.LineType.ADD)
+                    .map(l -> l.filePath() + ":" + (l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber()))
+                    .collect(Collectors.toSet());
+
+            sourceGraph.incoming(node.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.ANNOTATED_WITH)
+                    .filter(e -> {
+                        GraphNode caller = sourceGraph.nodes.get(e.caller());
+                        if (caller == null) return false;
+                        String key = caller.filePath() + ":" + e.startLine();
+                        return addLineKeys.contains(key);
+                    })
+                    .map(e -> sourceGraph.nodes.get(e.caller()))
+                    .filter(Objects::nonNull)
+                    .filter(owner -> seenDecl.add("ANNOTATED:" + owner.id()))
+                    .forEach(owner -> {
+                        if (!tryAccept(counters, node.id(), SnippetGroup.RELATIONAL, maxRelationalSnippetsPerNode)) return;
+                        EnrichmentSnippet.SnippetType type = switch (owner.kind()) {
+                            case CLASS, INTERFACE -> EnrichmentSnippet.SnippetType.CLASS_DECLARATION;
+                            case FIELD -> EnrichmentSnippet.SnippetType.FIELD_DECLARATION;
+                            default -> EnrichmentSnippet.SnippetType.METHOD_DECLARATION;
+                        };
+                        snippets.add(EnrichmentSnippet.ofDeclaration(
+                                type, owner,
+                                "Element annotated with '@" + node.simpleName() + "'",
+                                EnrichmentSnippet.LineContext.ADD));
+                    });
+        }
+
+        // Pass 4: METHOD nodes — sibling overloads and overridden interface/abstract method
+        for (GraphNode node : union.graphNodes()) {
+            if (node.kind() != NodeKind.METHOD) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
+            if (!hasAdd) continue;
+
+            // 4a: sibling overloads
+            sourceGraph.incoming(node.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.DECLARES)
+                    .map(e -> sourceGraph.nodes.get(e.caller()))
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .ifPresent(declaringClass -> {
+                        sourceGraph.outgoing(declaringClass.id()).stream()
+                                .filter(e -> e.kind() == EdgeKind.DECLARES)
+                                .map(e -> sourceGraph.nodes.get(e.callee()))
+                                .filter(Objects::nonNull)
+                                .filter(sibling -> sibling.kind() == NodeKind.METHOD)
+                                .filter(sibling -> !sibling.id().equals(node.id()))
+                                .filter(sibling -> sibling.simpleName().equals(node.simpleName()))
+                                .filter(sibling -> seenDecl.add("OVERLOAD:" + sibling.id()))
+                                .forEach(sibling -> {
+                                    if (!tryAccept(counters, node.id(), SnippetGroup.RELATIONAL, maxRelationalSnippetsPerNode)) return;
+                                    snippets.add(EnrichmentSnippet.ofDeclaration(
+                                            EnrichmentSnippet.SnippetType.METHOD_DECLARATION, sibling,
+                                            "Sibling overload of '" + node.simpleName() + "'",
+                                            EnrichmentSnippet.LineContext.ADD));
+                                });
+                    });
+
+            // 4b: interface/abstract method overridden by this method
+            sourceGraph.outgoing(node.id()).stream()
+                    .filter(e -> e.kind() == EdgeKind.OVERRIDES)
+                    .map(e -> sourceGraph.nodes.get(e.callee()))
+                    .filter(Objects::nonNull)
+                    .filter(iface -> seenDecl.add("OVERRIDES:" + iface.id()))
+                    .findFirst()
+                    .ifPresent(iface -> {
+                        if (!tryAccept(counters, node.id(), SnippetGroup.RELATIONAL, maxRelationalSnippetsPerNode)) return;
+                        snippets.add(EnrichmentSnippet.ofDeclaration(
+                                EnrichmentSnippet.SnippetType.METHOD_DECLARATION, iface,
+                                "Interface/abstract method overridden by '" + node.simpleName() + "'",
+                                EnrichmentSnippet.LineContext.ADD));
+                    });
+        }
+
+        // Pass 5: METHOD/CONSTRUCTOR nodes — emit METHOD_BODY when signature line is changed
+        for (GraphNode node : union.graphNodes()) {
+            if (node.kind() != NodeKind.METHOD && node.kind() != NodeKind.CONSTRUCTOR) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean signatureChanged = origins.stream()
+                    .filter(l -> l.type() == ChangedLine.LineType.ADD)
+                    .map(l -> l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber())
+                    .anyMatch(ln -> ln <= node.startLine() + 2);
+            if (!signatureChanged) continue;
+
+            GraphNode resolved = sourceGraph.nodes.get(node.id());
+            if (resolved == null || resolved.sourceSnippet() == null) continue;
+            if (!seenDecl.add("BODY:" + resolved.id())) continue;
+            if (!tryAccept(counters, node.id(), SnippetGroup.BEHAVIORAL, maxBehavioralSnippetsPerNode)) continue;
+
+            snippets.add(EnrichmentSnippet.ofBody(
+                    EnrichmentSnippet.SnippetType.METHOD_BODY, resolved,
+                    "Body of " + resolved.kind().name().toLowerCase() + " '" + resolved.simpleName()
+                            + "' whose signature was changed",
+                    EnrichmentSnippet.LineContext.ADD));
+        }
+
+        log.debug("AdditionContextStrategy: union={} nodes={} snippets={}",
+                union.id(), union.graphNodes().size(), snippets.size());
+        return snippets;
     }
 }

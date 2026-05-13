@@ -8,7 +8,7 @@ import jakarta.validation.constraints.NotNull;
 public record ReviewRequest(
         @Schema(
                 description = "Namespace проекта в GitLab, например group/subgroup",
-                example = "mygroup/subgroup",
+                example = "bugbusters/modules",
                 requiredMode = Schema.RequiredMode.REQUIRED
         )
         @NotBlank
@@ -16,7 +16,7 @@ public record ReviewRequest(
 
         @Schema(
                 description = "Название проекта (репозитория) в GitLab",
-                example = "myrepo",
+                example = "extensions",
                 requiredMode = Schema.RequiredMode.REQUIRED
         )
         @NotBlank
@@ -24,7 +24,7 @@ public record ReviewRequest(
 
         @Schema(
                 description = "Внутренний идентификатор Merge Request (mrIid)",
-                example = "42",
+                example = "66",
                 requiredMode = Schema.RequiredMode.REQUIRED
         )
         @NotNull

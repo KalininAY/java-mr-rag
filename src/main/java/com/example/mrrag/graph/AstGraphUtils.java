@@ -7,7 +7,6 @@ import spoon.reflect.cu.position.BodyHolderSourcePosition;
 import spoon.reflect.cu.position.CompoundSourcePosition;
 import spoon.reflect.declaration.*;
 import spoon.reflect.reference.*;
-import spoon.reflect.visitor.filter.TypeFilter;
 
 import java.nio.file.Path;
 import java.util.*;
@@ -16,7 +15,7 @@ import java.util.stream.IntStream;
 
 /**
  * Utility class containing stateless helper methods extracted from
- * {@link GraphBuilderImpl} to keep the main service class focused on
+ * {@link GraphBuilder} to keep the main service class focused on
  * orchestration rather than low-level details.
  *
  * <h2>Responsibilities</h2>
@@ -44,7 +43,6 @@ public final class AstGraphUtils {
      * Extracts source lines [{@code startLine}, {@code endLine}] (1-based, inclusive) from
      * {@code sourceLines}. Returns {@code ""} when {@code fileLines} cannot be resolved —
      * there is no reliable fallback if the original source is absent.
-     *
      */
     public static String extractSource(Map<String, String[]> sourceLines,
                                        String filePath, int startLine, int endLine) {
@@ -171,7 +169,8 @@ public final class AstGraphUtils {
             SourcePosition pos = v.getPosition();
             if (pos != null && pos.isValidPosition() && pos.getFile() != null)
                 fileName = pos.getFile().getName();
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
         return "var@" + fileName + ":" + v.getSimpleName();
     }
 
@@ -210,7 +209,7 @@ public final class AstGraphUtils {
         if (ref == null) return "unresolved";
         try {
             String owner = qualifiedExecutableOwner(ref, useSite);
-            String sig = ref.getSignature();
+            String sig = buildSignature(ref, useSite);
             if (ref.isConstructor()) {
                 return constructorExecutableId(owner, sig);
             }
@@ -218,6 +217,106 @@ public final class AstGraphUtils {
         } catch (Exception e) {
             return "unresolved:" + ref.getSimpleName();
         }
+    }
+
+    /**
+     * Builds a method/constructor signature string.
+     * If Spoon already resolved parameters on the reference, delegates to
+     * {@link CtExecutableReference#getSignature()}. Otherwise tries to infer
+     * parameter types from the actual call-site arguments (works in
+     * no-classpath mode for literals and variables whose types are known).
+     * <p>
+     * Uses comma without space as separator to match Spoon's own
+     * {@link CtExecutableReference#getSignature()} format.
+     *
+     * @param ref     the executable reference (may have empty parameter list)
+     * @param useSite the call-site element ({@link CtInvocation} or {@link CtConstructorCall})
+     * @return a signature string such as {@code "foo(java.lang.String,int)"}
+     */
+    public static String buildSignature(CtExecutableReference<?> ref, CtElement useSite) {
+        // If Spoon already resolved parameters — trust it
+        try {
+            if (ref.getParameters() != null && !ref.getParameters().isEmpty()) {
+                return ref.getSignature();
+            }
+        } catch (Exception ignored) {
+        }
+
+        // Collect call-site arguments
+        List<CtExpression<?>> args = null;
+        if (useSite instanceof CtInvocation<?> inv) {
+            args = inv.getArguments();
+        } else if (useSite instanceof CtConstructorCall<?> cc) {
+            args = cc.getArguments();
+        }
+
+        if (args == null || args.isEmpty()) {
+            return ref.getSignature();
+        }
+
+        List<String> paramTypes = new ArrayList<>();
+        for (CtExpression<?> arg : args) {
+            String typeName = inferArgType(arg);
+            if (typeName == null) {
+                // Cannot infer at least one type — fall back to Spoon signature
+                return ref.getSignature();
+            }
+            paramTypes.add(typeName);
+        }
+
+        // No space after comma — matches Spoon's getSignature() format
+        return ref.getSimpleName() + "(" + String.join(",", paramTypes) + ")";
+    }
+
+    /**
+     * Best-effort inference of the qualified type name of a call-site argument.
+     * Returns {@code null} when the type cannot be determined.
+     * <p>
+     * Handles:
+     * <ul>
+     *   <li>Spoon-resolved types (most cases with classpath)</li>
+     *   <li>String/numeric/boolean literals</li>
+     *   <li>String concatenation via {@code +} operator (recursively)</li>
+     * </ul>
+     */
+    private static String inferArgType(CtExpression<?> arg) {
+        // 1. Spoon already knows the type
+        try {
+            CtTypeReference<?> t = arg.getType();
+            if (t != null) {
+                String q = t.getQualifiedName();
+                if (isUsableQualifiedName(q) && !"?".equals(q)) return q;
+            }
+        } catch (Exception ignored) {
+        }
+
+        // 2. String literal
+        if (arg instanceof CtLiteral<?> lit && lit.getValue() instanceof String) {
+            return "java.lang.String";
+        }
+
+        // 3. Numeric / boolean literals
+        if (arg instanceof CtLiteral<?> lit) {
+            Object v = lit.getValue();
+            if (v instanceof Integer) return "int";
+            if (v instanceof Long)    return "long";
+            if (v instanceof Double)  return "double";
+            if (v instanceof Float)   return "float";
+            if (v instanceof Boolean) return "boolean";
+        }
+
+        // 4. String concatenation: "..." + "..." + ...
+        //    If either operand resolves to String, the whole expression is a String.
+        if (arg instanceof CtBinaryOperator<?> bin
+                && bin.getKind() == BinaryOperatorKind.PLUS) {
+            String left  = inferArgType(bin.getLeftHandOperand());
+            String right = inferArgType(bin.getRightHandOperand());
+            if ("java.lang.String".equals(left) || "java.lang.String".equals(right)) {
+                return "java.lang.String";
+            }
+        }
+
+        return null;
     }
 
     public static String execRefIdForChainedInvocation(CtInvocation<?> inv) {
@@ -252,10 +351,90 @@ public final class AstGraphUtils {
     // Owner inference
     // ------------------------------------------------------------------
 
+    private static String refineOwnerUsingImports(String q, CtElement ctx) {
+        if (ctx == null || q == null || q.isBlank()) return null;
+
+        SourcePosition pos = null;
+        try {
+            pos = ctx.getPosition();
+        } catch (Exception ignored) {}
+        if (pos == null || !pos.isValidPosition() || pos.getCompilationUnit() == null) return null;
+
+        var cu = pos.getCompilationUnit();
+
+        String simple = q.contains(".") ? q.substring(q.lastIndexOf('.') + 1) : q;
+
+        String candidate = null;
+        try {
+            for (CtImport imp : cu.getImports()) {
+                var ref = imp.getReference();
+                if (ref == null) continue;
+                String fqn = ref.toString();
+                if (fqn.endsWith("." + simple)) {
+                    if (candidate == null) {
+                        candidate = fqn;
+                    } else if (!candidate.equals(fqn)) {
+                        return null; // ambiguous
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        if (candidate == null || candidate.equals(q)) return null;
+        return candidate;
+    }
+
+    private static String refineOwnerUsingWildcardImports(String q, CtElement ctx) {
+        if (ctx == null || q == null || q.isBlank()) return null;
+
+        SourcePosition pos = null;
+        try {
+            pos = ctx.getPosition();
+        } catch (Exception ignored) {}
+        if (pos == null || !pos.isValidPosition() || pos.getCompilationUnit() == null) return null;
+
+        var cu = pos.getCompilationUnit();
+
+        CtType<?> cuType = ctx.getParent(CtType.class);
+        String cuPkg = (cuType != null && cuType.getPackage() != null)
+                ? cuType.getPackage().getQualifiedName()
+                : "";
+
+        String ownerPkg = q.contains(".") ? q.substring(0, q.lastIndexOf('.')) : "";
+        String simple   = q.contains(".") ? q.substring(q.lastIndexOf('.') + 1) : q;
+
+        // Has sense only if Spoon attached owner to the same package as CU
+        if (!Objects.equals(ownerPkg, cuPkg)) return null;
+
+        var factory = ctx.getFactory();
+        boolean hasLocalType = factory.Type().get(cuPkg.isEmpty() ? simple : cuPkg + "." + simple) != null;
+
+        List<String> candidates = new ArrayList<>();
+        try {
+            for (CtImport imp : cu.getImports()) {
+                String s = String.valueOf(imp.getReference());
+                if (s == null || !s.endsWith(".*")) continue;
+                String pkg = s.substring(0, s.length() - 2);
+                CtType<?> t = factory.Type().get(pkg + "." + simple);
+                if (t != null) {
+                    candidates.add(t.getQualifiedName());
+                }
+            }
+        } catch (Exception ignored) {}
+
+        if (candidates.size() == 1 && !hasLocalType) {
+            return candidates.get(0);
+        }
+        return null;
+    }
+
     public static String qualifiedExecutableOwner(CtExecutableReference<?> ref, CtElement useSite) {
         try {
             if (ref.getDeclaringType() != null) {
                 String q = ref.getDeclaringType().getQualifiedName();
+                String fixed = refineOwnerUsingImports(q, useSite);
+                if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, useSite);
+                if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
         } catch (Exception ignored) {
@@ -264,6 +443,9 @@ public final class AstGraphUtils {
             CtExecutable<?> decl = ref.getDeclaration();
             if (decl instanceof CtTypeMember tm && tm.getDeclaringType() != null) {
                 String q = tm.getDeclaringType().getQualifiedName();
+                String fixed = refineOwnerUsingImports(q, decl);
+                if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, decl);
+                if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
         } catch (Exception ignored) {
@@ -290,10 +472,43 @@ public final class AstGraphUtils {
 
     public static String inferOwnerFromInvocation(CtInvocation<?> inv) {
         CtExpression<?> target = inv.getTarget();
+
+        // null (implicit this), explicit this, or Interface.super calls
+        if (target == null || target instanceof CtThisAccess || target instanceof CtSuperAccess) {
+
+            // For Interface.super — try the type of the super-access first
+            if (target instanceof CtSuperAccess<?> sa) {
+                try {
+                    CtTypeReference<?> dt = sa.getType();
+                    if (dt != null) {
+                        String q = dt.getQualifiedName();
+                        String fixed = refineOwnerUsingImports(q, inv);
+                        if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, inv);
+                        if (fixed != null) q = fixed;
+                        if (isUsableQualifiedName(q)) return q;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+
+            // Fallback — enclosing declaring type (works for both this and super)
+            try {
+                CtType<?> enclosing = inv.getParent(CtType.class);
+                if (enclosing != null) {
+                    String q = enclosing.getQualifiedName();
+                    if (isUsableQualifiedName(q)) return q;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
         if (target instanceof CtTypeAccess<?> ta) {
             try {
                 if (ta.getAccessedType() != null) {
                     String q = ta.getAccessedType().getQualifiedName();
+                    String fixed = refineOwnerUsingImports(q, inv);
+                    if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, inv);
+                    if (fixed != null) q = fixed;
                     if (isUsableQualifiedName(q)) return q;
                 }
             } catch (Exception ignored) {
@@ -304,6 +519,9 @@ public final class AstGraphUtils {
                 CtTypeReference<?> t = target.getType();
                 if (t != null) {
                     String q = t.getQualifiedName();
+                    String fixed = refineOwnerUsingImports(q, inv);
+                    if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, inv);
+                    if (fixed != null) q = fixed;
                     if (isUsableQualifiedName(q)) return q;
                 }
             } catch (Exception ignored) {
@@ -316,6 +534,9 @@ public final class AstGraphUtils {
         try {
             if (cc.getType() != null) {
                 String q = cc.getType().getQualifiedName();
+                String fixed = refineOwnerUsingImports(q, cc);
+                if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, cc);
+                if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
         } catch (Exception ignored) {
@@ -329,12 +550,18 @@ public final class AstGraphUtils {
             CtExpression<?> target = ere.getTarget();
             if (target instanceof CtTypeAccess<?> ta && ta.getAccessedType() != null) {
                 String q = ta.getAccessedType().getQualifiedName();
+                String fixed = refineOwnerUsingImports(q, ere);
+                if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, ere);
+                if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
             if (target != null) {
                 CtTypeReference<?> t = target.getType();
                 if (t != null) {
                     String q = t.getQualifiedName();
+                    String fixed = refineOwnerUsingImports(q, ere);
+                    if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, ere);
+                    if (fixed != null) q = fixed;
                     if (isUsableQualifiedName(q)) return q;
                 }
             }
@@ -347,68 +574,58 @@ public final class AstGraphUtils {
     // Position / path helpers
     // ------------------------------------------------------------------
 
-    public static String sourceFile(CtElement el) {
+    /**
+     * Repo-relative path из sourceLines по суффиксу qualified name владельца.
+     * Для VirtualFile pos.getFile() == null — ищем по ключам sourceLines.
+     * Fallback: Spoon CU + стандартные src roots.
+     */
+    public static String graphFilePath(CtElement el, Path projectRoot, Set<String> repoPaths) {
+        // 1. Ищем владельца-тип для построения суффикса
+        try {
+            CtType<?> owner = el instanceof CtType<?> t ? t
+                    : el instanceof CtTypeMember m ? m.getDeclaringType()
+                    : el.getParent(CtType.class);
+            if (owner != null) {
+                CtType<?> topLevel = owner;
+                while (topLevel.getDeclaringType() != null) {
+                    topLevel = topLevel.getDeclaringType();
+                }
+
+                String qualifiedName = topLevel.getQualifiedName();
+                String suffix = qualifiedName.replace('.', '/') + ".java";
+
+                String found = repoPaths.stream()
+                        .filter(p -> p.replace('\\', '/').endsWith(suffix))
+                        .findFirst().orElse(null);
+                if (found != null) return found;
+            }
+        } catch (Exception ignored) {
+        }
+
+        // 2. Fallback: Spoon позиция + relativize / стандартные src roots
         try {
             var pos = el.getPosition();
-            if (pos.isValidPosition()) {
-                if (pos.getFile() != null) return pos.getFile().getPath().replace("\\", "/");
-                var cu = pos.getCompilationUnit();
-                if (cu != null) {
-                    String f = cu.getFile() != null ? cu.getFile().getPath()
-                            : (cu.getMainType() != null
-                            ? cu.getMainType().getQualifiedName().replace('.', '/') + ".java"
-                            : "");
-                    if (!f.isEmpty()) return f;
+            if (pos != null && pos.isValidPosition()) {
+                String spoon = pos.getFile() != null
+                        ? pos.getFile().getPath()
+                        : pos.getCompilationUnit() != null && pos.getCompilationUnit().getMainType() != null
+                        ? pos.getCompilationUnit().getMainType().getQualifiedName().replace('.', '/') + ".java"
+                        : "";
+                if (spoon.isBlank())
+                    return "";
+                String norm = spoon.replace('\\', '/');
+                if (projectRoot != null) {
+                    Path root = projectRoot.toAbsolutePath().normalize();
+                    Path abs = Path.of(spoon).toAbsolutePath().normalize();
+                    if (abs.startsWith(root)) return root.relativize(abs).toString().replace('\\', '/');
                 }
+                int cut = indexOfStandardSourceRoot(norm);
+                return cut >= 0 ? norm.substring(cut) : norm;
             }
         } catch (Exception ignored) {
         }
+
         return "";
-    }
-
-    /**
-     * Path for graph storage and {@link #extractSource} lookup: repo-relative with forward slashes when possible.
-     */
-    public static String graphFilePath(CtElement el, Path projectRoot, Set<String> repoRelativeSourcePaths) {
-        String spoon = sourceFile(el);
-        if (spoon.isBlank()) return spoon;
-        if (projectRoot == null) return spoon.replace('\\', '/');
-
-        try {
-            Path root = projectRoot.toAbsolutePath().normalize();
-            try {
-                root = root.toRealPath();
-            } catch (Exception ignored) {
-            }
-            Path abs = Path.of(spoon).toAbsolutePath().normalize();
-            try {
-                abs = abs.toRealPath();
-            } catch (Exception ignored) {
-            }
-            if (abs.startsWith(root)) {
-                return root.relativize(abs).toString().replace('\\', '/');
-            }
-        } catch (Exception ignored) {
-        }
-
-        String norm = spoon.replace('\\', '/');
-        if (repoRelativeSourcePaths != null && !repoRelativeSourcePaths.isEmpty()) {
-            String best = null;
-            int bestLen = -1;
-            for (String rel : repoRelativeSourcePaths) {
-                if (rel == null || rel.isBlank()) continue;
-                String r = rel.replace('\\', '/');
-                if (norm.endsWith(r) && r.length() > bestLen) {
-                    best = r;
-                    bestLen = r.length();
-                }
-            }
-            if (best != null) return best;
-        }
-
-        int cut = indexOfStandardSourceRoot(norm);
-        if (cut >= 0) return norm.substring(cut).replace('\\', '/');
-        return spoon;
     }
 
     private static int indexOfStandardSourceRoot(String normalizedForwardSlashes) {
@@ -423,16 +640,6 @@ public final class AstGraphUtils {
     /**
      * Returns line range [{@code startLine}, {@code endLine}] (1-based, inclusive)
      * for the *declaration* part of an element (signature/header without the method body).
-     * <p>
-     * Strategy (in priority order):
-     * <ol>
-     *   <li>{@link BodyHolderSourcePosition} — uses {@code declarationStart} .. {@code bodyStart-1}</li>
-     *   <li>{@link CompoundSourcePosition}   — uses {@code declarationStart} .. {@code declarationEnd}</li>
-     * </ol>
-     *
-     * @param el          the element whose declaration lines are needed
-     * @param sourceLines repo-relative path -> source lines map (used for offset->line conversion)
-     * @return int[2]: [startLine, endLine], or [-1, -1] when lines cannot be resolved
      */
     public static int[] declarationLines(CtElement el, Map<String, String[]> sourceLines) {
         if (el == null) return new int[]{-1, -1};
@@ -442,7 +649,7 @@ public final class AstGraphUtils {
                 return lines(el, sourceLines);
             }
 
-            String filePath = sourceFile(el);
+            String filePath = graphFilePath(el, null, sourceLines.keySet());
             String[] fileLines = findLines(sourceLines, filePath);
             String full = fileLines != null && fileLines.length > 0
                     ? String.join("\n", fileLines)
@@ -454,14 +661,11 @@ public final class AstGraphUtils {
                 if (declStart >= 0 && bodyStart > declStart) {
                     if (full != null) {
                         int startLine = lineNumberAtOffset(full, declStart);
-                        // bodyStart points to '{' — declaration ends on the line just before it,
-                        // or on the same line if the brace is on the same line as the last param.
                         int endLine = lineNumberAtOffset(full, bodyStart - 1);
                         if (startLine > 0 && endLine >= startLine) {
                             return new int[]{startLine, endLine};
                         }
                     }
-                    // No source text — fall back to Spoon line numbers
                     return new int[]{p.getLine(), p.getEndLine()};
                 }
             }
@@ -478,8 +682,6 @@ public final class AstGraphUtils {
                 }
             }
 
-            // For elements without a body (fields, imports, annotations, etc.)
-            // the full position IS the declaration.
             return lines(el, sourceLines);
 
         } catch (Exception ignored) {
@@ -489,10 +691,11 @@ public final class AstGraphUtils {
 
     /**
      * Best-effort line range for an element.
-     * First uses Spoon position line numbers; if they are unavailable or invalid,
-     * falls back to source offset -> line conversion using sourceLines.
      * <p>
-     * Returns {-1, -1} when neither direct position nor source-backed fallback works.
+     * For {@link BodyHolderSourcePosition} elements (classes, methods, constructors),
+     * {@code startLine} is taken from {@code declarationStart} so that annotations
+     * above the element are included in the range. This ensures that a changed
+     * annotation line is correctly matched to its owning class or method node.
      */
     public static int[] lines(CtElement el, Map<String, String[]> sourceLines) {
         if (el == null) return new int[]{-1, -1};
@@ -501,6 +704,25 @@ public final class AstGraphUtils {
             SourcePosition p = el.getPosition();
             if (p == null) return new int[]{-1, -1};
 
+            // For BodyHolder elements (class, method, constructor) use declarationStart
+            // so that annotations above the element are included in [startLine, endLine].
+            if (p instanceof BodyHolderSourcePosition bodyPos) {
+                String filePath = graphFilePath(el, null, sourceLines.keySet());
+                String[] fileLines = findLines(sourceLines, filePath);
+                if (fileLines != null && fileLines.length > 0) {
+                    String full = String.join("\n", fileLines);
+                    int declStart = bodyPos.getDeclarationStart();
+                    int sourceEnd = p.getSourceEnd();
+                    if (declStart >= 0 && sourceEnd >= declStart) {
+                        int startLine = lineNumberAtOffset(full, declStart);
+                        int endLine   = lineNumberAtOffset(full, sourceEnd);
+                        if (startLine > 0 && endLine >= startLine) {
+                            return new int[]{startLine, endLine};
+                        }
+                    }
+                }
+            }
+
             int startLine = p.isValidPosition() ? p.getLine() : -1;
             int endLine = p.isValidPosition() ? p.getEndLine() : -1;
 
@@ -508,7 +730,7 @@ public final class AstGraphUtils {
                 return new int[]{startLine, endLine};
             }
 
-            String filePath = sourceFile(el);
+            String filePath = graphFilePath(el, null, sourceLines.keySet());
             String[] fileLines = findLines(sourceLines, filePath);
             if (fileLines == null || fileLines.length == 0) {
                 return new int[]{startLine, endLine};
@@ -584,7 +806,7 @@ public final class AstGraphUtils {
         if (lines == null) return "";
         int[] declLines = declarationLines(el, sourceLines);
         int from = declLines[0];
-        int to   = declLines[1];
+        int to = declLines[1];
         if (from > 0 && to >= from && to <= lines.length) {
             return IntStream.rangeClosed(from - 1, to - 1)
                     .mapToObj(i -> lines[i])
@@ -600,14 +822,6 @@ public final class AstGraphUtils {
     /**
      * Парсит строку импорта из исходников когда Spoon не может разрезолвить
      * ссылку ({@link spoon.reflect.declaration.CtImport#getReference()} == null).
-     * Это происходит в no-classpath режиме для внешних зависимостей.
-     * <p>
-     * Возвращает {@code null}, если строку не удалось извлечь или она не является импортом.
-     *
-     * @param sourceLines карта путь -> строки файла
-     * @param filePath    граф-относительный путь к файлу
-     * @param lineNumber  1-based номер строки (из {@code imp.getPosition().getLine()})
-     * @return полное имя из импорта (например {@code "java.util.List"}), либо {@code null}
      */
     public static String parseImportRefFromSource(Map<String, String[]> sourceLines, String filePath, int lineNumber) {
         if (lineNumber < 1 || filePath == null || filePath.isBlank()) return null;
@@ -627,13 +841,6 @@ public final class AstGraphUtils {
 
     /**
      * Определяет является ли импорт статическим по исходной строке.
-     * Используется как fallback когда {@link spoon.reflect.declaration.CtImport#getImportKind()}
-     * ненадёжен из-за неразрезолвленной ссылки.
-     *
-     * @param sourceLines карта путь -> строки файла
-     * @param filePath    граф-относительный путь к файлу
-     * @param lineNumber  1-based номер строки
-     * @return {@code true} если строка содержит {@code import static}
      */
     public static boolean isStaticImportBySource(Map<String, String[]> sourceLines, String filePath, int lineNumber) {
         if (lineNumber < 1 || filePath == null || filePath.isBlank()) return false;

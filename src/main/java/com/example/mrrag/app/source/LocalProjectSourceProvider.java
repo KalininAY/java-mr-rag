@@ -1,7 +1,6 @@
 package com.example.mrrag.app.source;
 
-import lombok.NoArgsConstructor;
-import lombok.Setter;
+import com.example.mrrag.graph.cache.CachedManagementService;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -11,6 +10,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -27,21 +27,51 @@ import java.util.stream.Stream;
  *
  * <p>Each returned {@link ProjectSource#path()} is relative to
  * {@code projectRoot} with forward slashes — matching paths GitLab reports in diff output.
+ *
+ * <p>Two constructors are provided:
+ * <ul>
+ *   <li>{@link #LocalProjectSourceProvider(ProjectKey, Path)} — preferred;
+ *       the caller supplies the correct identity key.</li>
+ *   <li>{@link #LocalProjectSourceProvider(Path)} — legacy/test usage;
+ *       creates a placeholder key {@code local/local@local}.</li>
+ * </ul>
  */
 @Slf4j
-@Setter
-@NoArgsConstructor
 public class LocalProjectSourceProvider implements ProjectSourceProvider {
 
-    protected static final java.util.Set<String> EXCLUDED_DIRS = java.util.Set.of(
+    protected static final Set<String> EXCLUDED_DIRS = Set.of(
             "build", "target", "out", ".gradle", ".git",
             "generated", "generated-sources", "generated-test-sources"
     );
 
-    protected Path projectRoot;
+    private final ProjectKey projectKey;
+    protected final Path     projectRoot;
 
-    public LocalProjectSourceProvider(Path projectRoot) {
+    /**
+     * Preferred constructor — used by
+     * {@link CachedManagementService}.
+     *
+     * @param projectKey identity of the branch this clone belongs to
+     * @param projectRoot path to the local clone directory
+     */
+    public LocalProjectSourceProvider(ProjectKey projectKey, Path projectRoot) {
+        this.projectKey  = projectKey;
         this.projectRoot = projectRoot;
+    }
+
+    /**
+     * Legacy / test constructor — creates a placeholder
+     * {@code ProjectKey("local", "local", "local")}.
+     *
+     * @param projectRoot path to the local clone directory
+     */
+    public LocalProjectSourceProvider(Path projectRoot) {
+        this(new ProjectKey("local", "local", "local"), projectRoot);
+    }
+
+    @Override
+    public ProjectKey projectKey() {
+        return projectKey;
     }
 
     @Override
@@ -74,7 +104,7 @@ public class LocalProjectSourceProvider implements ProjectSourceProvider {
                             }
                         });
             } catch (IOException ex) {
-                log.debug("Skip path source file, message ex = " + ex.getMessage());
+                log.debug("Skip path source file, message ex = {}", ex.getMessage());
             }
         }
 
@@ -99,25 +129,15 @@ public class LocalProjectSourceProvider implements ProjectSourceProvider {
                     .filter(p -> !p.getFileName().toString().startsWith("."))
                     .forEach(fallback::add);
         } catch (IOException ex) {
-            log.debug("Skip resolve source root, message ex = " + ex.getMessage());
+            log.debug("Skip resolve source root, message ex = {}", ex.getMessage());
         }
         return fallback.isEmpty() ? List.of(projectRoot) : fallback;
     }
 
-    /**
-     * Returns the path of {@code abs} relative to {@code root} using forward slashes.
-     * Uses {@link Path#relativize} to correctly handle platform-specific separators
-     * and drive letter case differences on Windows (e.g. {@code C:\} vs {@code c:\}).
-     *
-     * @param root normalised absolute project root
-     * @param abs  normalised absolute path of the source file
-     * @return forward-slash relative path, e.g. {@code src/main/java/Foo.java}
-     */
     protected static String relPath(Path root, Path abs) {
         try {
             return root.relativize(abs).toString().replace("\\", "/");
         } catch (IllegalArgumentException e) {
-            // Paths on different drives (Windows edge case) — return normalised absolute path
             return abs.toString().replace("\\", "/");
         }
     }

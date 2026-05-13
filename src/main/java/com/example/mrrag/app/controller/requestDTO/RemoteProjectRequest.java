@@ -7,7 +7,7 @@ import jakarta.validation.constraints.NotBlank;
 public record RemoteProjectRequest(
         @Schema(
                 description = "Namespace проекта в GitLab, например group/subgroup",
-                example = "mygroup/subgroup",
+                example = "bugbusters",
                 requiredMode = Schema.RequiredMode.REQUIRED
         )
         @NotBlank
@@ -15,7 +15,7 @@ public record RemoteProjectRequest(
 
         @Schema(
                 description = "Название проекта (репозитория) в GitLab",
-                example = "myrepo",
+                example = "epvv",
                 requiredMode = Schema.RequiredMode.REQUIRED
         )
         @NotBlank
@@ -23,26 +23,14 @@ public record RemoteProjectRequest(
 
         @Schema(
                 description = "Ветка или тег для клонирования. Если не указана — используется ветка по умолчанию (например, main)",
-                example = "feature/my-branch"
+                example = "master"
         )
         String branch,
-
-        @Schema(
-                description = "SHA коммита для checkout (полный или сокращённый, от 7 символов). Имеет приоритет над branch/tag",
-                example = "a1b2c3d4e5f678901234567890abcdef12345678"
-        )
-        String commit,
 
         @Schema(
                 description = "Персональный токен доступа (PAT); если null — используется токен из конфигурации",
                 example = "glpat-xxxx"
         )
-        String token,
-
-        @Schema(
-                description = "true — перечитать/переанализировать, игнорируя кэш/локальные копии",
-                defaultValue = "false"
-        )
-        Boolean force
+        String token
 ) {
 }

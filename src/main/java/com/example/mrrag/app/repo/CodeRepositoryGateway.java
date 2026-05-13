@@ -9,77 +9,71 @@ import java.nio.file.Path;
 import java.util.List;
 
 /**
- * Abstraction over Git clone + GitLab MR/diff API
- * does not depend on the {@code app} layer.
+ * Abstraction over Git clone/pull operations and GitLab REST API.
  */
 public interface CodeRepositoryGateway {
 
     /**
-     * Клонирует проект GitLab в указанный каталог.
-     *
-     * @param namespace наименование владельца/группы (не может быть пустым или null)
-     * @param repo      наименование репозитория проекта (не может быть пустым или null)
-     * @param branch    имя ветки (не может быть пустым или null); если в запросе не указана — подставляется ветка по умолчанию (например, main)
-     * @param commit    коммит из ветки, который нужно клонировать; может быть null, тогда используется ветка по умолчанию
-     * @param token     персональный токен; если null — используется токен по умолчанию
-     * @return путь к локальной директории репозитория
-     * @throws CodeRepositoryException если клонирование не удалось
+     * Клонирует проект GitLab в каталог с именем по коммиту/ветке.
+     * Используется для разовых операций (e.g. remote endpoint).
      */
-    Path cloneProject(@NotBlank String namespace, @NotBlank String repo, @NotBlank String branch, @Nullable String commit, boolean force, @Nullable String token);
+    Path clone(@NotBlank String namespace, @NotBlank String repo, @NotBlank String branch, @Nullable String token);
 
     /**
-     * Получает Merge Request по namespace/repo и mrIid через GitLab API.
+     * Клонирует ветку в фиксированный каталог {@code cache/{namespace}_{repo}__{branch}}
+     * при первом вызове; при повторном выполняет {@code git pull}.
      *
-     * @param namespace наименование владельца/группы (не может быть пустым или null)
-     * @param repo      наименование репозитория проекта (не может быть пустым или null)
-     * @param mrIid     внутренний идентификатор MR (должен быть положительным числом)
-     * @param token     персональный токен; если null — используется токен по умолчанию
-     * @return объект MergeRequest
-     * @throws CodeRepositoryException если проект или MR не найден, или токен недоступен
+     * <p>Предназначен для кэширующего слоя: один живой клон на ветку,
+     * обновляемый инкрементально, без SHA/timestamp в пути.
+     *
+     * @return путь к локальному клону
      */
-    MergeRequest getMergeRequest(@NotBlank String namespace, @NotBlank String repo, long mrIid, @Nullable String token);
+    Path pull(@NotBlank String namespace, @NotBlank String repo, @NotBlank String branch, @Nullable String token);
 
     /**
-     * Получает diffs текущего Merge Request через GitLab API.
-     *
-     * @param namespace наименование владельца/группы (не может быть пустым или null)
-     * @param repo      наименование репозитория проекта (не может быть пустым или null)
-     * @param mrIid     внутренний идентификатор MR (должен быть положительным числом)
-     * @param token     персональный токен; если null — используется токен по умолчанию
-     * @return список diff‑записей для MR; никогда не возвращает null
-     * @throws CodeRepositoryException если проект или MR не найден, или токен недоступен
+     * Резолвит имя ветки или тег в полный 40-символьный commit SHA.
      */
-    List<Diff> getMrDiffs(@NotBlank String namespace, @NotBlank String repo, long mrIid, @Nullable String token);
+    String getLastCommit(@NotBlank String namespace, @NotBlank String repo, @NotBlank String branch, @Nullable String token);
+
+    /**
+     * Получает Merge Request по namespace/repo и mrIid.
+     */
+    MergeRequest getMergeRequest(@NotBlank String namespace, @NotBlank String repo,
+                                 long mrIid, @Nullable String token);
+
+    /**
+     * Получает diffs Merge Request.
+     */
+    List<Diff> getMrDiffs(@NotBlank String namespace, @NotBlank String repo,
+                          long mrIid, @Nullable String token);
 
     /**
      * Получает сырой контент файла по пути и ревизии.
-     *
-     * @param namespace наименование владельца/группы (не может быть пустым или null)
-     * @param repo      наименование репозитория проекта (не может быть пустым или null)
-     * @param branch    ветка (не может быть пустой или null)
-     * @param filePath  относительный путь к файлу в репозитории (не может быть пустым или null)
-     * @param token     персональный токен; если null — используется токен по умолчанию
-     * @return содержимое файла как строка (UTF‑8)
-     * @throws CodeRepositoryException если файл не найден, проект недоступен или токен недостаточен
      */
-    String getFileContent(@NotBlank String namespace, @NotBlank String repo, @NotBlank String branch, @NotBlank String filePath, @Nullable String token);
+    String getFileContent(@NotBlank String namespace, @NotBlank String repo,
+                          @NotBlank String branch, @NotBlank String filePath,
+                          @Nullable String token);
 
     /**
-     * Получает дерево репозитория (список файлов/директорий) по ревизии.
-     *
-     * @param namespace наименование владельца/группы (не может быть пустым или null)
-     * @param repo      наименование репозитория проекта (не может быть пустым или null)
-     * @param branch    ветка (не может быть пустой или null)
-     * @param token     персональный токен; если null — используется токен по умолчанию
-     * @return список TreeItem (имя, тип, путь и т.п.); никогда не возвращает null
+     * Получает дерево репозитория по ревизии.
      */
-    List<TreeItem> getRepositoryTree(@NotBlank String namespace, @NotBlank String repo, @NotBlank String branch, @Nullable String token);
+    List<TreeItem> getRepositoryTree(@NotBlank String namespace, @NotBlank String repo,
+                                     @NotBlank String branch, @Nullable String token);
 
     /**
      * Удаляет локальный клон репозитория.
-     *
-     * @param repoDir путь к локальной директории репозитория (не может быть null)
-     * @throws CodeRepositoryException если удаление не удалось (например, каталог не существует, доступ запрещён)
      */
     void cleanup(Path repoDir);
+
+
+
+    /**
+     * Возвращает список репозиторно-относительных путей {@code .java}-файлов,
+     * изменённых между двумя коммитами (fromSha exclusive, toSha inclusive).
+     */
+    List<String> getCommitDiff(@NotBlank String namespace, @NotBlank String repo,
+                               @NotBlank String fromSha, @NotBlank String toSha,
+                               @Nullable String token);
+
+    String getPath(@NotBlank String namespace, @NotBlank String repo, @NotBlank String branch);
 }

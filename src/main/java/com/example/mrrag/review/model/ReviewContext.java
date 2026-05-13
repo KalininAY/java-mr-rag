@@ -18,6 +18,6 @@ public record ReviewContext(
         String targetBranch,
         String mrTitle,
         String mrDescription,
-        List<GroupRepresentation> representations
+        List<String> markdownGroup
 ) {
 }

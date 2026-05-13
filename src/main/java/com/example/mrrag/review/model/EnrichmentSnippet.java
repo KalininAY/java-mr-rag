@@ -3,11 +3,14 @@ package com.example.mrrag.review.model;
 import com.example.mrrag.graph.model.GraphNode;
 
 /**
- * A contextual code snippet attached to a ChangeGroup to help the LLM understand impact.
+ * A contextual code snippet attached to a UnionLine to help the LLM understand impact.
  *
- * <p>{@code nodeId} is the graph node identifier of the primary symbol represented by this snippet
- * (e.g. the caller method for METHOD_CALLERS, the field owner for FIELD_USAGES).
- * May be {@code null} for synthetic/aggregate snippets that have no single owning node.
+ * <p>{@link #lineContext()} indicates whether this snippet was collected for an ADD line,
+ * a DELETE line, or both — so the LLM knows which side of the diff it relates to.
+ *
+ * <p>{@link #nodeId()} is the {@link GraphNode#id()} of the source node — use it to query
+ * {@code GET /api/graph/node?nodeId=...} or {@code GET /api/graph/edges?nodeId=...}.
+ * May be {@code null} for synthetic snippets not backed by a graph node.
  */
 public record EnrichmentSnippet(
         SnippetType type,
@@ -17,35 +20,52 @@ public record EnrichmentSnippet(
         int endLine,
         String symbolName,
         String sourceSnippet,
-        String explanation
+        String explanation,
+        LineContext lineContext
 ) {
+    /** Which side of the diff triggered this snippet. */
+    public enum LineContext {
+        /** Snippet was collected for an ADD (+) line. */
+        ADD,
+        /** Snippet was collected for a DELETE (-) line. */
+        DELETE,
+        /** Snippet relates to both ADD and DELETE lines in the same union. */
+        BOTH
+    }
+
     // ------------------------------------------------------------------
-    // Convenience constructors (backward-compat — nodeId defaults to null)
+    // Backward-compatible constructors (nodeId = null)
     // ------------------------------------------------------------------
 
-    /** Full-body convenience constructor — uses {@code node.sourceSnippet()}. nodeId = node.id(). */
+    /** Backward-compat 7-arg constructor — defaults {@code lineContext} to {@link LineContext#BOTH}, nodeId to null. */
+    public EnrichmentSnippet(SnippetType type, String filePath, int startLine, int endLine,
+                             String symbolName, String sourceSnippet, String explanation) {
+        this(type, null, filePath, startLine, endLine, symbolName, sourceSnippet, explanation, LineContext.BOTH);
+    }
+
+    /** Backward-compat 8-arg constructor (type, filePath, ..., lineContext) — nodeId = null. */
+    public EnrichmentSnippet(SnippetType type, String filePath, int startLine, int endLine,
+                             String symbolName, String sourceSnippet, String explanation,
+                             LineContext lineContext) {
+        this(type, null, filePath, startLine, endLine, symbolName, sourceSnippet, explanation, lineContext);
+    }
+
+    /** Full-body convenience constructor from {@link GraphNode} — uses {@code node.sourceSnippet()}, LineContext.BOTH. */
     public EnrichmentSnippet(SnippetType type, GraphNode node, String explanation) {
         this(type, node.id(), node.filePath(), node.startLine(), node.endLine(),
-                node.simpleName(), node.sourceSnippet(), explanation);
-    }
-
-    /** Legacy 7-arg constructor without nodeId — sets nodeId to null. */
-    public EnrichmentSnippet(SnippetType type,
-                             String filePath, int startLine, int endLine,
-                             String symbolName, String sourceSnippet, String explanation) {
-        this(type, null, filePath, startLine, endLine, symbolName, sourceSnippet, explanation);
+                node.simpleName(), node.sourceSnippet(), explanation, LineContext.BOTH);
     }
 
     // ------------------------------------------------------------------
-    // Factory methods
+    // Static factory methods
     // ------------------------------------------------------------------
 
     /**
      * Declaration-only factory — uses {@code node.declarationSnippet()} instead of the full body.
      * Suitable for {@link SnippetType#VARIABLE_DECLARATION} and {@link SnippetType#FIELD_DECLARATION}.
-     * nodeId = node.id().
      */
-    public static EnrichmentSnippet ofDeclaration(SnippetType type, GraphNode node, String explanation) {
+    public static EnrichmentSnippet ofDeclaration(SnippetType type, GraphNode node,
+                                                   String explanation, LineContext lineContext) {
         return new EnrichmentSnippet(
                 type,
                 node.id(),
@@ -54,27 +74,31 @@ public record EnrichmentSnippet(
                 node.startLine(),
                 node.simpleName(),
                 node.declarationSnippet(),
-                explanation
+                explanation,
+                lineContext
         );
     }
 
+    /** Backward-compat overload — defaults to LineContext.ADD. */
+    public static EnrichmentSnippet ofDeclaration(SnippetType type, GraphNode node, String explanation) {
+        return ofDeclaration(type, node, explanation, LineContext.ADD);
+    }
+
     /**
-     * Factory for METHOD_CALLERS / FIELD_USAGES snippets where the owning node
-     * is the caller/user method rather than the snippet's symbol.
+     * Full-body factory — uses {@code node.sourceSnippet()} with explicit {@link LineContext}.
      */
-    public static EnrichmentSnippet ofCaller(SnippetType type, GraphNode callerNode,
-                                             int startLine, int endLine,
-                                             String symbolName, String sourceSnippet,
-                                             String explanation) {
+    public static EnrichmentSnippet ofBody(SnippetType type, GraphNode node,
+                                            String explanation, LineContext lineContext) {
         return new EnrichmentSnippet(
                 type,
-                callerNode.id(),
-                callerNode.filePath(),
-                startLine,
-                endLine,
-                symbolName,
-                sourceSnippet,
-                explanation
+                node.id(),
+                node.filePath(),
+                node.startLine(),
+                node.endLine(),
+                node.simpleName(),
+                node.sourceSnippet(),
+                explanation,
+                lineContext
         );
     }
 
@@ -89,13 +113,15 @@ public record EnrichmentSnippet(
         FIELD_DECLARATION,
         /** All access sites of a field (reads + writes) */
         FIELD_USAGES,
-        /** Declaration line of a local variable */
+        /** Declaration of a local variable */
         VARIABLE_DECLARATION,
         /** All usages of a local variable */
         VARIABLE_USAGES,
         /** Callee parameter names when arguments were changed */
         ARGUMENT_CONTEXT,
-        /** Full declaration of a class/interface */
-        CLASS_DECLARATION
+        /** Declaration of a class/interface (header + fields, without method bodies) */
+        CLASS_DECLARATION,
+        /** Full body of a class/interface/annotation (all members included) */
+        CLASS_BODY
     }
 }

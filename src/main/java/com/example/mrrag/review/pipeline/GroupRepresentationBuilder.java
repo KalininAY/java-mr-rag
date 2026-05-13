@@ -2,7 +2,6 @@ package com.example.mrrag.review.pipeline;
 
 import com.example.mrrag.graph.markdown.MarkdownRenderUtils;
 import com.example.mrrag.graph.model.GraphNode;
-import com.example.mrrag.graph.model.NodeKind;
 import com.example.mrrag.graph.model.ProjectGraph;
 import com.example.mrrag.review.model.*;
 import org.springframework.stereotype.Component;
@@ -11,61 +10,75 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Builds a {@link GroupRepresentation} for a single ChangeGroup.
+ * Builds a {@link GroupRepresentation} for a single {@link UnionLine}.
  *
  * <p>Output structure per group:
  * <ol>
- *   <li>Header: group id + change type.</li>
- *   <li>Per-file {@code diff} block — all lines received (ADD/DELETE only).
- *       Each line is prefixed with its line number ({@code @N}).</li>
- *   <li><b>Method signature</b> section (optional) — shown when the group
- *       carries a non-null {@link ChangeGroup#preMethodKey()} (set by the legacy
- *       {@link ChangeGrouper} Phase 1). Renders the method signature line(s)
- *       from the graph so the reviewer can immediately see which element was
- *       annotated/documented.</li>
- *   <li><b>Enclosing context</b> section — one block per
- *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet.
- *       Lines are numbered in {@code lineNo| text} format.</li>
+ *   <li>Header: union id + change type.</li>
+ *   <li>Per-file {@code diff} block — ADD/DELETE lines with line numbers.</li>
+ *   <li><b>Enclosing context</b> section — METHOD_BODY snippets.</li>
  *   <li><b>Context snippets</b> section — all other enrichment snippets,
- *       also with numbered lines.</li>
+ *       each labelled with {@code [ADD]} or {@code [DELETE]} from
+ *       {@link EnrichmentSnippet#lineContext()}, and with a {@code nodeId}
+ *       link for use with {@code GET /api/graph/node} and
+ *       {@code GET /api/graph/edges}.</li>
  * </ol>
  */
 @Component
 public class GroupRepresentationBuilder {
 
-    /**
-     * Build a representation without graph access (no method-signature injection).
-     * Used by tests and callers that don't hold a graph reference.
-     */
     public GroupRepresentation build(
-            ChangeGroup group,
-            ChangeType changeType,
+            UnionLine union,
             List<EnrichmentSnippet> contextSnippets
     ) {
-        return build(group, changeType, contextSnippets, null);
+        return build(union, contextSnippets, null);
     }
 
-    /**
-     * Build a representation, optionally injecting method-signature context
-     * for groups whose Javadoc/annotations were attached to a method in Phase 1.
-     *
-     * @param graph source-branch AST graph; may be {@code null}
-     */
     public GroupRepresentation build(
-            ChangeGroup group,
-            ChangeType changeType,
+            UnionLine union,
             List<EnrichmentSnippet> contextSnippets,
             ProjectGraph graph
     ) {
-        String markdown = buildMarkdown(group, changeType, contextSnippets, graph);
+        ChangeType changeType = classifyUnion(union);
+        String primaryFile = resolvePrimaryFile(union);
+        String markdown = buildMarkdown(union, changeType, contextSnippets, graph);
         return new GroupRepresentation(
-                group.id(),
+                union.id(),
                 changeType,
-                group.primaryFile(),
-                group.changedLines(),
+                primaryFile,
+                new ArrayList<>(union.changedLines()),
                 contextSnippets,
                 markdown
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Classification
+    // -----------------------------------------------------------------------
+
+    static ChangeType classifyUnion(UnionLine union) {
+        boolean hasAdd = false;
+        boolean hasDel = false;
+        Set<String> files = new HashSet<>();
+        for (ChangedLine l : union.changedLines()) {
+            if (l.type() == ChangedLine.LineType.ADD) hasAdd = true;
+            if (l.type() == ChangedLine.LineType.DELETE) hasDel = true;
+            files.add(l.filePath());
+        }
+        if (files.size() > 1) return ChangeType.CROSS_SCOPE;
+        if (hasAdd && hasDel) return ChangeType.MODIFICATION;
+        if (hasDel) return ChangeType.DELETION;
+        return ChangeType.ADDITION;
+    }
+
+    static String resolvePrimaryFile(UnionLine union) {
+        return union.changedLines().stream()
+                .filter(l -> l.type() != ChangedLine.LineType.CONTEXT)
+                .collect(Collectors.groupingBy(ChangedLine::filePath, Collectors.counting()))
+                .entrySet().stream()
+                .max(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey)
+                .orElse(union.id());
     }
 
     // -----------------------------------------------------------------------
@@ -73,21 +86,20 @@ public class GroupRepresentationBuilder {
     // -----------------------------------------------------------------------
 
     private String buildMarkdown(
-            ChangeGroup group,
+            UnionLine union,
             ChangeType changeType,
             List<EnrichmentSnippet> snippets,
             ProjectGraph graph
     ) {
         StringBuilder sb = new StringBuilder();
-        sb.append("### Change group `").append(group.id())
+        sb.append("### Change group `").append(union.id())
                 .append("` — ").append(changeType).append("\n");
 
         // --- 1. Per-file diff blocks ---
         Map<String, List<ChangedLine>> byFile = new LinkedHashMap<>();
-        for (ChangedLine l : group.changedLines()) {
+        for (ChangedLine l : union.changedLines()) {
             byFile.computeIfAbsent(l.filePath(), k -> new ArrayList<>()).add(l);
         }
-
         for (Map.Entry<String, List<ChangedLine>> entry : byFile.entrySet()) {
             if (entry.getValue().isEmpty()) continue;
             sb.append("**File:** `").append(entry.getKey()).append("`\n\n");
@@ -101,10 +113,7 @@ public class GroupRepresentationBuilder {
             sb.append("```\n\n");
         }
 
-        // --- 2. Method signature block (legacy ChangeGrouper: preMethodKey) ---
-        renderMethodSignatureBlock(sb, group, graph);
-
-        if (snippets.isEmpty()) return sb.toString();
+        if (snippets == null || snippets.isEmpty()) return sb.toString();
 
         List<EnrichmentSnippet> methodBodies = snippets.stream()
                 .filter(s -> s.type() == EnrichmentSnippet.SnippetType.METHOD_BODY)
@@ -113,51 +122,34 @@ public class GroupRepresentationBuilder {
                 .filter(s -> s.type() != EnrichmentSnippet.SnippetType.METHOD_BODY)
                 .collect(Collectors.toCollection(ArrayList::new));
 
-        // --- 3. Enclosing context (METHOD_BODY snippets) ---
+        // --- 2. Enclosing context (METHOD_BODY snippets) ---
         if (!methodBodies.isEmpty()) {
             sb.append("**Enclosing context (").append(methodBodies.size()).append("):**\n\n");
             for (EnrichmentSnippet s : methodBodies) {
-                sb.append("`").append(s.symbolName()).append("`")
-                        .append(" @ `").append(s.filePath())
-                        .append(":").append(s.startLine()).append("`");
-                if (s.nodeId() != null) {
-                    sb.append(" · nodeId: `").append(s.nodeId()).append("`");
-                }
-                sb.append("\n\n");
-                String src = s.sourceSnippet();
-                if (src != null && !src.isBlank()) {
-                    sb.append("```\n");
-                    MarkdownRenderUtils.appendNumberedSnippet(sb, src, s.startLine(), s.endLine());
-                    sb.append("```\n\n");
-                }
+                renderSnippetHeader(sb, s);
+                renderSnippetBlock(sb, s, "  ");
             }
         }
 
-        // --- 4. Other context snippets ---
+        // --- 3. Other context snippets ---
         if (!otherSnippets.isEmpty()) {
             sb.append("**Context snippets (").append(otherSnippets.size()).append("):**\n\n");
             for (EnrichmentSnippet s : otherSnippets) {
-                sb.append("- **").append(s.type()).append("** [")
-                        .append(s.lineContext() != null ? s.lineContext() : "")
-                        .append("] `")
-                        .append(s.symbolName()).append("` @ `")
+                String ctxLabel = lineContextLabel(s.lineContext());
+                // First line: - **TYPE** [ADD/DELETE] `name` @ `file:line`
+                sb.append("- **").append(s.type()).append("** ")
+                        .append(ctxLabel)
+                        .append("`").append(s.symbolName()).append("` @ `")
                         .append(s.filePath()).append(":")
                         .append(s.startLine()).append("`");
-                if (s.nodeId() != null) {
-                    sb.append(" · nodeId: `").append(s.nodeId()).append("`");
-                }
                 sb.append("  \n");
-                sb.append("  _").append(s.explanation()).append("_\n");
-                String src = s.sourceSnippet();
-                if (src != null && !src.isBlank()) {
-                    sb.append("  ```\n");
-                    String[] lines = src.split("\n", -1);
-                    for (String line : MarkdownRenderUtils.numberedSnippetLines(
-                            lines, s.startLine(), s.endLine(), true)) {
-                        sb.append("  ").append(line).append('\n');
-                    }
-                    sb.append("  ```\n");
+                // Second line (optional): · <kind> nodeId: `...`
+                if (s.nodeId() != null) {
+                    String kindLabel = nodeIdKindLabel(s.type());
+                    sb.append("  · ").append(kindLabel).append(" nodeId: `").append(s.nodeId()).append("`  \n");
                 }
+                sb.append("  _").append(s.explanation()).append("_\n");
+                renderSnippetBlock(sb, s, "  ");
                 sb.append('\n');
             }
         }
@@ -166,70 +158,72 @@ public class GroupRepresentationBuilder {
     }
 
     /**
-     * Appends a "Method signature" block when the group carries a
-     * non-null {@link ChangeGroup#preMethodKey()} and the graph is non-null.
-     * Used only by groups produced by the legacy {@link ChangeGrouper}.
+     * Renders the two-line header for a METHOD_BODY snippet:
+     * <pre>
+     * [ADD] `symbolName` @ `file:line`
+     * · method nodeId: `com.example.Foo#bar()`
+     * </pre>
+     * The nodeId label is derived from the snippet type:
+     * {@code METHOD_BODY} → "method nodeId", {@code CLASS_BODY} → "class nodeId".
      */
-    private void renderMethodSignatureBlock(StringBuilder sb, ChangeGroup group, ProjectGraph graph) {
-        if (graph == null) return;
-        String rawKey = group.preMethodKey();
-        if (rawKey == null || rawKey.isBlank()) return;
+    private void renderSnippetHeader(StringBuilder sb, EnrichmentSnippet s) {
+        // Line 1: [ADD/DELETE] `name` @ `file:line`
+        sb.append(lineContextLabel(s.lineContext()));
+        sb.append("`").append(s.symbolName()).append("`")
+                .append(" @ `").append(s.filePath())
+                .append(":").append(s.startLine()).append("`");
+        sb.append("\n");
 
-        int methodStartLine;
-        try {
-            methodStartLine = Integer.parseInt(rawKey.trim());
-        } catch (NumberFormatException e) {
-            return;
+        // Line 2 (optional): · <kind> nodeId: `...`
+        if (s.nodeId() != null) {
+            String kindLabel = nodeIdKindLabel(s.type());
+            sb.append("· ").append(kindLabel).append(" nodeId: `").append(s.nodeId()).append("`");
+            sb.append("\n");
         }
-
-        GraphNode methodNode = null;
-        Set<String> groupFiles = new LinkedHashSet<>();
-        for (ChangedLine l : group.changedLines()) groupFiles.add(l.filePath());
-
-        outer:
-        for (String file : groupFiles) {
-            for (GraphNode n : graph.nodes.values()) {
-                if (n.kind() == NodeKind.METHOD
-                        && file.equals(n.filePath())
-                        && n.startLine() == methodStartLine) {
-                    methodNode = n;
-                    break outer;
-                }
-            }
-        }
-        if (methodNode == null) return;
-
-        sb.append("**Method signature:**\n\n");
-        sb.append("`").append(simpleMethodName(methodNode.id())).append("`")
-                .append(" @ `").append(methodNode.filePath())
-                .append(":").append(methodNode.startLine()).append("`");
-        sb.append(" · nodeId: `").append(methodNode.id()).append("`");
-        sb.append("\n\n");
-
-        String src = methodNode.sourceSnippet();
-        if (src != null && !src.isBlank()) {
-            String[] lines = src.split("\n", -1);
-            int sigLines = 0;
-            StringBuilder sigSrc = new StringBuilder();
-            for (String line : lines) {
-                sigSrc.append(line).append('\n');
-                sigLines++;
-                String trimmed = line.stripTrailing();
-                if (trimmed.endsWith("{") || trimmed.endsWith(";") || sigLines >= 5) break;
-            }
-            sb.append("```java\n");
-            MarkdownRenderUtils.appendNumberedSnippet(
-                    sb, sigSrc.toString(), methodNode.startLine(),
-                    methodNode.startLine() + sigLines - 1);
-            sb.append("```\n\n");
-        }
+        sb.append("\n");
     }
 
-    private static String simpleMethodName(String qualifiedId) {
-        if (qualifiedId == null) return "";
-        int hash = qualifiedId.lastIndexOf('#');
-        String name = hash >= 0 ? qualifiedId.substring(hash + 1) : qualifiedId;
-        int paren = name.indexOf('(');
-        return paren >= 0 ? name.substring(0, paren) : name;
+    /**
+     * Returns a human-readable kind label for the nodeId line, based on the snippet type.
+     * E.g. {@code METHOD_BODY} → {@code "method"}, {@code CLASS_BODY} → {@code "class"}.
+     */
+    private static String nodeIdKindLabel(EnrichmentSnippet.SnippetType type) {
+        if (type == null) return "symbol";
+        return switch (type) {
+            case METHOD_BODY, METHOD_DECLARATION, METHOD_CALLERS -> "method";
+            case CLASS_BODY, CLASS_DECLARATION                   -> "class";
+            case FIELD_DECLARATION, FIELD_USAGES                 -> "field";
+            case VARIABLE_DECLARATION                            -> "variable";
+            default                                              -> "symbol";
+        };
+    }
+
+    /**
+     * Renders a full fenced code block for the snippet without any line limit.
+     *
+     * @param indent prefix for each line (e.g. {@code "  "} for list items)
+     */
+    private void renderSnippetBlock(StringBuilder sb, EnrichmentSnippet s, String indent) {
+        String src = s.sourceSnippet();
+        if (src == null || src.isBlank()) return;
+
+        String[] lines = src.split("\n", -1);
+        int endLine = s.startLine() + lines.length - 1;
+
+        sb.append(indent).append("```\n");
+        for (String line : MarkdownRenderUtils.numberedSnippetLines(lines, s.startLine(), endLine, true)) {
+            sb.append(indent).append(line).append('\n');
+        }
+        sb.append(indent).append("```\n");
+    }
+
+    /** Returns a short bracketed label for the line context, e.g. {@code [ADD] }. */
+    private static String lineContextLabel(EnrichmentSnippet.LineContext ctx) {
+        if (ctx == null) return "";
+        return switch (ctx) {
+            case ADD    -> "[ADD] ";
+            case DELETE -> "[DELETE] ";
+            case BOTH   -> "[ADD/DELETE] ";
+        };
     }
 }
