@@ -38,6 +38,10 @@ import java.util.stream.Collectors;
  *       (matched by edge.startLine and caller.filePath).</li>
  *   <li><b>Pass 4</b>: For METHOD nodes surfaces sibling overloads (same simpleName, different id)
  *       and the interface/abstract method overridden via OVERRIDES edge.</li>
+ *   <li><b>Pass 5</b>: For METHOD/CONSTRUCTOR nodes whose signature line is among the changed
+ *       ADD lines (changed line &le; node.startLine + 2), emits a
+ *       {@link EnrichmentSnippet.SnippetType#METHOD_BODY} snippet of the node itself so that
+ *       the full method body appears in the "Enclosing context" section.</li>
  * </ul>
  */
 @Slf4j
@@ -283,6 +287,31 @@ public class AdditionContextStrategy implements ContextStrategy {
                                 EnrichmentSnippet.LineContext.ADD));
                         snippetsPerNode.merge(node.id(), 1, Integer::sum);
                     });
+        }
+
+        // Pass 5: for METHOD/CONSTRUCTOR nodes — if a changed ADD line touches the signature
+        // area (changed line <= node.startLine + 2), emit a METHOD_BODY snippet of the node
+        // itself so that the full body appears in the "Enclosing context" section.
+        for (GraphNode node : union.graphNodes()) {
+            if (node.kind() != NodeKind.METHOD && node.kind() != NodeKind.CONSTRUCTOR) continue;
+
+            List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
+            boolean signatureChanged = origins.stream()
+                    .filter(l -> l.type() == ChangedLine.LineType.ADD)
+                    .map(l -> l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber())
+                    .anyMatch(ln -> ln <= node.startLine() + 2);
+            if (!signatureChanged) continue;
+
+            GraphNode resolved = sourceGraph.nodes.get(node.id());
+            if (resolved == null || resolved.sourceSnippet() == null) continue;
+            if (!seenDecl.add("BODY:" + resolved.id())) continue;
+
+            snippets.add(EnrichmentSnippet.ofBody(
+                    EnrichmentSnippet.SnippetType.METHOD_BODY, resolved,
+                    "Body of " + resolved.kind().name().toLowerCase() + " '" + resolved.simpleName()
+                            + "' whose signature was changed",
+                    EnrichmentSnippet.LineContext.ADD));
+            snippetsPerNode.merge(node.id(), 1, Integer::sum);
         }
 
         log.debug("AdditionContextStrategy: union={} nodes={} snippets={}",
