@@ -543,7 +543,7 @@ public final class AstGraphUtils {
             }
         } catch (Exception ignored) {
         }
-        return null;
+        return "unresolved_id_constructor_call";
     }
 
     public static String inferOwnerFromExecutableReferenceExpression(
