@@ -19,9 +19,19 @@ import java.util.stream.Collectors;
  *
  * <p>All emitted snippets carry {@link EnrichmentSnippet.LineContext#ADD}.
  *
- * <p>Snippet budget is applied <em>per GraphNode</em> (see {@code maxSnippetsPerNode}):
- * each node in the union independently collects up to that many snippets so that
- * all changed nodes get context regardless of how large the union is.
+ * <p>Snippet budget is applied <em>per GraphNode per group</em> so that
+ * passes with different importance levels do not compete for the same slots:
+ * <ul>
+ *   <li><b>Structural</b> ({@code maxStructuralSnippetsPerNode}, default 1):
+ *       Pass 0 (CLASS_BODY) and Pass 1 (CLASS_DECLARATION).</li>
+ *   <li><b>Dependency</b> ({@code maxDependencySnippetsPerNode}, default 3):
+ *       Pass 2 — outgoing INVOKES / READS_FIELD / WRITES_FIELD / EXTENDS /
+ *       IMPLEMENTS / INSTANTIATES edges.</li>
+ *   <li><b>Relational</b> ({@code maxRelationalSnippetsPerNode}, default 2):
+ *       Pass 3 (ANNOTATED_WITH) and Pass 4 (overloads + OVERRIDES).</li>
+ *   <li><b>Behavioral</b> ({@code maxBehavioralSnippetsPerNode}, default 1):
+ *       Pass 5 — METHOD_BODY when the signature line is among the ADD lines.</li>
+ * </ul>
  *
  * <p>Strategy passes:
  * <ul>
@@ -49,18 +59,57 @@ import java.util.stream.Collectors;
 public class AdditionContextStrategy implements ContextStrategy {
 
     /**
-     * Maximum number of enrichment snippets collected per GraphNode.
-     * Each node in the union independently counts toward this limit so that
-     * every changed node is guaranteed to produce at least some context.
+     * Max structural snippets per node (Pass 0: CLASS_BODY, Pass 1: CLASS_DECLARATION).
+     * Kept at 1 by default — one declaring-class declaration per changed member is sufficient.
      */
-    @Value("${app.enrichment.maxSnippetsPerNode:3}")
-    private int maxSnippetsPerNode;
+    @Value("${app.enrichment.maxStructuralSnippetsPerNode:1}")
+    private int maxStructuralSnippetsPerNode;
+
+    /**
+     * Max dependency snippets per node (Pass 2: INVOKES, READS_FIELD, WRITES_FIELD, …).
+     * Higher default because a method may legitimately call several external APIs.
+     */
+    @Value("${app.enrichment.maxDependencySnippetsPerNode:3}")
+    private int maxDependencySnippetsPerNode;
+
+    /**
+     * Max relational snippets per node (Pass 3: annotations, Pass 4: overloads + OVERRIDES).
+     * Kept low — overloads + one interface method is normally sufficient.
+     */
+    @Value("${app.enrichment.maxRelationalSnippetsPerNode:2}")
+    private int maxRelationalSnippetsPerNode;
+
+    /**
+     * Max behavioral snippets per node (Pass 5: METHOD_BODY on signature change).
+     * Almost always 1 — a node has exactly one body.
+     */
+    @Value("${app.enrichment.maxBehavioralSnippetsPerNode:1}")
+    private int maxBehavioralSnippetsPerNode;
 
     @Value("${app.enrichment.maxCallersPerNode:5}")
     private int maxCallersPerNode;
 
     @Value("${app.enrichment.callerWindowLines:5}")
     private int callerWindowLines;
+
+    // -------------------------------------------------------------------------
+    // Per-group counter helpers
+    // -------------------------------------------------------------------------
+
+    private enum SnippetGroup { STRUCTURAL, DEPENDENCY, RELATIONAL, BEHAVIORAL }
+
+    /** Returns true and increments the counter if the node is still under its group limit. */
+    private boolean tryAccept(Map<String, Map<SnippetGroup, Integer>> counters,
+                               String nodeId, SnippetGroup group, int limit) {
+        Map<SnippetGroup, Integer> nodeCounters =
+                counters.computeIfAbsent(nodeId, k -> new EnumMap<>(SnippetGroup.class));
+        int current = nodeCounters.getOrDefault(group, 0);
+        if (current >= limit) return false;
+        nodeCounters.put(group, current + 1);
+        return true;
+    }
+
+    // -------------------------------------------------------------------------
 
     @Override
     public List<EnrichmentSnippet> collectContext(
@@ -70,12 +119,11 @@ public class AdditionContextStrategy implements ContextStrategy {
 
         List<EnrichmentSnippet> snippets = new ArrayList<>();
         Set<String> seenDecl = new HashSet<>();
-        // per-node snippet counter: nodeId -> count emitted for that node
-        Map<String, Integer> snippetsPerNode = new HashMap<>();
+        // per-node, per-group snippet counters
+        Map<String, Map<SnippetGroup, Integer>> counters = new HashMap<>();
 
         // Pass 0: CLASS/INTERFACE/ANNOTATION nodes — emit full body ONLY when
         // the union contains no member nodes (method/field/constructor).
-        // When member nodes are present their individual snippets provide sufficient context.
         boolean hasMemberNodes = union.graphNodes().stream().anyMatch(n ->
                 n.kind() == NodeKind.METHOD
                 || n.kind() == NodeKind.FIELD
@@ -93,13 +141,13 @@ public class AdditionContextStrategy implements ContextStrategy {
                 GraphNode resolved = sourceGraph.nodes.get(node.id());
                 if (resolved == null) continue;
                 if (!seenDecl.add("BODY:" + resolved.id())) continue;
+                if (!tryAccept(counters, node.id(), SnippetGroup.STRUCTURAL, maxStructuralSnippetsPerNode)) continue;
 
                 snippets.add(EnrichmentSnippet.ofBody(
                         EnrichmentSnippet.SnippetType.CLASS_BODY, resolved,
                         "Full body of added " + resolved.kind().name().toLowerCase()
                                 + " '" + resolved.simpleName() + "'",
                         EnrichmentSnippet.LineContext.ADD));
-                snippetsPerNode.merge(node.id(), 1, Integer::sum);
             }
         }
 
@@ -112,7 +160,7 @@ public class AdditionContextStrategy implements ContextStrategy {
             boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
             if (!hasAdd) continue;
 
-            if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) continue;
+            if (!tryAccept(counters, node.id(), SnippetGroup.STRUCTURAL, maxStructuralSnippetsPerNode)) continue;
 
             sourceGraph.incoming(node.id()).stream()
                     .filter(e -> e.kind() == EdgeKind.DECLARES)
@@ -128,11 +176,11 @@ public class AdditionContextStrategy implements ContextStrategy {
                                 EnrichmentSnippet.SnippetType.CLASS_DECLARATION, cls,
                                 "Declaring class of changed method/field '" + node.simpleName() + "'",
                                 EnrichmentSnippet.LineContext.ADD));
-                        snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                        // counter was already incremented by tryAccept above
                     });
         }
 
-        // Pass 2: outgoing edges from union nodes
+        // Pass 2: outgoing edges from union nodes (dependency group)
         for (GraphNode node : union.graphNodes()) {
             List<ChangedLine> origins = union.nodeOrigins().getOrDefault(node, List.of());
             boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
@@ -144,7 +192,7 @@ public class AdditionContextStrategy implements ContextStrategy {
                     .collect(Collectors.toSet());
 
             for (GraphEdge edge : sourceGraph.outgoing(node.id())) {
-                if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) break;
+                if (!tryAccept(counters, node.id(), SnippetGroup.DEPENDENCY, maxDependencySnippetsPerNode)) break;
 
                 if (edge.startLine() > 0 && !addLines.contains(edge.startLine())) continue;
 
@@ -194,15 +242,14 @@ public class AdditionContextStrategy implements ContextStrategy {
 
                 if (snippet != null) {
                     snippets.add(snippet);
-                    snippetsPerNode.merge(node.id(), 1, Integer::sum);
+                } else {
+                    // slot was claimed by tryAccept but no snippet produced — give it back
+                    counters.get(node.id()).merge(SnippetGroup.DEPENDENCY, -1, Integer::sum);
                 }
             }
         }
 
-        // Pass 3: for ANNOTATION nodes — find the specific element annotated on the changed line.
-        // We match ANNOTATED_WITH edges by edge.startLine() == changed line number AND
-        // caller.filePath() == changed line filePath to avoid surfacing all usages of
-        // a widely-used annotation (e.g. @Execution, @Test) across the file.
+        // Pass 3: ANNOTATION nodes — find the specific element annotated on the changed line
         for (GraphNode node : union.graphNodes()) {
             if (node.kind() != NodeKind.ANNOTATION) continue;
 
@@ -210,7 +257,6 @@ public class AdditionContextStrategy implements ContextStrategy {
             boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
             if (!hasAdd) continue;
 
-            // Collect (filePath, lineNumber) pairs for ADD origins of this annotation node
             Set<String> addLineKeys = origins.stream()
                     .filter(l -> l.type() == ChangedLine.LineType.ADD)
                     .map(l -> l.filePath() + ":" + (l.lineNumber() > 0 ? l.lineNumber() : l.oldLineNumber()))
@@ -221,16 +267,14 @@ public class AdditionContextStrategy implements ContextStrategy {
                     .filter(e -> {
                         GraphNode caller = sourceGraph.nodes.get(e.caller());
                         if (caller == null) return false;
-                        // edge.startLine() is the line where @Annotation appears on the caller
                         String key = caller.filePath() + ":" + e.startLine();
                         return addLineKeys.contains(key);
                     })
                     .map(e -> sourceGraph.nodes.get(e.caller()))
                     .filter(Objects::nonNull)
                     .filter(owner -> seenDecl.add("ANNOTATED:" + owner.id()))
-                    .limit(maxSnippetsPerNode)
                     .forEach(owner -> {
-                        if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) return;
+                        if (!tryAccept(counters, node.id(), SnippetGroup.RELATIONAL, maxRelationalSnippetsPerNode)) return;
                         EnrichmentSnippet.SnippetType type = switch (owner.kind()) {
                             case CLASS, INTERFACE -> EnrichmentSnippet.SnippetType.CLASS_DECLARATION;
                             case FIELD -> EnrichmentSnippet.SnippetType.FIELD_DECLARATION;
@@ -240,11 +284,10 @@ public class AdditionContextStrategy implements ContextStrategy {
                                 type, owner,
                                 "Element annotated with '@" + node.simpleName() + "'",
                                 EnrichmentSnippet.LineContext.ADD));
-                        snippetsPerNode.merge(node.id(), 1, Integer::sum);
                     });
         }
 
-        // Pass 4: for METHOD nodes — sibling overloads and overridden interface/abstract method
+        // Pass 4: METHOD nodes — sibling overloads and overridden interface/abstract method
         for (GraphNode node : union.graphNodes()) {
             if (node.kind() != NodeKind.METHOD) continue;
 
@@ -252,7 +295,7 @@ public class AdditionContextStrategy implements ContextStrategy {
             boolean hasAdd = origins.stream().anyMatch(l -> l.type() == ChangedLine.LineType.ADD);
             if (!hasAdd) continue;
 
-            // 4a: sibling overloads — same simpleName, different id, declared in same class
+            // 4a: sibling overloads
             sourceGraph.incoming(node.id()).stream()
                     .filter(e -> e.kind() == EdgeKind.DECLARES)
                     .map(e -> sourceGraph.nodes.get(e.caller()))
@@ -268,16 +311,13 @@ public class AdditionContextStrategy implements ContextStrategy {
                                 .filter(sibling -> sibling.simpleName().equals(node.simpleName()))
                                 .filter(sibling -> seenDecl.add("OVERLOAD:" + sibling.id()))
                                 .forEach(sibling -> {
-                                    if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) return;
+                                    if (!tryAccept(counters, node.id(), SnippetGroup.RELATIONAL, maxRelationalSnippetsPerNode)) return;
                                     snippets.add(EnrichmentSnippet.ofDeclaration(
                                             EnrichmentSnippet.SnippetType.METHOD_DECLARATION, sibling,
                                             "Sibling overload of '" + node.simpleName() + "'",
                                             EnrichmentSnippet.LineContext.ADD));
-                                    snippetsPerNode.merge(node.id(), 1, Integer::sum);
                                 });
                     });
-
-            if (snippetsPerNode.getOrDefault(node.id(), 0) >= maxSnippetsPerNode) continue;
 
             // 4b: interface/abstract method overridden by this method
             sourceGraph.outgoing(node.id()).stream()
@@ -287,17 +327,15 @@ public class AdditionContextStrategy implements ContextStrategy {
                     .filter(iface -> seenDecl.add("OVERRIDES:" + iface.id()))
                     .findFirst()
                     .ifPresent(iface -> {
+                        if (!tryAccept(counters, node.id(), SnippetGroup.RELATIONAL, maxRelationalSnippetsPerNode)) return;
                         snippets.add(EnrichmentSnippet.ofDeclaration(
                                 EnrichmentSnippet.SnippetType.METHOD_DECLARATION, iface,
                                 "Interface/abstract method overridden by '" + node.simpleName() + "'",
                                 EnrichmentSnippet.LineContext.ADD));
-                        snippetsPerNode.merge(node.id(), 1, Integer::sum);
                     });
         }
 
-        // Pass 5: for METHOD/CONSTRUCTOR nodes — if a changed ADD line touches the signature
-        // area (changed line <= node.startLine + 2), emit a METHOD_BODY snippet of the node
-        // itself so that the full body appears in the "Enclosing context" section.
+        // Pass 5: METHOD/CONSTRUCTOR nodes — emit METHOD_BODY when signature line is changed
         for (GraphNode node : union.graphNodes()) {
             if (node.kind() != NodeKind.METHOD && node.kind() != NodeKind.CONSTRUCTOR) continue;
 
@@ -311,13 +349,13 @@ public class AdditionContextStrategy implements ContextStrategy {
             GraphNode resolved = sourceGraph.nodes.get(node.id());
             if (resolved == null || resolved.sourceSnippet() == null) continue;
             if (!seenDecl.add("BODY:" + resolved.id())) continue;
+            if (!tryAccept(counters, node.id(), SnippetGroup.BEHAVIORAL, maxBehavioralSnippetsPerNode)) continue;
 
             snippets.add(EnrichmentSnippet.ofBody(
                     EnrichmentSnippet.SnippetType.METHOD_BODY, resolved,
                     "Body of " + resolved.kind().name().toLowerCase() + " '" + resolved.simpleName()
                             + "' whose signature was changed",
                     EnrichmentSnippet.LineContext.ADD));
-            snippetsPerNode.merge(node.id(), 1, Integer::sum);
         }
 
         log.debug("AdditionContextStrategy: union={} nodes={} snippets={}",
