@@ -89,7 +89,7 @@ public final class AstGraphUtils {
     //
     //  Тип (class / interface / enum / annotation):
     //    com.example.Foo
-    //    → qualifiedName(CtType)
+    //    → qualifiedName(CtType)  /  qualifiedName(CtTypeReference)
     //
     //  Метод:
     //    com.example.Foo#methodName(param.Type1,param.Type2)
@@ -101,21 +101,30 @@ public final class AstGraphUtils {
     //
     //  Поле:
     //    com.example.Foo.fieldName          (разделитель «.», не «#»)
-    //    → fieldId(CtField)
+    //    → fieldId(CtField)  /  fieldId(CtFieldReference)
     //
     //  Формальный тип-параметр (generic):
     //    com.example.Foo#<T>
     //    com.example.Foo#methodName(...)#<T>
     //    → typeParamId(ownerId, CtTypeParameter)
     //
+    //  Параметр метода / конструктора:
+    //    var@<execId>#param:name
+    //    → varId(CtVariable)
+    //
+    //  Параметр лямбды:
+    //    var@<execId>#λparam:name
+    //    → varId(CtVariable)
+    //
     //  Локальная переменная / переменная в лямбде:
     //    var@<execId>#name            — обычная локальная переменная
     //    var@<execId>#λname           — внутри лямбды
     //    → varId(CtVariable)
     //
-    //  Параметр метода / конструктора:
-    //    var@<execId>#param:name
-    //    → varId(CtVariable)
+    //  Ссылка на переменную (use-site):
+    //    совпадает с varId если декларация доступна;
+    //    fallback: var@<nearestExecId>#name
+    //    → varRefId(CtVariableReference, useSite)
     //
     //  Ссылка на исполняемый элемент (call-site):
     //    тот же формат, что метод/конструктор; owner определяется из контекста вызова
@@ -139,16 +148,20 @@ public final class AstGraphUtils {
      */
     public static String elementId(CtElement el) {
         if (el == null) return "unresolved_id";
-        if (el instanceof CtType<?>       t)  return qualifiedName(t);
-        if (el instanceof CtField<?>      f)  return fieldId(f);
-        if (el instanceof CtTypeMember    m)  return typeMemberExecId(m);
-        if (el instanceof CtVariable<?>   v)  return varId(v);
-        if (el instanceof CtTypeParameter tp) {
+        if (el instanceof CtType<?>        t)   return qualifiedName(t);
+        if (el instanceof CtField<?>       f)   return fieldId(f);
+        if (el instanceof CtTypeMember     m)   return typeMemberExecId(m);
+        if (el instanceof CtVariable<?>    v)   return varId(v);
+        if (el instanceof CtTypeParameter  tp) {
             CtFormalTypeDeclarer owner = tp.getParent(CtFormalTypeDeclarer.class);
             String ownerId = owner != null ? formalDeclarerId(owner) : "?";
             return typeParamId(ownerId, tp);
         }
-        // Для use-site ссылок — ближайший исполняемый контекст
+        // References (use-site) — порядок важен: CtFieldReference extends CtVariableReference
+        if (el instanceof CtFieldReference<?>    r)  return fieldId(r);
+        if (el instanceof CtVariableReference<?> r)  return varRefId(r, el);
+        if (el instanceof CtTypeReference<?>     r)  return qualifiedName(r);
+        // Для прочих use-site элементов — ближайший исполняемый контекст
         return nearestExecId(el);
     }
 
@@ -157,13 +170,30 @@ public final class AstGraphUtils {
     // ------------------------------------------------------------------
 
     /**
-     * ID типа (class / interface / enum / annotation).
+     * ID типа (class / interface / enum / annotation) по декларации.
      * Формат: {@code com.example.Foo}
      */
     public static String qualifiedName(CtType<?> type) {
         if (type == null) return "unresolved_id_type";
         String q = type.getQualifiedName();
         return (q == null || q.isBlank()) ? "unresolved_id_type" : q;
+    }
+
+    /**
+     * ID типа по ссылке (use-site).
+     * Предпочтительнее, чем {@code qualifiedName(ref.getTypeDeclaration())}, потому что
+     * {@link CtTypeReference#getQualifiedName()} работает в no-classpath режиме,
+     * а {@code getTypeDeclaration()} возвращает {@code null} для внешних типов.
+     *
+     * <p>Используй этот метод в {@link GraphBuilder} для EXTENDS / IMPLEMENTS рёбер.
+     *
+     * @param ref ссылка на тип; может быть {@code null}
+     * @return квалифицированное имя или {@code "unresolved_id_type"}
+     */
+    public static String qualifiedName(CtTypeReference<?> ref) {
+        if (ref == null) return "unresolved_id_type";
+        String q = ref.getQualifiedName();
+        return isUsableQualifiedName(q) ? q : "unresolved_id_type";
     }
 
     /**
@@ -195,6 +225,13 @@ public final class AstGraphUtils {
     /**
      * ID конструктора по готовым строкам owner и signature.
      * Формат: {@code com.example.Foo#<init>(Type1,Type2)}
+     *
+     * <p>Принимает сигнатуру в любом из форматов:
+     * <ul>
+     *   <li>{@code Foo(Type1,Type2)} — как возвращает {@link CtExecutable#getSignature()}</li>
+     *   <li>{@code (Type1,Type2)} — уже обрезанная</li>
+     * </ul>
+     * В обоих случаях результат корректен.
      */
     public static String constructorExecutableId(String ownerQualified, String signature) {
         if (signature == null || signature.isBlank()) {
@@ -208,12 +245,28 @@ public final class AstGraphUtils {
     }
 
     /**
-     * ID поля.
+     * ID поля по декларации.
      * Формат: {@code com.example.Foo.fieldName}  (разделитель «.», не «#»)
      */
     public static String fieldId(CtField<?> field) {
-        if (field.getDeclaringType() == null) return "unresolved_id_field";
+        if (field == null || field.getDeclaringType() == null) return "unresolved_id_field";
         return field.getDeclaringType().getQualifiedName() + "." + field.getSimpleName();
+    }
+
+    /**
+     * ID поля по ссылке (use-site).
+     * Использует {@link CtFieldReference#getQualifiedName()} напрямую — работает в no-classpath режиме.
+     *
+     * <p>Используй этот метод в {@link GraphBuilder} для READS_FIELD / WRITES_FIELD рёбер
+     * вместо ручного построения {@code owner + "." + simpleName}.
+     *
+     * @param ref ссылка на поле; может быть {@code null}
+     * @return ID поля или {@code "unresolved_id_field"}
+     */
+    public static String fieldId(CtFieldReference<?> ref) {
+        if (ref == null) return "unresolved_id_field";
+        String owner = ref.getDeclaringType() != null ? qualifiedName(ref.getDeclaringType()) : "?";
+        return owner + "." + ref.getSimpleName();
     }
 
     /**
@@ -223,6 +276,8 @@ public final class AstGraphUtils {
      * <ol>
      *   <li><b>Параметр метода/конструктора</b> —
      *       {@code var@<execId>#param:<name>}</li>
+     *   <li><b>Параметр лямбды</b> —
+     *       {@code var@<nearestExecId>#λparam:<name>}</li>
      *   <li><b>Переменная внутри лямбды</b> —
      *       {@code var@<execId>#λ<name>}</li>
      *   <li><b>Обычная локальная переменная</b> —
@@ -237,12 +292,17 @@ public final class AstGraphUtils {
     public static String varId(CtVariable<?> v) {
         if (v == null) return "unresolved_id_var";
 
-        // 1. Parameter of method/constructor
         if (v instanceof CtParameter<?>) {
             CtExecutable<?> exec = v.getParent(CtExecutable.class);
+            // 1. Parameter of method/constructor
             if (exec instanceof CtTypeMember tm) {
                 String execId = typeMemberExecId(tm);
                 return "var@" + execId + "#param:" + v.getSimpleName();
+            }
+            // 2. Parameter of lambda — enclosing method/constructor is the exec context
+            if (exec instanceof CtLambda<?>) {
+                String enclosingExecId = nearestExecId(v);
+                return "var@" + enclosingExecId + "#\u03bbparam:" + v.getSimpleName();
             }
         }
 
@@ -251,12 +311,12 @@ public final class AstGraphUtils {
         if (enclosing == null) enclosing = v.getParent(CtConstructor.class);
         String execId = enclosing != null ? typeMemberExecId(enclosing) : null;
 
-        // 2. Variable inside lambda
+        // 3. Variable inside lambda
         if (lambda != null && execId != null) return "var@" + execId + "#\u03bb" + v.getSimpleName();
-        // 3. Ordinary local variable inside method/constructor
+        // 4. Ordinary local variable inside method/constructor
         if (execId != null) return "var@" + execId + "#" + v.getSimpleName();
 
-        // 4. Fallback (e.g. initializer block)
+        // 5. Fallback (e.g. initializer block)
         String fileName = "?";
         try {
             SourcePosition pos = v.getPosition();
@@ -268,18 +328,40 @@ public final class AstGraphUtils {
     }
 
     /**
-     * ID по ссылке на переменную (use-site).
-     * Пытается разрезолвить декларацию и вернуть {@link #varId(CtVariable)};
-     * при неудаче — {@code var@<simpleName>}.
+     * ID по ссылке на переменную (use-site) без контекста.
+     * Делегирует к {@link #varRefId(CtVariableReference, CtElement)} с {@code useSite=null}.
      */
     public static String varRefId(CtVariableReference<?> ref) {
+        return varRefId(ref, null);
+    }
+
+    /**
+     * ID по ссылке на переменную (use-site) с контекстом.
+     *
+     * <p>Сначала пытается разрезолвить декларацию через {@link CtVariableReference#getDeclaration()}
+     * и вернуть {@link #varId(CtVariable)}.
+     *
+     * <p>Если декларация недоступна (no-classpath режим), строит fallback-ID по той же схеме
+     * что и {@link #varId}: {@code var@<nearestExecId>#<name>} — чтобы ID совпал с тем,
+     * который будет присвоен узлу при обходе деклараций.
+     *
+     * <p><b>Важно:</b> старый fallback {@code "var@simpleName"} (без exec-контекста) приводил
+     * к битым рёбрам READS_LOCAL_VAR / WRITES_LOCAL_VAR. Данный метод это исправляет.
+     *
+     * @param ref     ссылка на переменную; может быть {@code null}
+     * @param useSite элемент, в котором происходит чтение/запись переменной (для контекста exec)
+     * @return стабильный строковый ID
+     */
+    public static String varRefId(CtVariableReference<?> ref, CtElement useSite) {
         if (ref == null) return "var@?";
         try {
             CtVariable<?> d = ref.getDeclaration();
             if (d != null) return varId(d);
         } catch (Exception ignored) {
         }
-        return "var@" + ref.getSimpleName();
+        // Fallback: строим ID в том же формате что varId, используя exec-контекст из useSite
+        String execId = useSite != null ? nearestExecId(useSite) : "?";
+        return "var@" + execId + "#" + ref.getSimpleName();
     }
 
     /**
@@ -302,7 +384,10 @@ public final class AstGraphUtils {
 
     /**
      * ID ближайшего охватывающего метода или конструктора для произвольного элемента.
-     * Используется как fallback в {@link #elementId(CtElement)}.
+     * Используется как fallback в {@link #elementId(CtElement)} и {@link #varRefId}.
+     *
+     * <p>Примечание: намеренно игнорирует лямбды — они не создают отдельных узлов в графе,
+     * и всё содержимое лямбды атрибутируется охватывающему методу/конструктору.
      */
     public static String nearestExecId(CtElement el) {
         CtMethod<?> m = el.getParent(CtMethod.class);
@@ -338,12 +423,19 @@ public final class AstGraphUtils {
 
     /**
      * Builds a method/constructor signature string.
-     * If Spoon already resolved parameters on the reference, delegates to
-     * {@link CtExecutableReference#getSignature()}. Otherwise tries to infer
-     * parameter types from the actual call-site arguments (works in
-     * no-classpath mode for literals and variables whose types are known).
-     * <p>
-     * Uses comma without space as separator to match Spoon's own
+     *
+     * <p>Priority order:
+     * <ol>
+     *   <li><b>Declaration-site</b> — если Spoon разрезолвил декларацию, берём сигнатуру оттуда.
+     *       Это гарантирует совпадение с ID, который будет присвоен узлу через
+     *       {@link #typeMemberExecId}, и устраняет несоответствия рёбер INVOKES.</li>
+     *   <li><b>Reference parameters</b> — если у ссылки уже есть параметры от Spoon.</li>
+     *   <li><b>Call-site inference</b> — выводим типы из аргументов вызова (работает в
+     *       no-classpath режиме для литералов и переменных с известным типом).</li>
+     *   <li><b>Fallback</b> — {@link CtExecutableReference#getSignature()} как есть.</li>
+     * </ol>
+     *
+     * <p>Uses comma without space as separator to match Spoon's own
      * {@link CtExecutableReference#getSignature()} format.
      *
      * @param ref     the executable reference (may have empty parameter list)
@@ -351,7 +443,16 @@ public final class AstGraphUtils {
      * @return a signature string such as {@code "foo(java.lang.String,int)"}
      */
     public static String buildSignature(CtExecutableReference<?> ref, CtElement useSite) {
-        // If Spoon already resolved parameters — trust it
+        // 1. Declaration-site: prefer the signature from the actual declaration
+        try {
+            CtExecutable<?> decl = ref.getDeclaration();
+            if (decl != null) {
+                return decl.getSignature();
+            }
+        } catch (Exception ignored) {
+        }
+
+        // 2. Reference already has resolved parameters — trust Spoon
         try {
             if (ref.getParameters() != null && !ref.getParameters().isEmpty()) {
                 return ref.getSignature();
@@ -359,7 +460,7 @@ public final class AstGraphUtils {
         } catch (Exception ignored) {
         }
 
-        // Collect call-site arguments
+        // 3. Call-site inference from arguments
         List<CtExpression<?>> args = null;
         if (useSite instanceof CtInvocation<?> inv) {
             args = inv.getArguments();
