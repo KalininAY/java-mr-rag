@@ -1,6 +1,7 @@
 package com.example.mrrag.graph;
 
 import com.example.mrrag.graph.model.ProjectGraph;
+import lombok.extern.slf4j.Slf4j;
 import spoon.reflect.code.*;
 import spoon.reflect.cu.SourcePosition;
 import spoon.reflect.cu.position.BodyHolderSourcePosition;
@@ -29,6 +30,7 @@ import java.util.stream.IntStream;
  * <p>All methods are {@code public static} — this class has no state and
  * should never be instantiated.
  */
+@Slf4j
 public final class AstGraphUtils {
 
     private AstGraphUtils() {
@@ -85,13 +87,13 @@ public final class AstGraphUtils {
     // ------------------------------------------------------------------
 
     public static String qualifiedName(CtType<?> type) {
-        if (type == null) return null;
+        if (type == null) return "unresolved_id_type";
         String q = type.getQualifiedName();
-        return (q == null || q.isBlank()) ? null : q;
+        return (q == null || q.isBlank()) ? "unresolved_id_type" : q;
     }
 
     public static String typeMemberExecId(CtTypeMember member) {
-        if (member == null) return null;
+        if (member == null) return "unresolved_id_type_member";
         try {
             CtType<?> decl = member.getDeclaringType();
             String owner = decl != null ? decl.getQualifiedName() : "?";
@@ -103,7 +105,7 @@ public final class AstGraphUtils {
             }
             return owner + "#" + member.getSimpleName();
         } catch (Exception e) {
-            return null;
+            return "unresolved_id_type_member";
         }
     }
 
@@ -119,7 +121,7 @@ public final class AstGraphUtils {
     }
 
     public static String fieldId(CtField<?> field) {
-        if (field.getDeclaringType() == null) return null;
+        if (field.getDeclaringType() == null) return "unresolved_id_field";
         return field.getDeclaringType().getQualifiedName() + "." + field.getSimpleName();
     }
 
@@ -142,14 +144,14 @@ public final class AstGraphUtils {
      * @return a stable string ID for use as a graph node key
      */
     public static String varId(CtVariable<?> v) {
-        if (v == null) return "unresolved";
+        if (v == null) return "unresolved_id_var";
 
         // 1. Parameter of method/constructor
         if (v instanceof CtParameter<?>) {
             CtExecutable<?> exec = v.getParent(CtExecutable.class);
             if (exec instanceof CtTypeMember tm) {
                 String execId = typeMemberExecId(tm);
-                if (execId != null) return "var@" + execId + "#param:" + v.getSimpleName();
+                return "var@" + execId + "#param:" + v.getSimpleName();
             }
         }
 
@@ -191,7 +193,7 @@ public final class AstGraphUtils {
     public static String formalDeclarerId(CtFormalTypeDeclarer d) {
         if (d instanceof CtType<?> t) return qualifiedName(t);
         if (d instanceof CtTypeMember m) return typeMemberExecId(m);
-        return null;
+        return "unresolved_id_declarer";
     }
 
     public static String nearestExecId(CtElement el) {
@@ -206,7 +208,7 @@ public final class AstGraphUtils {
     // ------------------------------------------------------------------
 
     public static String execRefId(CtExecutableReference<?> ref, CtElement useSite) {
-        if (ref == null) return "unresolved";
+        if (ref == null) return "unresolved_id_type_member";
         try {
             String owner = qualifiedExecutableOwner(ref, useSite);
             String sig = buildSignature(ref, useSite);
@@ -215,7 +217,7 @@ public final class AstGraphUtils {
             }
             return owner + "#" + sig;
         } catch (Exception e) {
-            return "unresolved:" + ref.getSimpleName();
+            return "unresolved_id_type_member";
         }
     }
 
