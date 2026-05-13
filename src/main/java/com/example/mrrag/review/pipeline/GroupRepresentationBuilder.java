@@ -155,22 +155,44 @@ public class GroupRepresentationBuilder {
     }
 
     /**
-     * Renders the header line for a METHOD_BODY snippet, including [ADD]/[DELETE] label
-     * and nodeId if available.
-     *
+     * Renders the two-line header for a METHOD_BODY snippet:
      * <pre>
-     * [ADD] `symbolName` @ `file:line`  · nodeId: `com.example.Foo#bar()`
+     * [ADD] `symbolName` @ `file:line`
+     * · method nodeId: `com.example.Foo#bar()`
      * </pre>
+     * The nodeId label is derived from the snippet type:
+     * {@code METHOD_BODY} → "method nodeId", {@code CLASS_BODY} → "class nodeId".
      */
     private void renderSnippetHeader(StringBuilder sb, EnrichmentSnippet s) {
+        // Line 1: [ADD/DELETE] `name` @ `file:line`
         sb.append(lineContextLabel(s.lineContext()));
         sb.append("`").append(s.symbolName()).append("`")
                 .append(" @ `").append(s.filePath())
                 .append(":").append(s.startLine()).append("`");
+        sb.append("\n");
+
+        // Line 2 (optional): · <kind> nodeId: `...`
         if (s.nodeId() != null) {
-            sb.append(" \u00b7 nodeId: `").append(s.nodeId()).append("`");
+            String kindLabel = nodeIdKindLabel(s.type());
+            sb.append("· ").append(kindLabel).append(" nodeId: `").append(s.nodeId()).append("`");
+            sb.append("\n");
         }
-        sb.append("\n\n");
+        sb.append("\n");
+    }
+
+    /**
+     * Returns a human-readable kind label for the nodeId line, based on the snippet type.
+     * E.g. {@code METHOD_BODY} → {@code "method"}, {@code CLASS_BODY} → {@code "class"}.
+     */
+    private static String nodeIdKindLabel(EnrichmentSnippet.SnippetType type) {
+        if (type == null) return "symbol";
+        return switch (type) {
+            case METHOD_BODY, METHOD_DECLARATION, METHOD_CALLERS -> "method";
+            case CLASS_BODY, CLASS_DECLARATION                   -> "class";
+            case FIELD_DECLARATION, FIELD_USAGES                 -> "field";
+            case VARIABLE_DECLARATION                            -> "variable";
+            default                                              -> "symbol";
+        };
     }
 
     /**
