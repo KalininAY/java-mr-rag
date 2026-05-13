@@ -200,7 +200,7 @@ public final class AstGraphUtils {
         CtMethod<?> m = el.getParent(CtMethod.class);
         if (m != null) return typeMemberExecId(m);
         CtConstructor<?> c = el.getParent(CtConstructor.class);
-        return c != null ? typeMemberExecId(c) : null;
+        return c != null ? typeMemberExecId(c) : "unresolved_id_nearest";
     }
 
     // ------------------------------------------------------------------
