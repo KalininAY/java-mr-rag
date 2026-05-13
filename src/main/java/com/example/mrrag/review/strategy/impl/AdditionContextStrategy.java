@@ -56,6 +56,12 @@ public class AdditionContextStrategy implements ContextStrategy {
     @Value("${app.enrichment.maxSnippetsPerNode:3}")
     private int maxSnippetsPerNode;
 
+    @Value("${app.enrichment.maxCallersPerNode:5}")
+    private int maxCallersPerNode;
+
+    @Value("${app.enrichment.callerWindowLines:5}")
+    private int callerWindowLines;
+
     @Override
     public List<EnrichmentSnippet> collectContext(
             UnionLine union, ProjectGraph sourceGraph, ProjectGraph targetGraph) {

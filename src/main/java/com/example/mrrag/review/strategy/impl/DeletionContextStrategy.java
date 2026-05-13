@@ -172,6 +172,7 @@ public class DeletionContextStrategy implements ContextStrategy {
 
                 snippets.add(new EnrichmentSnippet(
                         snippetType,
+                        caller.id(),
                         caller.filePath(), winStart, winEnd,
                         caller.simpleName(),
                         window,
