@@ -155,13 +155,15 @@ public class GroupRepresentationBuilder {
     }
 
     /**
-     * Renders the header line for a METHOD_BODY snippet, including nodeId if available.
+     * Renders the header line for a METHOD_BODY snippet, including [ADD]/[DELETE] label
+     * and nodeId if available.
      *
      * <pre>
-     * `symbolName` @ `file:line`  · nodeId: `com.example.Foo#bar()`
+     * [ADD] `symbolName` @ `file:line`  · nodeId: `com.example.Foo#bar()`
      * </pre>
      */
     private void renderSnippetHeader(StringBuilder sb, EnrichmentSnippet s) {
+        sb.append(lineContextLabel(s.lineContext()));
         sb.append("`").append(s.symbolName()).append("`")
                 .append(" @ `").append(s.filePath())
                 .append(":").append(s.startLine()).append("`");
