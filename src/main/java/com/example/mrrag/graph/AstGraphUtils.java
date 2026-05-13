@@ -83,15 +83,98 @@ public final class AstGraphUtils {
     }
 
     // ------------------------------------------------------------------
-    // ID helpers
+    // ID scheme
+    //
+    //  Все ID строятся по единым шаблонам:
+    //
+    //  Тип (class / interface / enum / annotation):
+    //    com.example.Foo
+    //    → qualifiedName(CtType)
+    //
+    //  Метод:
+    //    com.example.Foo#methodName(param.Type1,param.Type2)
+    //    → typeMemberExecId(CtTypeMember)
+    //
+    //  Конструктор:
+    //    com.example.Foo#<init>(param.Type1,param.Type2)
+    //    → typeMemberExecId(CtTypeMember)  /  constructorExecutableId(owner, sig)
+    //
+    //  Поле:
+    //    com.example.Foo.fieldName          (разделитель «.», не «#»)
+    //    → fieldId(CtField)
+    //
+    //  Формальный тип-параметр (generic):
+    //    com.example.Foo#<T>
+    //    com.example.Foo#methodName(...)#<T>
+    //    → typeParamId(ownerId, CtTypeParameter)
+    //
+    //  Локальная переменная / переменная в лямбде:
+    //    var@<execId>#name            — обычная локальная переменная
+    //    var@<execId>#λname           — внутри лямбды
+    //    → varId(CtVariable)
+    //
+    //  Параметр метода / конструктора:
+    //    var@<execId>#param:name
+    //    → varId(CtVariable)
+    //
+    //  Ссылка на исполняемый элемент (call-site):
+    //    тот же формат, что метод/конструктор; owner определяется из контекста вызова
+    //    → execRefId(CtExecutableReference, useSite)
+    //
+    //  Fallback (owner / позиция не разрезолвились):
+    //    unresolved_id_<kind>
     // ------------------------------------------------------------------
 
+    /**
+     * Универсальный входной метод: возвращает ID графового узла для любого {@link CtElement}.
+     *
+     * <p>Диспетчеризует вызов к специализированному методу по runtime-типу элемента.
+     * Если тип элемента уже известен — предпочтительнее вызывать специализированный метод
+     * напрямую, чтобы избежать накладных расходов instanceof-цепочки на горячих путях.
+     *
+     * <p>Схема ID описана в блоке {@code // ID scheme} выше.
+     *
+     * @param el любой Spoon-элемент; не должен быть {@code null}
+     * @return стабильный, непустой строковый ID
+     */
+    public static String elementId(CtElement el) {
+        if (el == null) return "unresolved_id";
+        if (el instanceof CtType<?>       t)  return qualifiedName(t);
+        if (el instanceof CtField<?>      f)  return fieldId(f);
+        if (el instanceof CtTypeMember    m)  return typeMemberExecId(m);
+        if (el instanceof CtVariable<?>   v)  return varId(v);
+        if (el instanceof CtTypeParameter tp) {
+            CtFormalTypeDeclarer owner = tp.getParent(CtFormalTypeDeclarer.class);
+            String ownerId = owner != null ? formalDeclarerId(owner) : "?";
+            return typeParamId(ownerId, tp);
+        }
+        // Для use-site ссылок — ближайший исполняемый контекст
+        return nearestExecId(el);
+    }
+
+    // ------------------------------------------------------------------
+    // ID helpers — декларации
+    // ------------------------------------------------------------------
+
+    /**
+     * ID типа (class / interface / enum / annotation).
+     * Формат: {@code com.example.Foo}
+     */
     public static String qualifiedName(CtType<?> type) {
         if (type == null) return "unresolved_id_type";
         String q = type.getQualifiedName();
         return (q == null || q.isBlank()) ? "unresolved_id_type" : q;
     }
 
+    /**
+     * ID метода или конструктора как члена типа.
+     * Формат:
+     * <ul>
+     *   <li>метод:       {@code com.example.Foo#methodName(Type1,Type2)}</li>
+     *   <li>конструктор: {@code com.example.Foo#<init>(Type1,Type2)}</li>
+     *   <li>другой член: {@code com.example.Foo#memberName}</li>
+     * </ul>
+     */
     public static String typeMemberExecId(CtTypeMember member) {
         if (member == null) return "unresolved_id_type_member";
         try {
@@ -109,6 +192,10 @@ public final class AstGraphUtils {
         }
     }
 
+    /**
+     * ID конструктора по готовым строкам owner и signature.
+     * Формат: {@code com.example.Foo#<init>(Type1,Type2)}
+     */
     public static String constructorExecutableId(String ownerQualified, String signature) {
         if (signature == null || signature.isBlank()) {
             return ownerQualified + "#<init>()";
@@ -120,28 +207,32 @@ public final class AstGraphUtils {
         return ownerQualified + "#<init>" + signature.substring(open);
     }
 
+    /**
+     * ID поля.
+     * Формат: {@code com.example.Foo.fieldName}  (разделитель «.», не «#»)
+     */
     public static String fieldId(CtField<?> field) {
         if (field.getDeclaringType() == null) return "unresolved_id_field";
         return field.getDeclaringType().getQualifiedName() + "." + field.getSimpleName();
     }
 
     /**
-     * Builds a stable, line-number-independent ID for a local variable or parameter.
+     * ID локальной переменной, параметра или переменной внутри лямбды.
      *
-     * <p>Strategy (priority order):
+     * <p>Стратегия (по приоритету):
      * <ol>
-     *   <li><b>Method/constructor parameter</b> — {@code execId#param:<name>}</li>
-     *   <li><b>Lambda parameter or variable inside a lambda</b> — {@code execId#λ<lambdaLine>:<name>}
-     *       where {@code lambdaLine} is the source line of the enclosing lambda expression.
-     *       This line shifts together with the whole method when unrelated lines are added/removed
-     *       above, so two versions of the same lambda still produce the same ID.</li>
-     *   <li><b>Local variable inside a method/constructor</b> — {@code execId#<name>}</li>
-     *   <li><b>Fallback</b> (no enclosing executable found) — {@code var@<fileName>:<name>}
-     *       (no line number).</li>
+     *   <li><b>Параметр метода/конструктора</b> —
+     *       {@code var@<execId>#param:<name>}</li>
+     *   <li><b>Переменная внутри лямбды</b> —
+     *       {@code var@<execId>#λ<name>}</li>
+     *   <li><b>Обычная локальная переменная</b> —
+     *       {@code var@<execId>#<name>}</li>
+     *   <li><b>Fallback</b> (нет охватывающего исполняемого элемента) —
+     *       {@code var@<fileName>:<name>} (без номера строки)</li>
      * </ol>
      *
-     * @param v the variable element; must not be {@code null}
-     * @return a stable string ID for use as a graph node key
+     * @param v переменный элемент; не должен быть {@code null}
+     * @return стабильный строковый ID для использования как ключ графового узла
      */
     public static String varId(CtVariable<?> v) {
         if (v == null) return "unresolved_id_var";
@@ -176,6 +267,11 @@ public final class AstGraphUtils {
         return "var@" + fileName + ":" + v.getSimpleName();
     }
 
+    /**
+     * ID по ссылке на переменную (use-site).
+     * Пытается разрезолвить декларацию и вернуть {@link #varId(CtVariable)};
+     * при неудаче — {@code var@<simpleName>}.
+     */
     public static String varRefId(CtVariableReference<?> ref) {
         if (ref == null) return "var@?";
         try {
@@ -186,16 +282,28 @@ public final class AstGraphUtils {
         return "var@" + ref.getSimpleName();
     }
 
+    /**
+     * ID формального тип-параметра (generic).
+     * Формат: {@code <ownerId>#<T>}
+     */
     public static String typeParamId(String ownerId, CtTypeParameter tp) {
         return ownerId + "#<" + tp.getSimpleName() + ">";
     }
 
+    /**
+     * ID владельца формальных тип-параметров.
+     * Делегирует к {@link #qualifiedName} или {@link #typeMemberExecId}.
+     */
     public static String formalDeclarerId(CtFormalTypeDeclarer d) {
         if (d instanceof CtType<?> t) return qualifiedName(t);
         if (d instanceof CtTypeMember m) return typeMemberExecId(m);
         return "unresolved_id_declarer";
     }
 
+    /**
+     * ID ближайшего охватывающего метода или конструктора для произвольного элемента.
+     * Используется как fallback в {@link #elementId(CtElement)}.
+     */
     public static String nearestExecId(CtElement el) {
         CtMethod<?> m = el.getParent(CtMethod.class);
         if (m != null) return typeMemberExecId(m);
@@ -204,9 +312,16 @@ public final class AstGraphUtils {
     }
 
     // ------------------------------------------------------------------
-    // Executable reference ID helpers
+    // ID helpers — ссылки на исполняемые элементы (call-site)
     // ------------------------------------------------------------------
 
+    /**
+     * ID исполняемого элемента по ссылке с use-site контекстом.
+     * Формат идентичен {@link #typeMemberExecId}: owner разрешается из call-site.
+     *
+     * @param ref     ссылка на метод или конструктор
+     * @param useSite элемент вызова ({@link CtInvocation} или {@link CtConstructorCall})
+     */
     public static String execRefId(CtExecutableReference<?> ref, CtElement useSite) {
         if (ref == null) return "unresolved_id_type_member";
         try {
