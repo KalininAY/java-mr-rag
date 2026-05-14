@@ -76,7 +76,7 @@ public class GraphBuilder {
 
         Launcher launcher = new Launcher();
         Environment environment = launcher.getEnvironment();
-        environment.setNoClasspath(false);
+        environment.setNoClasspath(true);
         environment.setCommentEnabled(true);
         environment.setAutoImports(false);
         environment.setIgnoreSyntaxErrors(true);
@@ -410,7 +410,9 @@ public class GraphBuilder {
                 int[] declarationLines = AstGraphUtils.declarationLines(thr, sourceLines);
                 CtExpression<?> thrown = thr.getThrownExpression();
                 String calleeId = (thrown instanceof CtConstructorCall<?> cc)
-                        ? AstGraphUtils.inferOwnerFromConstructorCall(cc) : "?";
+                        ? AstGraphUtils.inferOwnerFromConstructorCall(cc) : null;
+                if (calleeId == null) return;
+
                 graph.addEdge(new GraphEdge(callerId, EdgeKind.THROWS, calleeId, filePath, declarationLines[0], declarationLines[1]));
             }));
 

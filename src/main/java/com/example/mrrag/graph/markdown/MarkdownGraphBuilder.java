@@ -39,6 +39,7 @@ public class MarkdownGraphBuilder {
                 case CONSTRUCTOR       -> new MarkdownConstructorNode(node);
                 case FIELD             -> new MarkdownFieldNode(node);
                 case VARIABLE          -> new MarkdownVariableNode(node);
+                case INIT_BLOCK        -> new MarkdownConstructorNode(node);
                 case LAMBDA            -> new MarkdownLambdaNode(node);
                 case ANNOTATION        -> new MarkdownClassNode(node);
                 case TYPE_PARAM        -> new MarkdownTypeParamNode(node);

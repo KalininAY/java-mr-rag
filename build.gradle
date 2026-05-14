@@ -82,4 +82,7 @@ if (envFile.exists()) {
     tasks.named('bootRun') {
         environment envVars
     }
+    tasks.named('test') {
+        environment envVars
+    }
 }
