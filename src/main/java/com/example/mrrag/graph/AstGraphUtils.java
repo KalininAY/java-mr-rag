@@ -232,7 +232,14 @@ public final class AstGraphUtils {
             return fieldId(ev);
 
         // Элемент внутри аннотации: контекст — аннотированный элемент.
-        // Суффикс #<annotation> не создаётся, так как соответствующего узла нет.
+        //
+        // ann.getParent() может быть не только CtType/CtTypeMember, но и
+        // CtParameter, CtLocalVariable, CtField и т.д. Поэтому рекурсивно
+        // вызываем nearestExecId для annotated-элемента, что корректно
+        // обрабатывает все случаи:
+        //   @JsonInclude на классе       → qualifiedName класса
+        //   @NotNull на параметре метода → typeMemberExecId метода
+        //   @Valid на поле               → fieldId поля
         CtAnnotation<?> ann = el.getParent(CtAnnotation.class);
         if (ann != null) {
             CtElement annotated = ann.getParent();
@@ -240,6 +247,10 @@ public final class AstGraphUtils {
                 return qualifiedName(t);
             if (annotated instanceof CtTypeMember tm)
                 return typeMemberExecId(tm);
+            // Для CtParameter, CtLocalVariable и прочих нетривиальных случаев
+            // делегируем рекурсивно — поднимаемся выше по дереву.
+            if (annotated != null)
+                return nearestExecId(annotated);
         }
 
         return "unresolved_id_nearest";
