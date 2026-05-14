@@ -383,17 +383,56 @@ public final class AstGraphUtils {
     }
 
     /**
-     * ID ближайшего охватывающего метода или конструктора для произвольного элемента.
-     * Используется как fallback в {@link #elementId(CtElement)} и {@link #varRefId}.
+     * ID ближайшего охватывающего контекста для произвольного элемента AST.
      *
-     * <p>Примечание: намеренно игнорирует лямбды — они не создают отдельных узлов в графе,
+     * <p>Порядок поиска:
+     * <ol>
+     *   <li>Метод ({@link CtMethod})</li>
+     *   <li>Конструктор ({@link CtConstructor})</li>
+     *   <li>Статический инициализатор ({@link CtStaticInit}) → {@code OwnerType#<clinit>}</li>
+     *   <li>Инициализатор поля ({@link CtField}) → {@code OwnerType.fieldName#<finit>}</li>
+     *   <li>Значение enum ({@link CtEnumValue}) → {@code OwnerEnum.VALUE#<einit>}</li>
+     *   <li>Атрибут аннотации ({@link CtAnnotation}) → {@code owner#<annotation>}</li>
+     * </ol>
+     *
+     * <p>Намеренно игнорирует лямбды — они не создают отдельных узлов в графе,
      * и всё содержимое лямбды атрибутируется охватывающему методу/конструктору.
      */
     public static String nearestExecId(CtElement el) {
+        // 1. Метод
         CtMethod<?> m = el.getParent(CtMethod.class);
         if (m != null) return typeMemberExecId(m);
+
+        // 2. Конструктор
         CtConstructor<?> c = el.getParent(CtConstructor.class);
-        return c != null ? typeMemberExecId(c) : "unresolved_id_nearest";
+        if (c != null) return typeMemberExecId(c);
+
+        // 3. Статический инициализатор: static { ... }
+        CtStaticInit si = el.getParent(CtStaticInit.class);
+        if (si != null && si.getDeclaringType() != null)
+            return si.getDeclaringType().getQualifiedName() + "#<clinit>";
+
+        // 4. Инициализатор поля: static final X = Collections.synchronizedSet(...)
+        CtField<?> f = el.getParent(CtField.class);
+        if (f != null && f.getDeclaringType() != null)
+            return f.getDeclaringType().getQualifiedName() + "." + f.getSimpleName() + "#<finit>";
+
+        // 5. Значение enum: OFFICE, DEBUG, etc.
+        CtEnumValue<?> ev = el.getParent(CtEnumValue.class);
+        if (ev != null && ev.getDeclaringType() != null)
+            return ev.getDeclaringType().getQualifiedName() + "." + ev.getSimpleName() + "#<einit>";
+
+        // 6. Атрибут аннотации: @ExtendWith({...}), @SpringBootTest(classes = ...)
+        CtAnnotation<?> ann = el.getParent(CtAnnotation.class);
+        if (ann != null) {
+            CtElement annotated = ann.getParent();
+            if (annotated instanceof CtType<?> t)
+                return qualifiedName(t) + "#<annotation>";
+            if (annotated instanceof CtTypeMember tm)
+                return typeMemberExecId(tm) + "#<annotation>";
+        }
+
+        return "unresolved_id_nearest";
     }
 
     // ------------------------------------------------------------------
