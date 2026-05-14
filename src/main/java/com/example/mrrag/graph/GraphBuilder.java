@@ -380,6 +380,8 @@ public class GraphBuilder {
 
         if (edgeConfig.isEnabled(EdgeKind.READS_FIELD) || edgeConfig.isEnabled(EdgeKind.WRITES_FIELD))
             passes.add(() -> model.getElements(new TypeFilter<>(CtFieldAccess.class)).forEach(fa -> {
+                // пропускаем синтетическое поле SomeType.class — оно не является реальным чтением поля
+                if ("class".equals(fa.getVariable().getSimpleName())) return;
                 String callerId = AstGraphUtils.nearestExecId(fa);
                 String filePath = AstGraphUtils.graphFilePath(fa, projectRoot, repoPaths);
                 String calleeId = AstGraphUtils.fieldId(fa.getVariable());
