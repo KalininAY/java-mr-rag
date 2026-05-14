@@ -389,7 +389,10 @@ public final class AstGraphUtils {
      * <ol>
      *   <li>Метод ({@link CtMethod})</li>
      *   <li>Конструктор ({@link CtConstructor})</li>
-     *   <li>Статический инициализатор ({@link CtStaticInit}) → {@code OwnerType#<clinit>}</li>
+     *   <li>Статический инициализатор ({@link CtAnonymousExecutable} со static-модификатором)
+     *       → {@code OwnerType#<clinit>}</li>
+     *   <li>Нестатический инициализатор ({@link CtAnonymousExecutable} без static-модификатора)
+     *       → {@code OwnerType#<init_block>}</li>
      *   <li>Инициализатор поля ({@link CtField}) → {@code OwnerType.fieldName#<finit>}</li>
      *   <li>Значение enum ({@link CtEnumValue}) → {@code OwnerEnum.VALUE#<einit>}</li>
      *   <li>Атрибут аннотации ({@link CtAnnotation}) → {@code owner#<annotation>}</li>
@@ -407,22 +410,26 @@ public final class AstGraphUtils {
         CtConstructor<?> c = el.getParent(CtConstructor.class);
         if (c != null) return typeMemberExecId(c);
 
-        // 3. Статический инициализатор: static { ... }
-        CtStaticInit si = el.getParent(CtStaticInit.class);
-        if (si != null && si.getDeclaringType() != null)
-            return si.getDeclaringType().getQualifiedName() + "#<clinit>";
+        // 3-4. Статический или нестатический инициализатор: static { ... } / { ... }
+        //      В Spoon они оба представлены как CtAnonymousExecutable
+        CtAnonymousExecutable anon = el.getParent(CtAnonymousExecutable.class);
+        if (anon != null && anon.getDeclaringType() != null) {
+            String ownerName = anon.getDeclaringType().getQualifiedName();
+            boolean isStatic = anon.getModifiers().contains(ModifierKind.STATIC);
+            return ownerName + (isStatic ? "#<clinit>" : "#<init_block>");
+        }
 
-        // 4. Инициализатор поля: static final X = Collections.synchronizedSet(...)
+        // 5. Инициализатор поля: static final X = Collections.synchronizedSet(...)
         CtField<?> f = el.getParent(CtField.class);
         if (f != null && f.getDeclaringType() != null)
             return f.getDeclaringType().getQualifiedName() + "." + f.getSimpleName() + "#<finit>";
 
-        // 5. Значение enum: OFFICE, DEBUG, etc.
+        // 6. Значение enum: OFFICE, DEBUG, etc.
         CtEnumValue<?> ev = el.getParent(CtEnumValue.class);
         if (ev != null && ev.getDeclaringType() != null)
             return ev.getDeclaringType().getQualifiedName() + "." + ev.getSimpleName() + "#<einit>";
 
-        // 6. Атрибут аннотации: @ExtendWith({...}), @SpringBootTest(classes = ...)
+        // 7. Атрибут аннотации: @ExtendWith({...}), @SpringBootTest(classes = ...)
         CtAnnotation<?> ann = el.getParent(CtAnnotation.class);
         if (ann != null) {
             CtElement annotated = ann.getParent();
