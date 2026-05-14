@@ -11,6 +11,7 @@ public enum NodeKind {
     ANNOTATION(true),
     CONSTRUCTOR(true),
     METHOD(true),
+    INIT_BLOCK(true),
     LAMBDA(true),
     FIELD(false),
     VARIABLE(false),

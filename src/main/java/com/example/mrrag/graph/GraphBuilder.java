@@ -16,7 +16,6 @@ import spoon.reflect.code.*;
 import spoon.reflect.declaration.*;
 import spoon.reflect.visitor.filter.TypeFilter;
 import spoon.support.compiler.FileSystemFile;
-import spoon.support.compiler.VirtualFile;
 
 import java.nio.file.Path;
 import java.util.*;
@@ -120,10 +119,6 @@ public class GraphBuilder {
         List<Runnable> passes = new ArrayList<>();
 
         passes.add(() -> model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
-            // CtTypeParameter (generic type params like <E>, <T>) is a subtype of CtType.
-            // In no-classpath mode Spoon creates ghost CtType nodes with id="E", kind=CLASS
-            // for each type parameter. Skip them here — they are handled by the HAS_TYPE_PARAM
-            // pass with a proper qualified id like "com.example.Foo#<E>".
             if (type instanceof CtTypeParameter) return;
 
             String id = AstGraphUtils.qualifiedName(type);
@@ -155,9 +150,6 @@ public class GraphBuilder {
 
             if (edgeConfig.isEnabled(EdgeKind.EXTENDS)) {
                 if (type instanceof CtClass<?> cls && cls.getSuperclass() != null) {
-                    // Use qualifiedName(CtTypeReference) — works in no-classpath mode and correctly
-                    // handles generic supertypes like HashMap<Level, E> without returning a ghost
-                    // CtTypeParameter node (which getTypeDeclaration() would do for type args).
                     String calleeId = AstGraphUtils.qualifiedName(cls.getSuperclass());
                     int[] declarationLinesCallee = AstGraphUtils.declarationLines(cls.getSuperclass(), sourceLines);
 
@@ -269,6 +261,43 @@ public class GraphBuilder {
                 int[] declarationLines = AstGraphUtils.declarationLines(typeContstructor, sourceLines);
 
                 graph.addEdge(new GraphEdge(callerId, EdgeKind.DECLARES, id, filePath, declarationLines[0], declarationLines[1]));
+            }
+        }));
+
+        // ----------------------------------------------------------------
+        // Pass: CtAnonymousExecutable — static { ... } and instance { ... } init blocks.
+        //
+        // In Spoon both block types are represented as CtAnonymousExecutable.
+        // static blocks have ModifierKind.STATIC; instance blocks do not.
+        //
+        // IDs (must match AstGraphUtils.nearestExecId):
+        //   static block  -> OwnerType#<clinit>
+        //   instance block -> OwnerType#<init_block>
+        //
+        // Without these nodes every edge whose caller is resolved by
+        // nearestExecId to #<clinit> / #<init_block> would be broken.
+        // ----------------------------------------------------------------
+        passes.add(() -> model.getElements(new TypeFilter<>(CtAnonymousExecutable.class)).forEach(anon -> {
+            if (anon.getDeclaringType() == null) return;
+
+            boolean isStatic = anon.getModifiers().contains(ModifierKind.STATIC);
+            String ownerName = anon.getDeclaringType().getQualifiedName();
+            String id = ownerName + (isStatic ? "#<clinit>" : "#<init_block>");
+            String simpleName = isStatic ? "<clinit>" : "<init_block>";
+
+            String filePath = AstGraphUtils.graphFilePath(anon, projectRoot, repoPaths);
+            int[] lines = AstGraphUtils.lines(anon, sourceLines);
+            String sourceSnippet = AstGraphUtils.extractSource(sourceLines, filePath, lines[0], lines[1]);
+            String declarationSnippet = AstGraphUtils.declarationOf(sourceLines, filePath, anon);
+
+            // Use putIfAbsent: multiple static blocks in one class share the same #<clinit> id.
+            graph.nodes.putIfAbsent(id, new GraphNode(
+                    id, NodeKind.INIT_BLOCK, simpleName,
+                    filePath, lines[0], lines[1], sourceSnippet, declarationSnippet, null));
+
+            if (edgeConfig.isEnabled(EdgeKind.DECLARES)) {
+                graph.addEdge(new GraphEdge(
+                        ownerName, EdgeKind.DECLARES, id, filePath, lines[0], lines[1]));
             }
         }));
 
@@ -425,8 +454,6 @@ public class GraphBuilder {
                 String callerId = AstGraphUtils.nearestExecId(fa);
                 String filePath = AstGraphUtils.graphFilePath(fa, projectRoot, repoPaths);
 
-                // Use AstGraphUtils.fieldId(CtFieldReference) — consistent with declaration-site ID
-                // and handles unresolved owner gracefully (returns "unresolved_id_field").
                 String calleeId = AstGraphUtils.fieldId(fa.getVariable());
 
                 EdgeKind edgeKind = (fa instanceof CtFieldWrite) ? EdgeKind.WRITES_FIELD : EdgeKind.READS_FIELD;
@@ -457,7 +484,6 @@ public class GraphBuilder {
                 int[] declarationLines = AstGraphUtils.declarationLines(thr, sourceLines);
 
                 CtExpression<?> thrown = thr.getThrownExpression();
-                // Use cc.getType() via inferOwnerFromConstructorCall — works in no-classpath mode
                 String calleeId = (thrown instanceof CtConstructorCall<?> cc)
                         ? AstGraphUtils.inferOwnerFromConstructorCall(cc) : null;
                 if (calleeId == null) calleeId = "?";
@@ -472,8 +498,6 @@ public class GraphBuilder {
                 int[] declarationLines = AstGraphUtils.declarationLines(ta, sourceLines);
 
                 if (ta.getAccessedType() == null) return;
-                // Use qualifiedName(CtTypeReference) — avoids getTypeDeclaration() which returns
-                // ghost CtTypeParameter nodes for generic type arguments in no-classpath mode.
                 String calleeId = AstGraphUtils.qualifiedName(ta.getAccessedType());
 
                 graph.addEdge(new GraphEdge(callerId, EdgeKind.REFERENCES_TYPE, calleeId, filePath, declarationLines[0], declarationLines[1]));
