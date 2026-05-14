@@ -411,6 +411,24 @@ public final class AstGraphUtils {
         return null;
     }
 
+    /**
+     * Возвращает имя пакета объемлющего top-level класса для данного элемента.
+     *
+     * <p>Используется как последний fallback в {@link #inferOwnerFromConstructorCall}
+     * для случая, когда Spoon при {@code noClasspath} возвращает только simpleName
+     * класса из того же пакета (например {@code "T2293"} вместо
+     * {@code "epvv.RECB_C3674.T2293"}).
+     */
+    private static String enclosingPackageName(CtElement el) {
+        try {
+            CtType<?> t = el.getParent(CtType.class);
+            while (t != null && t.getDeclaringType() != null) t = t.getDeclaringType();
+            if (t != null && t.getPackage() != null)
+                return t.getPackage().getQualifiedName();
+        } catch (Exception ignored) {}
+        return null;
+    }
+
     public static String qualifiedExecutableOwner(CtExecutableReference<?> ref, CtElement useSite) {
         try {
             if (ref.getDeclaringType() != null) {
@@ -500,6 +518,20 @@ public final class AstGraphUtils {
         return null;
     }
 
+    /**
+     * Определяет FQN класса, создаваемого через {@code new T(...)}.
+     *
+     * <p>Порядок попыток:
+     * <ol>
+     *   <li>{@code cc.getType().getQualifiedName()} — основной источник.</li>
+     *   <li>{@link #refineOwnerUsingImports} — уточнение по explicit-импортам.</li>
+     *   <li>{@link #refineOwnerUsingWildcardImports} — уточнение по wildcard-импортам.</li>
+     *   <li>Fallback: если после шагов 1–3 {@code q} не содержит точки
+     *       (Spoon вернул только simpleName, что бывает при {@code noClasspath}
+     *       для классов из того же пакета), добавляем пакет объемлющего класса
+     *       через {@link #enclosingPackageName}.</li>
+     * </ol>
+     */
     public static String inferOwnerFromConstructorCall(CtConstructorCall<?> cc) {
         try {
             if (cc.getType() != null) {
@@ -507,7 +539,15 @@ public final class AstGraphUtils {
                 String fixed = refineOwnerUsingImports(q, cc);
                 if (fixed == null) fixed = refineOwnerUsingWildcardImports(q, cc);
                 if (fixed != null) q = fixed;
-                if (isUsableQualifiedName(q)) return q;
+                if (isUsableQualifiedName(q)) {
+                    // Spoon при noClasspath может вернуть только simpleName для класса
+                    // из того же пакета — он не попадёт в import-ы. Достраиваем FQN.
+                    if (!q.contains(".")) {
+                        String pkg = enclosingPackageName(cc);
+                        if (pkg != null && !pkg.isBlank()) q = pkg + "." + q;
+                    }
+                    return q;
+                }
             }
         } catch (Exception ignored) {}
         return "unresolved_id_constructor_call";
