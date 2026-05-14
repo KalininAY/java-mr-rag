@@ -45,7 +45,7 @@ public class GitLabGateway implements CodeRepositoryGateway {
 
     private final GitLabApi gitLabApi;
 
-    @Value("${gitlab.url}")
+    @Value("${app.gitlab.url}")
     private String defaultUrl;
 
     @Value("${app.gitlab.token}")
