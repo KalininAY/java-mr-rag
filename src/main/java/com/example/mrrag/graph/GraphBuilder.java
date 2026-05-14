@@ -347,6 +347,10 @@ public class GraphBuilder {
 
         if (edgeConfig.isEnabled(EdgeKind.INVOKES))
             passes.add(() -> model.getElements(new TypeFilter<>(CtInvocation.class)).forEach(inv -> {
+                // CtConstructorCall extends CtInvocation — пропускаем: INVOKES-ребро
+                // для конструкторов строится в Pass INSTANTIATES через constructorExecutableId,
+                // где typeId уже содержит корректный FQN из inferOwnerFromConstructorCall.
+                if (inv instanceof CtConstructorCall) return;
                 String callerId = AstGraphUtils.nearestExecId(inv);
                 String calleeId = AstGraphUtils.execRefIdForChainedInvocation(inv);
                 String filePath = AstGraphUtils.graphFilePath(inv, projectRoot, repoPaths);
