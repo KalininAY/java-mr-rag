@@ -64,7 +64,7 @@ public class GraphBuilder {
                 .map(CompletableFuture::join)
                 .forEach(partial -> mergeGraphs(merged, partial));
 
-        log.info("doBuildGraphFromSources: merged graph — {} nodes, {} edge-sources, root={}",
+        log.info("doBuildGraphFromSources: merged graph \u2014 {} nodes, {} edge-sources, root={}",
                 merged.nodes.size(), merged.edgesFrom.size(), provider.localProjectRoot().orElse(null));
         return merged;
     }
@@ -94,11 +94,11 @@ public class GraphBuilder {
         try {
             model = launcher.buildModel();
         } catch (ModelBuildingException mbe) {
-            log.warn("Spoon ModelBuildingException (batch of {} files) — using partial model. Cause: {}",
+            log.warn("Spoon ModelBuildingException (batch of {} files) \u2014 using partial model. Cause: {}",
                     sources.size(), mbe.getMessage());
             model = launcher.getModel();
             if (model == null) {
-                log.error("Spoon returned null model for batch — returning empty partial graph");
+                log.error("Spoon returned null model for batch \u2014 returning empty partial graph");
                 return new ProjectGraph();
             }
         }
@@ -120,7 +120,14 @@ public class GraphBuilder {
         List<Runnable> passes = new ArrayList<>();
 
         passes.add(() -> model.getElements(new TypeFilter<>(CtType.class)).forEach(type -> {
+            // CtTypeParameter (generic type params like <E>, <T>) is a subtype of CtType.
+            // In no-classpath mode Spoon creates ghost CtType nodes with id="E", kind=CLASS
+            // for each type parameter. Skip them here — they are handled by the HAS_TYPE_PARAM
+            // pass with a proper qualified id like "com.example.Foo#<E>".
+            if (type instanceof CtTypeParameter) return;
+
             String id = AstGraphUtils.qualifiedName(type);
+            if (id == null) return;
             String filePath = AstGraphUtils.graphFilePath(type, projectRoot, repoPaths);
             int[] lines = AstGraphUtils.lines(type, sourceLines);
             NodeKind kind = (type instanceof CtAnnotationType) ? NodeKind.ANNOTATION
@@ -149,7 +156,7 @@ public class GraphBuilder {
 
             if (edgeConfig.isEnabled(EdgeKind.EXTENDS)) {
                 if (type instanceof CtClass<?> cls && cls.getSuperclass() != null) {
-                    // Use qualifiedName(CtTypeReference) — works in no-classpath mode and correctly
+                    // Use qualifiedName(CtTypeReference) \u2014 works in no-classpath mode and correctly
                     // handles generic supertypes like HashMap<Level, E> without returning a ghost
                     // CtTypeParameter node (which getTypeDeclaration() would do for type args).
                     String calleeId = AstGraphUtils.qualifiedName(cls.getSuperclass());
@@ -212,6 +219,7 @@ public class GraphBuilder {
 
         passes.add(() -> model.getElements(new TypeFilter<>(CtMethod.class)).forEach(m -> {
             String id = AstGraphUtils.typeMemberExecId(m);
+            if (id == null) return;
             String filePath = AstGraphUtils.graphFilePath(m, projectRoot, repoPaths);
             int[] methodLines = AstGraphUtils.lines(m, sourceLines);
             String sourceSnippet = AstGraphUtils.extractSource(sourceLines, filePath, methodLines[0], methodLines[1]);
@@ -250,6 +258,7 @@ public class GraphBuilder {
 
         passes.add(() -> model.getElements(new TypeFilter<>(CtConstructor.class)).forEach(typeContstructor -> {
             String id = AstGraphUtils.typeMemberExecId(typeContstructor);
+            if (id == null) return;
             String filePath = AstGraphUtils.graphFilePath(typeContstructor, projectRoot, repoPaths);
             int[] lines = AstGraphUtils.lines(typeContstructor, sourceLines);
             String sourceSnippet = AstGraphUtils.extractSource(sourceLines, filePath, lines[0], lines[1]);
@@ -270,6 +279,7 @@ public class GraphBuilder {
             if (typeField.getDeclaringType() instanceof CtAnnotationType) return;
 
             String id = AstGraphUtils.fieldId(typeField);
+            if (id == null) return;
             String filePath = AstGraphUtils.graphFilePath(typeField, projectRoot, repoPaths);
             int[] lines = AstGraphUtils.lines(typeField, sourceLines);
             String sourceSnippet = AstGraphUtils.extractSource(sourceLines, filePath, lines[0], lines[1]);
@@ -302,6 +312,7 @@ public class GraphBuilder {
             if (v instanceof CtField) return;
 
             String id = AstGraphUtils.varId(v);
+            if (id == null) return;
             String filePath = AstGraphUtils.graphFilePath(v, projectRoot, repoPaths);
             int[] lines = AstGraphUtils.lines(v, sourceLines);
             String sourceSnippet = AstGraphUtils.extractSource(sourceLines, filePath, lines[0], lines[1]);
@@ -322,6 +333,7 @@ public class GraphBuilder {
         if (edgeConfig.isEnabled(EdgeKind.ANNOTATION_ATTR)) {
             passes.add(() -> model.getElements(new TypeFilter<>(CtAnnotationType.class)).forEach(ann -> {
                 String annoId = AstGraphUtils.qualifiedName(ann);
+                if (annoId == null) return;
                 String filePath = AstGraphUtils.graphFilePath(ann, projectRoot, repoPaths);
                 @SuppressWarnings("unchecked")
                 Collection<CtMethod<?>> methods =
@@ -379,6 +391,7 @@ public class GraphBuilder {
         if (edgeConfig.isEnabled(EdgeKind.INVOKES))
             passes.add(() -> model.getElements(new TypeFilter<>(CtInvocation.class)).forEach(inv -> {
                 String callerId = AstGraphUtils.nearestExecId(inv);
+                if (callerId == null) return;
                 String calleeId = AstGraphUtils.execRefIdForChainedInvocation(inv);
                 String filePath = AstGraphUtils.graphFilePath(inv, projectRoot, repoPaths);
                 int[] declarationLines = AstGraphUtils.declarationLines(inv, sourceLines);
@@ -389,9 +402,11 @@ public class GraphBuilder {
         if (edgeConfig.isEnabled(EdgeKind.INSTANTIATES) || edgeConfig.isEnabled(EdgeKind.INSTANTIATES_ANONYMOUS))
             passes.add(() -> model.getElements(new TypeFilter<>(CtConstructorCall.class)).forEach(cc -> {
                 String callerId = AstGraphUtils.nearestExecId(cc);
+                if (callerId == null) return;
                 String filePath = AstGraphUtils.graphFilePath(cc, projectRoot, repoPaths);
                 int[] declarationLines = AstGraphUtils.declarationLines(cc, sourceLines);
                 String typeId = AstGraphUtils.inferOwnerFromConstructorCall(cc);
+                if (typeId == null) typeId = "?";
                 EdgeKind ek = (cc instanceof CtNewClass) ? EdgeKind.INSTANTIATES_ANONYMOUS : EdgeKind.INSTANTIATES;
 
                 if (edgeConfig.isEnabled(ek))
@@ -407,6 +422,7 @@ public class GraphBuilder {
         if (edgeConfig.isEnabled(EdgeKind.REFERENCES_METHOD))
             passes.add(() -> model.getElements(new TypeFilter<>(CtExecutableReferenceExpression.class)).forEach(ref -> {
                 String callerId = AstGraphUtils.nearestExecId(ref);
+                if (callerId == null) return;
                 String calleeId = AstGraphUtils.execRefId(ref.getExecutable(), ref);
                 String filePath = AstGraphUtils.graphFilePath(ref, projectRoot, repoPaths);
                 int[] declarationLines = AstGraphUtils.declarationLines(ref, sourceLines);
@@ -417,9 +433,10 @@ public class GraphBuilder {
         if (edgeConfig.isEnabled(EdgeKind.READS_FIELD) || edgeConfig.isEnabled(EdgeKind.WRITES_FIELD))
             passes.add(() -> model.getElements(new TypeFilter<>(CtFieldAccess.class)).forEach(fa -> {
                 String callerId = AstGraphUtils.nearestExecId(fa);
+                if (callerId == null) return;
                 String filePath = AstGraphUtils.graphFilePath(fa, projectRoot, repoPaths);
 
-                // Use AstGraphUtils.fieldId(CtFieldReference) — consistent with declaration-site ID
+                // Use AstGraphUtils.fieldId(CtFieldReference) \u2014 consistent with declaration-site ID
                 // and handles unresolved owner gracefully (returns "unresolved_id_field").
                 String calleeId = AstGraphUtils.fieldId(fa.getVariable());
 
@@ -435,6 +452,7 @@ public class GraphBuilder {
                 if (va instanceof CtFieldAccess) return;
 
                 String callerId = AstGraphUtils.nearestExecId(va);
+                if (callerId == null) return;
                 String file = AstGraphUtils.graphFilePath(va, projectRoot, repoPaths);
                 String calleeId = AstGraphUtils.varRefId(va.getVariable(), va);
                 EdgeKind edgeKind = (va instanceof CtVariableWrite) ? EdgeKind.WRITES_LOCAL_VAR : EdgeKind.READS_LOCAL_VAR;
@@ -447,11 +465,12 @@ public class GraphBuilder {
         if (edgeConfig.isEnabled(EdgeKind.THROWS))
             passes.add(() -> model.getElements(new TypeFilter<>(CtThrow.class)).forEach(thr -> {
                 String callerId = AstGraphUtils.nearestExecId(thr);
+                if (callerId == null) return;
                 String filePath = AstGraphUtils.graphFilePath(thr, projectRoot, repoPaths);
                 int[] declarationLines = AstGraphUtils.declarationLines(thr, sourceLines);
 
                 CtExpression<?> thrown = thr.getThrownExpression();
-                // Use cc.getType() via inferOwnerFromConstructorCall — works in no-classpath mode
+                // Use cc.getType() via inferOwnerFromConstructorCall \u2014 works in no-classpath mode
                 String calleeId = (thrown instanceof CtConstructorCall<?> cc)
                         ? AstGraphUtils.inferOwnerFromConstructorCall(cc) : null;
                 if (calleeId == null) calleeId = "?";
@@ -462,11 +481,12 @@ public class GraphBuilder {
         if (edgeConfig.isEnabled(EdgeKind.REFERENCES_TYPE))
             passes.add(() -> model.getElements(new TypeFilter<>(CtTypeAccess.class)).forEach(ta -> {
                 String callerId = AstGraphUtils.nearestExecId(ta);
+                if (callerId == null) return;
                 String filePath = AstGraphUtils.graphFilePath(ta, projectRoot, repoPaths);
                 int[] declarationLines = AstGraphUtils.declarationLines(ta, sourceLines);
 
                 if (ta.getAccessedType() == null) return;
-                // Use qualifiedName(CtTypeReference) — avoids getTypeDeclaration() which returns
+                // Use qualifiedName(CtTypeReference) \u2014 avoids getTypeDeclaration() which returns
                 // ghost CtTypeParameter nodes for generic type arguments in no-classpath mode.
                 String calleeId = AstGraphUtils.qualifiedName(ta.getAccessedType());
 
