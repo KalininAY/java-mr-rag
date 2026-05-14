@@ -219,21 +219,27 @@ public final class AstGraphUtils {
         CtAnonymousExecutable anon = el.getParent(CtAnonymousExecutable.class);
         if (anon != null && anon.getDeclaringType() != null) return anonExecId(anon);
 
+        // Инициализатор поля: контекст — само поле (узел уже существует в графе).
+        // Суффикс #<finit> не создаётся, так как соответствующего узла нет.
         CtField<?> f = el.getParent(CtField.class);
         if (f != null && f.getDeclaringType() != null)
-            return f.getDeclaringType().getQualifiedName() + "." + f.getSimpleName() + "#<finit>";
+            return fieldId(f);
 
+        // Инициализатор значения enum: контекст — само enum-поле.
+        // Суффикс #<einit> не создаётся, так как соответствующего узла нет.
         CtEnumValue<?> ev = el.getParent(CtEnumValue.class);
         if (ev != null && ev.getDeclaringType() != null)
-            return ev.getDeclaringType().getQualifiedName() + "." + ev.getSimpleName() + "#<einit>";
+            return fieldId(ev);
 
+        // Элемент внутри аннотации: контекст — аннотированный элемент.
+        // Суффикс #<annotation> не создаётся, так как соответствующего узла нет.
         CtAnnotation<?> ann = el.getParent(CtAnnotation.class);
         if (ann != null) {
             CtElement annotated = ann.getParent();
             if (annotated instanceof CtType<?> t)
-                return qualifiedName(t) + "#<annotation>";
+                return qualifiedName(t);
             if (annotated instanceof CtTypeMember tm)
-                return typeMemberExecId(tm) + "#<annotation>";
+                return typeMemberExecId(tm);
         }
 
         return "unresolved_id_nearest";
