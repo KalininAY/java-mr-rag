@@ -312,6 +312,17 @@ public final class AstGraphUtils {
         return null;
     }
 
+    /**
+     * Строит callee-ID для вызова в цепочке (fluent API).
+     *
+     * <p>Если owner вызова не разрешился ({@code ?#method()}), пытаемся
+     * разрешить его через inner-target. Ранее условие
+     * {@code !innerId.startsWith("?")} ошибочно пропускало строки вида
+     * {@code ?#currentStep()}, начинающиеся на {@code "?"}, но не равные
+     * {@code "?"}. Теперь используем явную проверку через
+     * {@link #isUsableQualifiedName}: строка должна быть непустой и
+     * не начинаться с {@code "?"}.
+     */
     public static String execRefIdForChainedInvocation(CtInvocation<?> inv) {
         String base = execRefId(inv.getExecutable(), inv);
         if (!base.startsWith("?#")) return base;
@@ -319,7 +330,9 @@ public final class AstGraphUtils {
         CtExpression<?> target = inv.getTarget();
         if (target instanceof CtInvocation<?> inner) {
             String innerId = execRefIdForChainedInvocation(inner);
-            if (!innerId.startsWith("?")) return innerId + "#" + suffix;
+            // принимаем innerId только если он действительно разрешился
+            if (isUsableQualifiedName(innerId) && !innerId.startsWith("?"))
+                return innerId + "#" + suffix;
         }
         if (target != null) {
             try {
