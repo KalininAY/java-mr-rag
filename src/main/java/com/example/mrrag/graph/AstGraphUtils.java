@@ -14,38 +14,15 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-/**
- * Utility class containing stateless helper methods extracted from
- * {@link GraphBuilder} to keep the main service class focused on
- * orchestration rather than low-level details.
- *
- * <h2>Responsibilities</h2>
- * <ul>
- *   <li>Spoon element ID computation (qualified names, executable IDs, etc.)</li>
- *   <li>Source snippet extraction from in-memory line arrays</li>
- *   <li>Position/path helpers (relPath, lines, posLine, sourceFile)</li>
- *   <li>Owner inference for invocations and constructor calls</li>
- * </ul>
- *
- * <p>All methods are {@code public static} — this class has no state and
- * should never be instantiated.
- */
 @Slf4j
 public final class AstGraphUtils {
 
-    private AstGraphUtils() {
-        // utility class
-    }
+    private AstGraphUtils() {}
 
     // ------------------------------------------------------------------
     // Source snippet helpers
     // ------------------------------------------------------------------
 
-    /**
-     * Extracts source lines [{@code startLine}, {@code endLine}] (1-based, inclusive) from
-     * {@code sourceLines}. Returns {@code ""} when {@code fileLines} cannot be resolved —
-     * there is no reliable fallback if the original source is absent.
-     */
     public static String extractSource(Map<String, String[]> sourceLines,
                                        String filePath, int startLine, int endLine) {
         if (startLine > 0 && endLine >= startLine) {
@@ -56,13 +33,9 @@ public final class AstGraphUtils {
                 if (from < to) return String.join("\n", Arrays.copyOfRange(lines, from, to));
             }
         }
-        return ""; // нет исходного кода
+        return "";
     }
 
-    /**
-     * Resolves {@code sourceLines} lookup when keys are repo-relative (e.g. {@code src/main/java/Foo.java})
-     * but {@code filePath} is absolute (Spoon positions), or when separator styles differ.
-     */
     static String[] findLines(Map<String, String[]> sourceLines, String filePath) {
         if (filePath == null || filePath.isBlank()) return null;
         String[] lines = sourceLines.get(filePath);
@@ -72,139 +45,50 @@ public final class AstGraphUtils {
             String n = Path.of(filePath).normalize().toString();
             lines = sourceLines.get(n);
             if (lines != null) return lines;
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
 
         lines = sourceLines.get(filePath.replace('\\', '/'));
         if (lines != null) return lines;
-
-        lines = sourceLines.get(filePath.replace('/', '\\'));
-        return lines;
+        return sourceLines.get(filePath.replace('/', '\\'));
     }
 
     // ------------------------------------------------------------------
     // ID scheme
-    //
-    //  Все ID строятся по единым шаблонам:
-    //
-    //  Тип (class / interface / enum / annotation):
-    //    com.example.Foo
-    //    → qualifiedName(CtType)  /  qualifiedName(CtTypeReference)
-    //
-    //  Метод:
-    //    com.example.Foo#methodName(param.Type1,param.Type2)
-    //    → typeMemberExecId(CtTypeMember)
-    //
-    //  Конструктор:
-    //    com.example.Foo#<init>(param.Type1,param.Type2)
-    //    → typeMemberExecId(CtTypeMember)  /  constructorExecutableId(owner, sig)
-    //
-    //  Поле:
-    //    com.example.Foo.fieldName          (разделитель «.», не «#»)
-    //    → fieldId(CtField)  /  fieldId(CtFieldReference)
-    //
-    //  Формальный тип-параметр (generic):
-    //    com.example.Foo#<T>
-    //    com.example.Foo#methodName(...)#<T>
-    //    → typeParamId(ownerId, CtTypeParameter)
-    //
-    //  Параметр метода / конструктора:
-    //    var@<execId>#param:name
-    //    → varId(CtVariable)
-    //
-    //  Параметр лямбды:
-    //    var@<execId>#λparam:name
-    //    → varId(CtVariable)
-    //
-    //  Локальная переменная / переменная в лямбде:
-    //    var@<execId>#name            — обычная локальная переменная
-    //    var@<execId>#λname           — внутри лямбды
-    //    → varId(CtVariable)
-    //
-    //  Ссылка на переменную (use-site):
-    //    совпадает с varId если декларация доступна;
-    //    fallback: var@<nearestExecId>#name
-    //    → varRefId(CtVariableReference, useSite)
-    //
-    //  Ссылка на исполняемый элемент (call-site):
-    //    тот же формат, что метод/конструктор; owner определяется из контекста вызова
-    //    → execRefId(CtExecutableReference, useSite)
-    //
-    //  Fallback (owner / позиция не разрезолвились):
-    //    unresolved_id_<kind>
     // ------------------------------------------------------------------
 
-    /**
-     * Универсальный входной метод: возвращает ID графового узла для любого {@link CtElement}.
-     *
-     * <p>Диспетчеризует вызов к специализированному методу по runtime-типу элемента.
-     * Если тип элемента уже известен — предпочтительнее вызывать специализированный метод
-     * напрямую, чтобы избежать накладных расходов instanceof-цепочки на горячих путях.
-     *
-     * <p>Схема ID описана в блоке {@code // ID scheme} выше.
-     *
-     * @param el любой Spoon-элемент; не должен быть {@code null}
-     * @return стабильный, непустой строковый ID
-     */
     public static String elementId(CtElement el) {
         if (el == null) return "unresolved_id";
-        if (el instanceof CtType<?>        t)   return qualifiedName(t);
-        if (el instanceof CtField<?>       f)   return fieldId(f);
-        if (el instanceof CtTypeMember     m)   return typeMemberExecId(m);
-        if (el instanceof CtVariable<?>    v)   return varId(v);
-        if (el instanceof CtTypeParameter  tp) {
+        if (el instanceof CtType<?>        t)  return qualifiedName(t);
+        if (el instanceof CtField<?>       f)  return fieldId(f);
+        if (el instanceof CtTypeMember     m)  return typeMemberExecId(m);
+        if (el instanceof CtVariable<?>    v)  return varId(v);
+        if (el instanceof CtTypeParameter tp) {
             CtFormalTypeDeclarer owner = tp.getParent(CtFormalTypeDeclarer.class);
             String ownerId = owner != null ? formalDeclarerId(owner) : "?";
             return typeParamId(ownerId, tp);
         }
-        // References (use-site) — порядок важен: CtFieldReference extends CtVariableReference
-        if (el instanceof CtFieldReference<?>    r)  return fieldId(r);
-        if (el instanceof CtVariableReference<?> r)  return varRefId(r, el);
-        if (el instanceof CtTypeReference<?>     r)  return qualifiedName(r);
-        // Для прочих use-site элементов — ближайший исполняемый контекст
+        if (el instanceof CtFieldReference<?>    r) return fieldId(r);
+        if (el instanceof CtVariableReference<?> r) return varRefId(r, el);
+        if (el instanceof CtTypeReference<?>     r) return qualifiedName(r);
         return nearestExecId(el);
     }
 
     // ------------------------------------------------------------------
-    // ID helpers — декларации
+    // ID helpers — declarations
     // ------------------------------------------------------------------
 
-    /**
-     * ID типа (class / interface / enum / annotation) по декларации.
-     * Формат: {@code com.example.Foo}
-     */
     public static String qualifiedName(CtType<?> type) {
         if (type == null) return "unresolved_id_type";
         String q = type.getQualifiedName();
         return (q == null || q.isBlank()) ? "unresolved_id_type" : q;
     }
 
-    /**
-     * ID типа по ссылке (use-site).
-     * Предпочтительнее, чем {@code qualifiedName(ref.getTypeDeclaration())}, потому что
-     * {@link CtTypeReference#getQualifiedName()} работает в no-classpath режиме,
-     * а {@code getTypeDeclaration()} возвращает {@code null} для внешних типов.
-     *
-     * <p>Используй этот метод в {@link GraphBuilder} для EXTENDS / IMPLEMENTS рёбер.
-     *
-     * @param ref ссылка на тип; может быть {@code null}
-     * @return квалифицированное имя или {@code "unresolved_id_type"}
-     */
     public static String qualifiedName(CtTypeReference<?> ref) {
         if (ref == null) return "unresolved_id_type";
         String q = ref.getQualifiedName();
         return isUsableQualifiedName(q) ? q : "unresolved_id_type";
     }
 
-    /**
-     * ID метода или конструктора как члена типа.
-     * Формат:
-     * <ul>
-     *   <li>метод:       {@code com.example.Foo#methodName(Type1,Type2)}</li>
-     *   <li>конструктор: {@code com.example.Foo#<init>(Type1,Type2)}</li>
-     *   <li>другой член: {@code com.example.Foo#memberName}</li>
-     * </ul>
-     */
     public static String typeMemberExecId(CtTypeMember member) {
         if (member == null) return "unresolved_id_type_member";
         try {
@@ -222,87 +106,34 @@ public final class AstGraphUtils {
         }
     }
 
-    /**
-     * ID конструктора по готовым строкам owner и signature.
-     * Формат: {@code com.example.Foo#<init>(Type1,Type2)}
-     *
-     * <p>Принимает сигнатуру в любом из форматов:
-     * <ul>
-     *   <li>{@code Foo(Type1,Type2)} — как возвращает {@link CtExecutable#getSignature()}</li>
-     *   <li>{@code (Type1,Type2)} — уже обрезанная</li>
-     * </ul>
-     * В обоих случаях результат корректен.
-     */
     public static String constructorExecutableId(String ownerQualified, String signature) {
-        if (signature == null || signature.isBlank()) {
-            return ownerQualified + "#<init>()";
-        }
+        if (signature == null || signature.isBlank()) return ownerQualified + "#<init>()";
         int open = signature.indexOf('(');
-        if (open < 0) {
-            return ownerQualified + "#<init>()";
-        }
+        if (open < 0) return ownerQualified + "#<init>()";
         return ownerQualified + "#<init>" + signature.substring(open);
     }
 
-    /**
-     * ID поля по декларации.
-     * Формат: {@code com.example.Foo.fieldName}  (разделитель «.», не «#»)
-     */
     public static String fieldId(CtField<?> field) {
         if (field == null || field.getDeclaringType() == null) return "unresolved_id_field";
         return field.getDeclaringType().getQualifiedName() + "." + field.getSimpleName();
     }
 
-    /**
-     * ID поля по ссылке (use-site).
-     * Использует {@link CtFieldReference#getQualifiedName()} напрямую — работает в no-classpath режиме.
-     *
-     * <p>Используй этот метод в {@link GraphBuilder} для READS_FIELD / WRITES_FIELD рёбер
-     * вместо ручного построения {@code owner + "." + simpleName}.
-     *
-     * @param ref ссылка на поле; может быть {@code null}
-     * @return ID поля или {@code "unresolved_id_field"}
-     */
     public static String fieldId(CtFieldReference<?> ref) {
         if (ref == null) return "unresolved_id_field";
         String owner = ref.getDeclaringType() != null ? qualifiedName(ref.getDeclaringType()) : "?";
         return owner + "." + ref.getSimpleName();
     }
 
-    /**
-     * ID локальной переменной, параметра или переменной внутри лямбды.
-     *
-     * <p>Стратегия (по приоритету):
-     * <ol>
-     *   <li><b>Параметр метода/конструктора</b> —
-     *       {@code var@<execId>#param:<name>}</li>
-     *   <li><b>Параметр лямбды</b> —
-     *       {@code var@<nearestExecId>#λparam:<name>}</li>
-     *   <li><b>Переменная внутри лямбды</b> —
-     *       {@code var@<execId>#λ<name>}</li>
-     *   <li><b>Обычная локальная переменная</b> —
-     *       {@code var@<execId>#<name>}</li>
-     *   <li><b>Fallback</b> (нет охватывающего исполняемого элемента) —
-     *       {@code var@<fileName>:<name>} (без номера строки)</li>
-     * </ol>
-     *
-     * @param v переменный элемент; не должен быть {@code null}
-     * @return стабильный строковый ID для использования как ключ графового узла
-     */
     public static String varId(CtVariable<?> v) {
         if (v == null) return "unresolved_id_var";
 
         if (v instanceof CtParameter<?>) {
             CtExecutable<?> exec = v.getParent(CtExecutable.class);
-            // 1. Parameter of method/constructor
             if (exec instanceof CtTypeMember tm) {
-                String execId = typeMemberExecId(tm);
-                return "var@" + execId + "#param:" + v.getSimpleName();
+                return "var@" + typeMemberExecId(tm) + "#param:" + v.getSimpleName();
             }
-            // 2. Parameter of lambda — enclosing method/constructor is the exec context
             if (exec instanceof CtLambda<?>) {
-                String enclosingExecId = nearestExecId(v);
-                return "var@" + enclosingExecId + "#\u03bbparam:" + v.getSimpleName();
+                return "var@" + nearestExecId(v) + "#\u03bbparam:" + v.getSimpleName();
             }
         }
 
@@ -311,71 +142,36 @@ public final class AstGraphUtils {
         if (enclosing == null) enclosing = v.getParent(CtConstructor.class);
         String execId = enclosing != null ? typeMemberExecId(enclosing) : null;
 
-        // 3. Variable inside lambda
         if (lambda != null && execId != null) return "var@" + execId + "#\u03bb" + v.getSimpleName();
-        // 4. Ordinary local variable inside method/constructor
-        if (execId != null) return "var@" + execId + "#" + v.getSimpleName();
+        if (execId != null)                   return "var@" + execId + "#" + v.getSimpleName();
 
-        // 5. Fallback (e.g. initializer block)
         String fileName = "?";
         try {
             SourcePosition pos = v.getPosition();
             if (pos != null && pos.isValidPosition() && pos.getFile() != null)
                 fileName = pos.getFile().getName();
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         return "var@" + fileName + ":" + v.getSimpleName();
     }
 
-    /**
-     * ID по ссылке на переменную (use-site) без контекста.
-     * Делегирует к {@link #varRefId(CtVariableReference, CtElement)} с {@code useSite=null}.
-     */
     public static String varRefId(CtVariableReference<?> ref) {
         return varRefId(ref, null);
     }
 
-    /**
-     * ID по ссылке на переменную (use-site) с контекстом.
-     *
-     * <p>Сначала пытается разрезолвить декларацию через {@link CtVariableReference#getDeclaration()}
-     * и вернуть {@link #varId(CtVariable)}.
-     *
-     * <p>Если декларация недоступна (no-classpath режим), строит fallback-ID по той же схеме
-     * что и {@link #varId}: {@code var@<nearestExecId>#<name>} — чтобы ID совпал с тем,
-     * который будет присвоен узлу при обходе деклараций.
-     *
-     * <p><b>Важно:</b> старый fallback {@code "var@simpleName"} (без exec-контекста) приводил
-     * к битым рёбрам READS_LOCAL_VAR / WRITES_LOCAL_VAR. Данный метод это исправляет.
-     *
-     * @param ref     ссылка на переменную; может быть {@code null}
-     * @param useSite элемент, в котором происходит чтение/запись переменной (для контекста exec)
-     * @return стабильный строковый ID
-     */
     public static String varRefId(CtVariableReference<?> ref, CtElement useSite) {
         if (ref == null) return "var@?";
         try {
             CtVariable<?> d = ref.getDeclaration();
             if (d != null) return varId(d);
-        } catch (Exception ignored) {
-        }
-        // Fallback: строим ID в том же формате что varId, используя exec-контекст из useSite
+        } catch (Exception ignored) {}
         String execId = useSite != null ? nearestExecId(useSite) : "?";
         return "var@" + execId + "#" + ref.getSimpleName();
     }
 
-    /**
-     * ID формального тип-параметра (generic).
-     * Формат: {@code <ownerId>#<T>}
-     */
     public static String typeParamId(String ownerId, CtTypeParameter tp) {
         return ownerId + "#<" + tp.getSimpleName() + ">";
     }
 
-    /**
-     * ID владельца формальных тип-параметров.
-     * Делегирует к {@link #qualifiedName} или {@link #typeMemberExecId}.
-     */
     public static String formalDeclarerId(CtFormalTypeDeclarer d) {
         if (d instanceof CtType<?> t) return qualifiedName(t);
         if (d instanceof CtTypeMember m) return typeMemberExecId(m);
@@ -383,53 +179,54 @@ public final class AstGraphUtils {
     }
 
     /**
-     * ID ближайшего охватывающего контекста для произвольного элемента AST.
+     * ID для статического или нестатического блока инициализации.
      *
-     * <p>Порядок поиска:
-     * <ol>
-     *   <li>Метод ({@link CtMethod})</li>
-     *   <li>Конструктор ({@link CtConstructor})</li>
-     *   <li>Статический инициализатор ({@link CtAnonymousExecutable} со static-модификатором)
-     *       → {@code OwnerType#<clinit>}</li>
-     *   <li>Нестатический инициализатор ({@link CtAnonymousExecutable} без static-модификатора)
-     *       → {@code OwnerType#<init_block>}</li>
-     *   <li>Инициализатор поля ({@link CtField}) → {@code OwnerType.fieldName#<finit>}</li>
-     *   <li>Значение enum ({@link CtEnumValue}) → {@code OwnerEnum.VALUE#<einit>}</li>
-     *   <li>Атрибут аннотации ({@link CtAnnotation}) → {@code owner#<annotation>}</li>
-     * </ol>
+     * <p>В Spoon оба вида блоков ({@code static { }} и {@code { }})
+     * представлены как {@link CtAnonymousExecutable}. Различаются
+     * наличием {@link ModifierKind#STATIC} среди модификаторов.
      *
-     * <p>Намеренно игнорирует лямбды — они не создают отдельных узлов в графе,
-     * и всё содержимое лямбды атрибутируется охватывающему методу/конструктору.
+     * <p>Формат:
+     * <ul>
+     *   <li>static block  → {@code com.example.Foo#<clinit>}</li>
+     *   <li>instance block → {@code com.example.Foo#<init_block>}</li>
+     * </ul>
+     *
+     * <p>Метод используется в двух местах, чтобы гарантировать
+     * совпадение ID узла (GraphBuilder) и ID caller-а ребра (nearestExecId):
+     * <ul>
+     *   <li>{@link GraphBuilder} — при создании узла {@code INIT_BLOCK}</li>
+     *   <li>{@link #nearestExecId(CtElement)} — при разрешении контекста произвольного элемента</li>
+     * </ul>
+     *
+     * @param anon блок инициализации; не должен быть {@code null},
+     *             {@code getDeclaringType()} должен быть не {@code null}
+     * @return стабильный строковый ID
      */
+    public static String anonExecId(CtAnonymousExecutable anon) {
+        String ownerName = anon.getDeclaringType().getQualifiedName();
+        boolean isStatic = anon.getModifiers().contains(ModifierKind.STATIC);
+        return ownerName + (isStatic ? "#<clinit>" : "#<init_block>");
+    }
+
     public static String nearestExecId(CtElement el) {
-        // 1. Метод
         CtMethod<?> m = el.getParent(CtMethod.class);
         if (m != null) return typeMemberExecId(m);
 
-        // 2. Конструктор
         CtConstructor<?> c = el.getParent(CtConstructor.class);
         if (c != null) return typeMemberExecId(c);
 
-        // 3-4. Статический или нестатический инициализатор: static { ... } / { ... }
-        //      В Spoon они оба представлены как CtAnonymousExecutable
+        // static { ... } / { ... }  — оба CtAnonymousExecutable
         CtAnonymousExecutable anon = el.getParent(CtAnonymousExecutable.class);
-        if (anon != null && anon.getDeclaringType() != null) {
-            String ownerName = anon.getDeclaringType().getQualifiedName();
-            boolean isStatic = anon.getModifiers().contains(ModifierKind.STATIC);
-            return ownerName + (isStatic ? "#<clinit>" : "#<init_block>");
-        }
+        if (anon != null && anon.getDeclaringType() != null) return anonExecId(anon);
 
-        // 5. Инициализатор поля: static final X = Collections.synchronizedSet(...)
         CtField<?> f = el.getParent(CtField.class);
         if (f != null && f.getDeclaringType() != null)
             return f.getDeclaringType().getQualifiedName() + "." + f.getSimpleName() + "#<finit>";
 
-        // 6. Значение enum: OFFICE, DEBUG, etc.
         CtEnumValue<?> ev = el.getParent(CtEnumValue.class);
         if (ev != null && ev.getDeclaringType() != null)
             return ev.getDeclaringType().getQualifiedName() + "." + ev.getSimpleName() + "#<einit>";
 
-        // 7. Атрибут аннотации: @ExtendWith({...}), @SpringBootTest(classes = ...)
         CtAnnotation<?> ann = el.getParent(CtAnnotation.class);
         if (ann != null) {
             CtElement annotated = ann.getParent();
@@ -443,123 +240,56 @@ public final class AstGraphUtils {
     }
 
     // ------------------------------------------------------------------
-    // ID helpers — ссылки на исполняемые элементы (call-site)
+    // ID helpers — call-site references
     // ------------------------------------------------------------------
 
-    /**
-     * ID исполняемого элемента по ссылке с use-site контекстом.
-     * Формат идентичен {@link #typeMemberExecId}: owner разрешается из call-site.
-     *
-     * @param ref     ссылка на метод или конструктор
-     * @param useSite элемент вызова ({@link CtInvocation} или {@link CtConstructorCall})
-     */
     public static String execRefId(CtExecutableReference<?> ref, CtElement useSite) {
         if (ref == null) return "unresolved_id_type_member";
         try {
             String owner = qualifiedExecutableOwner(ref, useSite);
             String sig = buildSignature(ref, useSite);
-            if (ref.isConstructor()) {
-                return constructorExecutableId(owner, sig);
-            }
+            if (ref.isConstructor()) return constructorExecutableId(owner, sig);
             return owner + "#" + sig;
         } catch (Exception e) {
             return "unresolved_id_type_member";
         }
     }
 
-    /**
-     * Builds a method/constructor signature string.
-     *
-     * <p>Priority order:
-     * <ol>
-     *   <li><b>Declaration-site</b> — если Spoon разрезолвил декларацию, берём сигнатуру оттуда.
-     *       Это гарантирует совпадение с ID, который будет присвоен узлу через
-     *       {@link #typeMemberExecId}, и устраняет несоответствия рёбер INVOKES.</li>
-     *   <li><b>Reference parameters</b> — если у ссылки уже есть параметры от Spoon.</li>
-     *   <li><b>Call-site inference</b> — выводим типы из аргументов вызова (работает в
-     *       no-classpath режиме для литералов и переменных с известным типом).</li>
-     *   <li><b>Fallback</b> — {@link CtExecutableReference#getSignature()} как есть.</li>
-     * </ol>
-     *
-     * <p>Uses comma without space as separator to match Spoon's own
-     * {@link CtExecutableReference#getSignature()} format.
-     *
-     * @param ref     the executable reference (may have empty parameter list)
-     * @param useSite the call-site element ({@link CtInvocation} or {@link CtConstructorCall})
-     * @return a signature string such as {@code "foo(java.lang.String,int)"}
-     */
     public static String buildSignature(CtExecutableReference<?> ref, CtElement useSite) {
-        // 1. Declaration-site: prefer the signature from the actual declaration
         try {
             CtExecutable<?> decl = ref.getDeclaration();
-            if (decl != null) {
-                return decl.getSignature();
-            }
-        } catch (Exception ignored) {
-        }
+            if (decl != null) return decl.getSignature();
+        } catch (Exception ignored) {}
 
-        // 2. Reference already has resolved parameters — trust Spoon
         try {
-            if (ref.getParameters() != null && !ref.getParameters().isEmpty()) {
-                return ref.getSignature();
-            }
-        } catch (Exception ignored) {
-        }
+            if (ref.getParameters() != null && !ref.getParameters().isEmpty()) return ref.getSignature();
+        } catch (Exception ignored) {}
 
-        // 3. Call-site inference from arguments
         List<CtExpression<?>> args = null;
-        if (useSite instanceof CtInvocation<?> inv) {
-            args = inv.getArguments();
-        } else if (useSite instanceof CtConstructorCall<?> cc) {
-            args = cc.getArguments();
-        }
+        if (useSite instanceof CtInvocation<?> inv)    args = inv.getArguments();
+        else if (useSite instanceof CtConstructorCall<?> cc) args = cc.getArguments();
 
-        if (args == null || args.isEmpty()) {
-            return ref.getSignature();
-        }
+        if (args == null || args.isEmpty()) return ref.getSignature();
 
         List<String> paramTypes = new ArrayList<>();
         for (CtExpression<?> arg : args) {
             String typeName = inferArgType(arg);
-            if (typeName == null) {
-                // Cannot infer at least one type — fall back to Spoon signature
-                return ref.getSignature();
-            }
+            if (typeName == null) return ref.getSignature();
             paramTypes.add(typeName);
         }
-
-        // No space after comma — matches Spoon's getSignature() format
         return ref.getSimpleName() + "(" + String.join(",", paramTypes) + ")";
     }
 
-    /**
-     * Best-effort inference of the qualified type name of a call-site argument.
-     * Returns {@code null} when the type cannot be determined.
-     * <p>
-     * Handles:
-     * <ul>
-     *   <li>Spoon-resolved types (most cases with classpath)</li>
-     *   <li>String/numeric/boolean literals</li>
-     *   <li>String concatenation via {@code +} operator (recursively)</li>
-     * </ul>
-     */
     private static String inferArgType(CtExpression<?> arg) {
-        // 1. Spoon already knows the type
         try {
             CtTypeReference<?> t = arg.getType();
             if (t != null) {
                 String q = t.getQualifiedName();
                 if (isUsableQualifiedName(q) && !"?".equals(q)) return q;
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
 
-        // 2. String literal
-        if (arg instanceof CtLiteral<?> lit && lit.getValue() instanceof String) {
-            return "java.lang.String";
-        }
-
-        // 3. Numeric / boolean literals
+        if (arg instanceof CtLiteral<?> lit && lit.getValue() instanceof String) return "java.lang.String";
         if (arg instanceof CtLiteral<?> lit) {
             Object v = lit.getValue();
             if (v instanceof Integer) return "int";
@@ -568,45 +298,31 @@ public final class AstGraphUtils {
             if (v instanceof Float)   return "float";
             if (v instanceof Boolean) return "boolean";
         }
-
-        // 4. String concatenation: "..." + "..." + ...
-        //    If either operand resolves to String, the whole expression is a String.
-        if (arg instanceof CtBinaryOperator<?> bin
-                && bin.getKind() == BinaryOperatorKind.PLUS) {
+        if (arg instanceof CtBinaryOperator<?> bin && bin.getKind() == BinaryOperatorKind.PLUS) {
             String left  = inferArgType(bin.getLeftHandOperand());
             String right = inferArgType(bin.getRightHandOperand());
-            if ("java.lang.String".equals(left) || "java.lang.String".equals(right)) {
-                return "java.lang.String";
-            }
+            if ("java.lang.String".equals(left) || "java.lang.String".equals(right)) return "java.lang.String";
         }
-
         return null;
     }
 
     public static String execRefIdForChainedInvocation(CtInvocation<?> inv) {
         String base = execRefId(inv.getExecutable(), inv);
-        if (!base.startsWith("?#")) {
-            return base;
-        }
+        if (!base.startsWith("?#")) return base;
         String suffix = base.substring(2);
         CtExpression<?> target = inv.getTarget();
         if (target instanceof CtInvocation<?> inner) {
             String innerId = execRefIdForChainedInvocation(inner);
-            if (!innerId.startsWith("?")) {
-                return innerId + "#" + suffix;
-            }
+            if (!innerId.startsWith("?")) return innerId + "#" + suffix;
         }
         if (target != null) {
             try {
                 CtTypeReference<?> t = target.getType();
                 if (t != null) {
                     String q = t.getQualifiedName();
-                    if (isUsableQualifiedName(q)) {
-                        return q + "#" + suffix;
-                    }
+                    if (isUsableQualifiedName(q)) return q + "#" + suffix;
                 }
-            } catch (Exception ignored) {
-            }
+            } catch (Exception ignored) {}
         }
         return base;
     }
@@ -617,17 +333,11 @@ public final class AstGraphUtils {
 
     private static String refineOwnerUsingImports(String q, CtElement ctx) {
         if (ctx == null || q == null || q.isBlank()) return null;
-
         SourcePosition pos = null;
-        try {
-            pos = ctx.getPosition();
-        } catch (Exception ignored) {}
+        try { pos = ctx.getPosition(); } catch (Exception ignored) {}
         if (pos == null || !pos.isValidPosition() || pos.getCompilationUnit() == null) return null;
-
         var cu = pos.getCompilationUnit();
-
         String simple = q.contains(".") ? q.substring(q.lastIndexOf('.') + 1) : q;
-
         String candidate = null;
         try {
             for (CtImport imp : cu.getImports()) {
@@ -635,44 +345,28 @@ public final class AstGraphUtils {
                 if (ref == null) continue;
                 String fqn = ref.toString();
                 if (fqn.endsWith("." + simple)) {
-                    if (candidate == null) {
-                        candidate = fqn;
-                    } else if (!candidate.equals(fqn)) {
-                        return null; // ambiguous
-                    }
+                    if (candidate == null) candidate = fqn;
+                    else if (!candidate.equals(fqn)) return null;
                 }
             }
         } catch (Exception ignored) {}
-
         if (candidate == null || candidate.equals(q)) return null;
         return candidate;
     }
 
     private static String refineOwnerUsingWildcardImports(String q, CtElement ctx) {
         if (ctx == null || q == null || q.isBlank()) return null;
-
         SourcePosition pos = null;
-        try {
-            pos = ctx.getPosition();
-        } catch (Exception ignored) {}
+        try { pos = ctx.getPosition(); } catch (Exception ignored) {}
         if (pos == null || !pos.isValidPosition() || pos.getCompilationUnit() == null) return null;
-
         var cu = pos.getCompilationUnit();
-
         CtType<?> cuType = ctx.getParent(CtType.class);
-        String cuPkg = (cuType != null && cuType.getPackage() != null)
-                ? cuType.getPackage().getQualifiedName()
-                : "";
-
+        String cuPkg = (cuType != null && cuType.getPackage() != null) ? cuType.getPackage().getQualifiedName() : "";
         String ownerPkg = q.contains(".") ? q.substring(0, q.lastIndexOf('.')) : "";
         String simple   = q.contains(".") ? q.substring(q.lastIndexOf('.') + 1) : q;
-
-        // Has sense only if Spoon attached owner to the same package as CU
         if (!Objects.equals(ownerPkg, cuPkg)) return null;
-
         var factory = ctx.getFactory();
         boolean hasLocalType = factory.Type().get(cuPkg.isEmpty() ? simple : cuPkg + "." + simple) != null;
-
         List<String> candidates = new ArrayList<>();
         try {
             for (CtImport imp : cu.getImports()) {
@@ -680,15 +374,10 @@ public final class AstGraphUtils {
                 if (s == null || !s.endsWith(".*")) continue;
                 String pkg = s.substring(0, s.length() - 2);
                 CtType<?> t = factory.Type().get(pkg + "." + simple);
-                if (t != null) {
-                    candidates.add(t.getQualifiedName());
-                }
+                if (t != null) candidates.add(t.getQualifiedName());
             }
         } catch (Exception ignored) {}
-
-        if (candidates.size() == 1 && !hasLocalType) {
-            return candidates.get(0);
-        }
+        if (candidates.size() == 1 && !hasLocalType) return candidates.get(0);
         return null;
     }
 
@@ -701,8 +390,7 @@ public final class AstGraphUtils {
                 if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         try {
             CtExecutable<?> decl = ref.getDeclaration();
             if (decl instanceof CtTypeMember tm && tm.getDeclaringType() != null) {
@@ -712,8 +400,7 @@ public final class AstGraphUtils {
                 if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
 
         if (useSite instanceof CtInvocation inv) {
             String inferred = inferOwnerFromInvocation(inv);
@@ -736,11 +423,7 @@ public final class AstGraphUtils {
 
     public static String inferOwnerFromInvocation(CtInvocation<?> inv) {
         CtExpression<?> target = inv.getTarget();
-
-        // null (implicit this), explicit this, or Interface.super calls
         if (target == null || target instanceof CtThisAccess || target instanceof CtSuperAccess) {
-
-            // For Interface.super — try the type of the super-access first
             if (target instanceof CtSuperAccess<?> sa) {
                 try {
                     CtTypeReference<?> dt = sa.getType();
@@ -751,21 +434,16 @@ public final class AstGraphUtils {
                         if (fixed != null) q = fixed;
                         if (isUsableQualifiedName(q)) return q;
                     }
-                } catch (Exception ignored) {
-                }
+                } catch (Exception ignored) {}
             }
-
-            // Fallback — enclosing declaring type (works for both this and super)
             try {
                 CtType<?> enclosing = inv.getParent(CtType.class);
                 if (enclosing != null) {
                     String q = enclosing.getQualifiedName();
                     if (isUsableQualifiedName(q)) return q;
                 }
-            } catch (Exception ignored) {
-            }
+            } catch (Exception ignored) {}
         }
-
         if (target instanceof CtTypeAccess<?> ta) {
             try {
                 if (ta.getAccessedType() != null) {
@@ -775,8 +453,7 @@ public final class AstGraphUtils {
                     if (fixed != null) q = fixed;
                     if (isUsableQualifiedName(q)) return q;
                 }
-            } catch (Exception ignored) {
-            }
+            } catch (Exception ignored) {}
         }
         if (target != null) {
             try {
@@ -788,8 +465,7 @@ public final class AstGraphUtils {
                     if (fixed != null) q = fixed;
                     if (isUsableQualifiedName(q)) return q;
                 }
-            } catch (Exception ignored) {
-            }
+            } catch (Exception ignored) {}
         }
         return null;
     }
@@ -803,8 +479,7 @@ public final class AstGraphUtils {
                 if (fixed != null) q = fixed;
                 if (isUsableQualifiedName(q)) return q;
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         return "unresolved_id_constructor_call";
     }
 
@@ -829,8 +504,7 @@ public final class AstGraphUtils {
                     if (isUsableQualifiedName(q)) return q;
                 }
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         return null;
     }
 
@@ -838,35 +512,22 @@ public final class AstGraphUtils {
     // Position / path helpers
     // ------------------------------------------------------------------
 
-    /**
-     * Repo-relative path из sourceLines по суффиксу qualified name владельца.
-     * Для VirtualFile pos.getFile() == null — ищем по ключам sourceLines.
-     * Fallback: Spoon CU + стандартные src roots.
-     */
     public static String graphFilePath(CtElement el, Path projectRoot, Set<String> repoPaths) {
-        // 1. Ищем владельца-тип для построения суффикса
         try {
             CtType<?> owner = el instanceof CtType<?> t ? t
                     : el instanceof CtTypeMember m ? m.getDeclaringType()
                     : el.getParent(CtType.class);
             if (owner != null) {
                 CtType<?> topLevel = owner;
-                while (topLevel.getDeclaringType() != null) {
-                    topLevel = topLevel.getDeclaringType();
-                }
-
-                String qualifiedName = topLevel.getQualifiedName();
-                String suffix = qualifiedName.replace('.', '/') + ".java";
-
+                while (topLevel.getDeclaringType() != null) topLevel = topLevel.getDeclaringType();
+                String suffix = topLevel.getQualifiedName().replace('.', '/') + ".java";
                 String found = repoPaths.stream()
                         .filter(p -> p.replace('\\', '/').endsWith(suffix))
                         .findFirst().orElse(null);
                 if (found != null) return found;
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
 
-        // 2. Fallback: Spoon позиция + relativize / стандартные src roots
         try {
             var pos = el.getPosition();
             if (pos != null && pos.isValidPosition()) {
@@ -875,8 +536,7 @@ public final class AstGraphUtils {
                         : pos.getCompilationUnit() != null && pos.getCompilationUnit().getMainType() != null
                         ? pos.getCompilationUnit().getMainType().getQualifiedName().replace('.', '/') + ".java"
                         : "";
-                if (spoon.isBlank())
-                    return "";
+                if (spoon.isBlank()) return "";
                 String norm = spoon.replace('\\', '/');
                 if (projectRoot != null) {
                     Path root = projectRoot.toAbsolutePath().normalize();
@@ -886,9 +546,7 @@ public final class AstGraphUtils {
                 int cut = indexOfStandardSourceRoot(norm);
                 return cut >= 0 ? norm.substring(cut) : norm;
             }
-        } catch (Exception ignored) {
-        }
-
+        } catch (Exception ignored) {}
         return "";
     }
 
@@ -901,75 +559,47 @@ public final class AstGraphUtils {
         return Math.min(m, t);
     }
 
-    /**
-     * Returns line range [{@code startLine}, {@code endLine}] (1-based, inclusive)
-     * for the *declaration* part of an element (signature/header without the method body).
-     */
     public static int[] declarationLines(CtElement el, Map<String, String[]> sourceLines) {
         if (el == null) return new int[]{-1, -1};
         try {
             SourcePosition p = el.getPosition();
-            if (p == null || !p.isValidPosition()) {
-                return lines(el, sourceLines);
-            }
+            if (p == null || !p.isValidPosition()) return lines(el, sourceLines);
 
             String filePath = graphFilePath(el, null, sourceLines.keySet());
             String[] fileLines = findLines(sourceLines, filePath);
-            String full = fileLines != null && fileLines.length > 0
-                    ? String.join("\n", fileLines)
-                    : null;
+            String full = fileLines != null && fileLines.length > 0 ? String.join("\n", fileLines) : null;
 
             if (p instanceof BodyHolderSourcePosition bodyPos) {
                 int declStart = bodyPos.getDeclarationStart();
                 int bodyStart = bodyPos.getBodyStart();
-                if (declStart >= 0 && bodyStart > declStart) {
-                    if (full != null) {
-                        int startLine = lineNumberAtOffset(full, declStart);
-                        int endLine = lineNumberAtOffset(full, bodyStart - 1);
-                        if (startLine > 0 && endLine >= startLine) {
-                            return new int[]{startLine, endLine};
-                        }
-                    }
-                    return new int[]{p.getLine(), p.getEndLine()};
+                if (declStart >= 0 && bodyStart > declStart && full != null) {
+                    int startLine = lineNumberAtOffset(full, declStart);
+                    int endLine   = lineNumberAtOffset(full, bodyStart - 1);
+                    if (startLine > 0 && endLine >= startLine) return new int[]{startLine, endLine};
                 }
+                return new int[]{p.getLine(), p.getEndLine()};
             }
-
             if (p instanceof CompoundSourcePosition declPos) {
                 int declStart = declPos.getDeclarationStart();
-                int declEnd = declPos.getDeclarationEnd();
+                int declEnd   = declPos.getDeclarationEnd();
                 if (declStart >= 0 && declEnd >= declStart && full != null) {
                     int startLine = lineNumberAtOffset(full, declStart);
-                    int endLine = lineNumberAtOffset(full, declEnd);
-                    if (startLine > 0 && endLine >= startLine) {
-                        return new int[]{startLine, endLine};
-                    }
+                    int endLine   = lineNumberAtOffset(full, declEnd);
+                    if (startLine > 0 && endLine >= startLine) return new int[]{startLine, endLine};
                 }
             }
-
             return lines(el, sourceLines);
-
         } catch (Exception ignored) {
             return new int[]{-1, -1};
         }
     }
 
-    /**
-     * Best-effort line range for an element.
-     * <p>
-     * For {@link BodyHolderSourcePosition} elements (classes, methods, constructors),
-     * {@code startLine} is taken from {@code declarationStart} so that annotations
-     * above the element are included in the range. This ensures that a changed
-     * annotation line is correctly matched to its owning class or method node.
-     */
     public static int[] lines(CtElement el, Map<String, String[]> sourceLines) {
         if (el == null) return new int[]{-1, -1};
-
         try {
             SourcePosition p = el.getPosition();
             if (p == null) return new int[]{-1, -1};
 
-            // For BodyHolder elements (class, method, constructor) use declarationStart
-            // so that annotations above the element are included in [startLine, endLine].
             if (p instanceof BodyHolderSourcePosition bodyPos) {
                 String filePath = graphFilePath(el, null, sourceLines.keySet());
                 String[] fileLines = findLines(sourceLines, filePath);
@@ -980,60 +610,38 @@ public final class AstGraphUtils {
                     if (declStart >= 0 && sourceEnd >= declStart) {
                         int startLine = lineNumberAtOffset(full, declStart);
                         int endLine   = lineNumberAtOffset(full, sourceEnd);
-                        if (startLine > 0 && endLine >= startLine) {
-                            return new int[]{startLine, endLine};
-                        }
+                        if (startLine > 0 && endLine >= startLine) return new int[]{startLine, endLine};
                     }
                 }
             }
 
-            int startLine = p.isValidPosition() ? p.getLine() : -1;
-            int endLine = p.isValidPosition() ? p.getEndLine() : -1;
-
-            if (startLine > 0 && endLine >= startLine) {
-                return new int[]{startLine, endLine};
-            }
+            int startLine = p.isValidPosition() ? p.getLine()    : -1;
+            int endLine   = p.isValidPosition() ? p.getEndLine() : -1;
+            if (startLine > 0 && endLine >= startLine) return new int[]{startLine, endLine};
 
             String filePath = graphFilePath(el, null, sourceLines.keySet());
             String[] fileLines = findLines(sourceLines, filePath);
-            if (fileLines == null || fileLines.length == 0) {
-                return new int[]{startLine, endLine};
-            }
+            if (fileLines == null || fileLines.length == 0) return new int[]{startLine, endLine};
 
             int sourceStart = p.getSourceStart();
-            int sourceEnd = p.getSourceEnd();
-
-            if (sourceStart < 0) {
-                return new int[]{startLine, endLine};
-            }
+            int sourceEnd   = p.getSourceEnd();
+            if (sourceStart < 0) return new int[]{startLine, endLine};
 
             String full = String.join("\n", fileLines);
             int computedStart = lineNumberAtOffset(full, sourceStart);
-            int computedEnd = sourceEnd >= sourceStart
-                    ? lineNumberAtOffset(full, sourceEnd)
-                    : computedStart;
-
-            if (computedStart > 0 && computedEnd >= computedStart) {
-                return new int[]{computedStart, computedEnd};
-            }
-
+            int computedEnd   = sourceEnd >= sourceStart ? lineNumberAtOffset(full, sourceEnd) : computedStart;
+            if (computedStart > 0 && computedEnd >= computedStart) return new int[]{computedStart, computedEnd};
             return new int[]{startLine, endLine};
         } catch (Exception ignored) {
             return new int[]{-1, -1};
         }
     }
 
-
-    /**
-     * 1-based line number of the character at {@code offset} (0-based) in {@code src}.
-     */
     public static int lineNumberAtOffset(String src, int offset) {
         if (src == null || src.isEmpty()) return 1;
         int n = Math.min(Math.max(offset, 0), src.length());
         int line = 1;
-        for (int i = 0; i < n; i++) {
-            if (src.charAt(i) == '\n') line++;
-        }
+        for (int i = 0; i < n; i++) if (src.charAt(i) == '\n') line++;
         return line;
     }
 
@@ -1041,9 +649,6 @@ public final class AstGraphUtils {
     // Graph path normalisation
     // ------------------------------------------------------------------
 
-    /**
-     * Translate a path from a GitLab diff into the graph-relative path.
-     */
     public static String normalizeFilePath(String diffPath, ProjectGraph graph) {
         if (diffPath == null || diffPath.isBlank()) return diffPath;
         String norm = diffPath.replace('\\', '/');
@@ -1061,40 +666,30 @@ public final class AstGraphUtils {
         return diffPath;
     }
 
-    /**
-     * Resolves {@code sourceLines} the same way as {@link #extractSource}, then extracts a declaration.
-     * Returns {@code ""} when {@code fileLines} cannot be resolved.
-     */
     public static String declarationOf(Map<String, String[]> sourceLines, String filePath, CtElement el) {
         String[] lines = findLines(sourceLines, filePath);
         if (lines == null) return "";
         int[] declLines = declarationLines(el, sourceLines);
         int from = declLines[0];
-        int to = declLines[1];
+        int to   = declLines[1];
         if (from > 0 && to >= from && to <= lines.length) {
             return IntStream.rangeClosed(from - 1, to - 1)
                     .mapToObj(i -> lines[i])
                     .collect(Collectors.joining("\n"));
-        } else return "";
+        }
+        return "";
     }
-
 
     // ------------------------------------------------------------------
     // Import parsing helpers
     // ------------------------------------------------------------------
 
-    /**
-     * Парсит строку импорта из исходников когда Spoon не может разрезолвить
-     * ссылку ({@link spoon.reflect.declaration.CtImport#getReference()} == null).
-     */
     public static String parseImportRefFromSource(Map<String, String[]> sourceLines, String filePath, int lineNumber) {
         if (lineNumber < 1 || filePath == null || filePath.isBlank()) return null;
         String[] lines = findLines(sourceLines, filePath);
         if (lines == null || lineNumber > lines.length) return null;
-
         String raw = lines[lineNumber - 1].trim();
         if (!raw.startsWith("import ")) return null;
-
         String ref = raw
                 .replaceFirst("^import\\s+static\\s+", "")
                 .replaceFirst("^import\\s+", "")
@@ -1103,14 +698,10 @@ public final class AstGraphUtils {
         return ref.isBlank() ? null : ref;
     }
 
-    /**
-     * Определяет является ли импорт статическим по исходной строке.
-     */
     public static boolean isStaticImportBySource(Map<String, String[]> sourceLines, String filePath, int lineNumber) {
         if (lineNumber < 1 || filePath == null || filePath.isBlank()) return false;
         String[] lines = findLines(sourceLines, filePath);
         if (lines == null || lineNumber > lines.length) return false;
         return lines[lineNumber - 1].contains("import static");
     }
-
 }
