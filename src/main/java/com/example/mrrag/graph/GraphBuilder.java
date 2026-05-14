@@ -149,7 +149,10 @@ public class GraphBuilder {
 
             if (edgeConfig.isEnabled(EdgeKind.EXTENDS)) {
                 if (type instanceof CtClass<?> cls && cls.getSuperclass() != null) {
-                    String calleeId = AstGraphUtils.qualifiedName(cls.getSuperclass().getTypeDeclaration());
+                    // Use qualifiedName(CtTypeReference) — works in no-classpath mode and correctly
+                    // handles generic supertypes like HashMap<Level, E> without returning a ghost
+                    // CtTypeParameter node (which getTypeDeclaration() would do for type args).
+                    String calleeId = AstGraphUtils.qualifiedName(cls.getSuperclass());
                     int[] declarationLinesCallee = AstGraphUtils.declarationLines(cls.getSuperclass(), sourceLines);
 
                     graph.addEdge(new GraphEdge(id, EdgeKind.EXTENDS,
@@ -157,7 +160,7 @@ public class GraphBuilder {
                 }
                 if (type instanceof CtInterface<?> iface) {
                     iface.getSuperInterfaces().forEach(interfaceType -> {
-                        String calleeId = AstGraphUtils.qualifiedName(interfaceType.getTypeDeclaration());
+                        String calleeId = AstGraphUtils.qualifiedName(interfaceType);
                         int[] declarationLinesCallee = AstGraphUtils.declarationLines(interfaceType, sourceLines);
 
                         graph.addEdge(new GraphEdge(id, EdgeKind.EXTENDS,
@@ -168,7 +171,7 @@ public class GraphBuilder {
 
             if (edgeConfig.isEnabled(EdgeKind.IMPLEMENTS) && type instanceof CtClass<?> cls)
                 cls.getSuperInterfaces().forEach(interfaceType -> {
-                    String calleeId = AstGraphUtils.qualifiedName(interfaceType.getTypeDeclaration());
+                    String calleeId = AstGraphUtils.qualifiedName(interfaceType);
                     int[] declarationLinesCallee = AstGraphUtils.declarationLines(interfaceType, sourceLines);
 
                     graph.addEdge(new GraphEdge(id, EdgeKind.IMPLEMENTS,
@@ -416,10 +419,9 @@ public class GraphBuilder {
                 String callerId = AstGraphUtils.nearestExecId(fa);
                 String filePath = AstGraphUtils.graphFilePath(fa, projectRoot, repoPaths);
 
-                var ref = fa.getVariable();
-                String calleeId = ref.getDeclaringType() != null
-                        ? ref.getDeclaringType().getQualifiedName() + "." + ref.getSimpleName()
-                        : "?." + ref.getSimpleName();
+                // Use AstGraphUtils.fieldId(CtFieldReference) — consistent with declaration-site ID
+                // and handles unresolved owner gracefully (returns "unresolved_id_field").
+                String calleeId = AstGraphUtils.fieldId(fa.getVariable());
 
                 EdgeKind edgeKind = (fa instanceof CtFieldWrite) ? EdgeKind.WRITES_FIELD : EdgeKind.READS_FIELD;
                 if (edgeConfig.isEnabled(edgeKind)) {
@@ -434,7 +436,7 @@ public class GraphBuilder {
 
                 String callerId = AstGraphUtils.nearestExecId(va);
                 String file = AstGraphUtils.graphFilePath(va, projectRoot, repoPaths);
-                String calleeId = AstGraphUtils.varRefId(va.getVariable());
+                String calleeId = AstGraphUtils.varRefId(va.getVariable(), va);
                 EdgeKind edgeKind = (va instanceof CtVariableWrite) ? EdgeKind.WRITES_LOCAL_VAR : EdgeKind.READS_LOCAL_VAR;
                 if (edgeConfig.isEnabled(edgeKind)) {
                     int[] declarationLines = AstGraphUtils.declarationLines(va, sourceLines);
@@ -464,7 +466,9 @@ public class GraphBuilder {
                 int[] declarationLines = AstGraphUtils.declarationLines(ta, sourceLines);
 
                 if (ta.getAccessedType() == null) return;
-                String calleeId = AstGraphUtils.qualifiedName(ta.getAccessedType().getTypeDeclaration());
+                // Use qualifiedName(CtTypeReference) — avoids getTypeDeclaration() which returns
+                // ghost CtTypeParameter nodes for generic type arguments in no-classpath mode.
+                String calleeId = AstGraphUtils.qualifiedName(ta.getAccessedType());
 
                 graph.addEdge(new GraphEdge(callerId, EdgeKind.REFERENCES_TYPE, calleeId, filePath, declarationLines[0], declarationLines[1]));
             }));
