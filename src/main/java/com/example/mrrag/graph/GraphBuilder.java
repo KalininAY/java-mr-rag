@@ -364,7 +364,11 @@ public class GraphBuilder {
                 if (edgeConfig.isEnabled(ek))
                     graph.addEdge(new GraphEdge(callerId, ek, typeId, filePath, declarationLines[0], declarationLines[1]));
                 if (edgeConfig.isEnabled(EdgeKind.INVOKES)) {
-                    String calleeId = AstGraphUtils.execRefId(cc.getExecutable(), cc);
+                    // typeId уже содержит FQN класса (разрешённый через cc.getType() + imports),
+                    // поэтому строим callee-ID конструктора через typeId, а не через execRefId,
+                    // который при noClasspath теряет пакет (возвращает просто "T2248").
+                    String sig = AstGraphUtils.buildSignature(cc.getExecutable(), cc);
+                    String calleeId = AstGraphUtils.constructorExecutableId(typeId, sig);
                     graph.addEdge(new GraphEdge(callerId, EdgeKind.INVOKES, calleeId, filePath, declarationLines[0], declarationLines[1]));
                 }
             }));
